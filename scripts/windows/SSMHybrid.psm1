@@ -14,6 +14,195 @@
 
 $ErrorActionPreference = 'Stop'
 
+# ---------------------------------------------------------------------------
+# Windows-only adapters
+#
+# The functions below are thin fact-gatherers / runners for the Windows side
+# of enrollment. They are deliberately NOT exported and NOT unit-tested:
+# they call Windows-only cmdlets (Get-CimInstance, Get-AuthenticodeSignature,
+# Invoke-WebRequest against Windows TLS settings, executing a .exe), which do
+# not exist in the Linux unit-test container. Windows-tier tests
+# (tests/windows/*.Tests.ps1) exercise them on the real machine.
+#
+# Windows-only cmdlets appear only inside function bodies (never at module
+# scope) so importing this module on any OS succeeds.
+# ---------------------------------------------------------------------------
+
+<#
+.SYNOPSIS
+Reads AmazonSSMAgent service facts on Windows into the shape
+Get-SsmNodeState consumes.
+
+.DESCRIPTION
+Uses Get-CimInstance Win32_Service (available on Windows PowerShell 5.1 and
+PowerShell 7) rather than Get-Service, because Win32_Service exposes both
+State and StartMode on every supported version. Win32_Service StartMode
+values (Auto/Manual/Disabled) are translated to the Automatic/Manual/Disabled
+vocabulary the decision functions compare against.
+
+.OUTPUTS
+[PSCustomObject] with Exists ([bool]), Status ([string], '' when absent) and
+StartType ([string], '' when absent). Never throws for a missing service.
+#>
+function Get-SsmServiceInfo {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param()
+
+    $service = Get-CimInstance -ClassName Win32_Service -Filter "Name='AmazonSSMAgent'" -ErrorAction SilentlyContinue
+
+    if ($null -eq $service) {
+        return [PSCustomObject]@{
+            Exists     = $false
+            Status     = ''
+            StartType  = ''
+        }
+    }
+
+    $startType = ''
+    if ($service.StartMode -eq 'Auto') {
+        $startType = 'Automatic'
+    } else {
+        $startType = [string]$service.StartMode
+    }
+
+    return [PSCustomObject]@{
+        Exists     = $true
+        Status     = [string]$service.State
+        StartType  = $startType
+    }
+}
+
+<#
+.SYNOPSIS
+Reads the local SSM hybrid registration record as raw JSON text.
+
+.DESCRIPTION
+Returns the raw text of the local registration file, or $null when no
+registration file exists. The default path is the conventional hybrid-agent
+location under ProgramData; it is overridable so Windows-tier tests can
+point the adapter at a fixture. NOTE: the exact on-disk location is
+confirmed on the machine during validation (V4); if AWS keeps it elsewhere
+only this default changes.
+
+.PARAMETER Path
+Registration file path. Defaults to
+$env:ProgramData\Amazon\SSM\InstanceData\registration.
+
+.OUTPUTS
+[System.String] raw JSON, or $null when the file does not exist.
+#>
+function Get-SsmRegistrationFileJson {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [string]$Path = (Join-Path $env:ProgramData 'Amazon\SSM\InstanceData\registration')
+    )
+
+    if ([string]::IsNullOrEmpty($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+    return (Get-Content -LiteralPath $Path -Raw)
+}
+
+<#
+.SYNOPSIS
+Downloads, signature-checks and runs the AWS ssm-setup-cli enrollment
+executable (Windows runner helper).
+
+.DESCRIPTION
+Thin runner for the Register action:
+
+  1. builds the regional URL with Get-SsmSetupCliUrl;
+  2. downloads ssm-setup-cli.exe over HTTPS to a temp file (TLS 1.2 forced
+     on Windows PowerShell 5.1);
+  3. verifies the Authenticode signature with Get-AuthenticodeSignature and
+     Test-SsmSignature and REFUSES to run anything that is not Valid and
+     signed by Amazon.com Services LLC (SPEC 21 steps 6-8);
+  4. registers with -region/-activation-id/-activation-code;
+  5. removes the temp executable.
+
+SECURITY: the activation code is passed to the executable only. The command
+line is never echoed, written or logged, and the tool's stdout/stderr are
+captured but not printed, because they may reflect arguments (SPEC 43).
+Only a success/failure verdict is returned.
+
+.PARAMETER Region
+Validated AWS region code.
+
+.PARAMETER ActivationId
+SSM hybrid activation ID (UUID).
+
+.PARAMETER ActivationCode
+SSM hybrid activation code. Treated as a secret; supply it directly from
+Read-SsmSecret, never from command history.
+
+.PARAMETER Url
+Override the download URL (testing seam). Defaults to Get-SsmSetupCliUrl.
+
+.OUTPUTS
+None. Throws on any failure, including an unacceptable signature.
+#>
+function Invoke-SsmEnrollment {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Region,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ActivationId,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$ActivationCode,
+
+        [string]$Url
+    )
+
+    if ([string]::IsNullOrEmpty($ActivationCode)) {
+        throw 'Invoke-SsmEnrollment: activation code is empty.'
+    }
+
+    if (-not (Test-SsmActivationId -ActivationId $ActivationId)) {
+        throw "Invoke-SsmEnrollment: '$ActivationId' is not a valid activation ID (UUID)."
+    }
+
+    if ([string]::IsNullOrEmpty($Url)) {
+        $Url = Get-SsmSetupCliUrl -Region $Region
+    }
+
+    if ($PSVersionTable.PSVersion.Major -lt 6) {
+        # Windows PowerShell 5.1 defaults may not negotiate TLS 1.2.
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    }
+
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ssm-setup-" + [System.IO.Path]::GetRandomFileName())
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    $exePath = Join-Path $tempDir 'ssm-setup-cli.exe'
+
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $exePath -UseBasicParsing | Out-Null
+
+        $signature = Get-AuthenticodeSignature -FilePath $exePath
+        $verdict = Test-SsmSignature -Status ([string]$signature.Status) -SignerSubject ([string]$signature.SignerCertificate.Subject)
+        if (-not $verdict.Valid) {
+            # Never execute an invalidly signed binary (SPEC 21 step 8).
+            throw "Invoke-SsmEnrollment: downloaded ssm-setup-cli failed signature verification: $($verdict.Reason)"
+        }
+
+        # Command line carries the activation code: it is executed but never
+        # echoed, logged, or captured into any output the caller sees.
+        $null = & $exePath -register -region $Region -activation-id $ActivationId -activation-code $ActivationCode
+        if ($LASTEXITCODE -ne 0) {
+            throw "Invoke-SsmEnrollment: ssm-setup-cli exited with code $LASTEXITCODE. Registration may have partially completed; inspect the SSM Agent log before re-running."
+        }
+    } finally {
+        if (Test-Path -LiteralPath $tempDir) {
+            Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 <#
 .SYNOPSIS
 Prompts the operator for a secret without echoing it and returns it as a
