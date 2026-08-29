@@ -2,6 +2,28 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '../../scripts/windows/SSMHybrid.psm1') -Force
 }
 
+Describe 'Test-SsmActivationId' {
+    It 'accepts <ActivationId>' -TestCases @(
+        @{ ActivationId = '08e51e79-2c3f-4a5d-8f6e-9a7b0c1d2e3f' }
+        @{ ActivationId = '123E4567-E89B-12D3-A456-426614174000' }
+    ) {
+        param($ActivationId)
+        Test-SsmActivationId -ActivationId $ActivationId | Should -BeTrue
+    }
+
+    It 'rejects <ActivationId>' -TestCases @(
+        @{ ActivationId = 'not-a-uuid' }
+        @{ ActivationId = '08e51e792c3f4a5d8f6e9a7b0c1d2e3f' }
+        @{ ActivationId = '08e51e79-2c3f-4a5d-8f6e' }
+        @{ ActivationId = '{08e51e79-2c3f-4a5d-8f6e-9a7b0c1d2e3f}' }
+        @{ ActivationId = '' }
+        @{ ActivationId = $null }
+    ) {
+        param($ActivationId)
+        Test-SsmActivationId -ActivationId $ActivationId | Should -BeFalse
+    }
+}
+
 Describe 'Test-SsmRegion' {
     It 'accepts <Region>' -TestCases @(
         @{ Region = 'us-east-1' }

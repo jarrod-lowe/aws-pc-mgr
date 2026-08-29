@@ -16,6 +16,37 @@ $ErrorActionPreference = 'Stop'
 
 <#
 .SYNOPSIS
+Tests whether a string is a well-formed UUID, as an SSM activation ID must be.
+
+.DESCRIPTION
+True iff the string matches the canonical 8-4-4-4-12 hexadecimal UUID format
+(for example 08e51e79-2c3f-4a5d-8f6e-9a7b0c1d2e3f). Upper- and lower-case
+hex digits are both accepted; braces and undashed forms are rejected.
+
+.PARAMETER ActivationId
+Candidate activation ID. Empty and null are rejected.
+
+.OUTPUTS
+[System.Boolean]
+#>
+function Test-SsmActivationId {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$ActivationId
+    )
+
+    if ($null -eq $ActivationId) {
+        return $false
+    }
+    return ($ActivationId -cmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+}
+
+<#
+.SYNOPSIS
 Tests whether a string is a well-formed AWS region code.
 
 .DESCRIPTION
@@ -46,5 +77,6 @@ function Test-SsmRegion {
 }
 
 Export-ModuleMember -Function @(
-    'Test-SsmRegion'
+    'Test-SsmRegion',
+    'Test-SsmActivationId'
 )
