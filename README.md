@@ -640,9 +640,10 @@ trips), so short synthetic literals like
 `SecretAccessKey=EXAMPLE` or `Session Token: EXAMPLE` in the Windows-tier
 tests cannot trip it —
 managed-node IDs (`mi-...`), UUID
-literals, SSO start URLs, email addresses, and 12-digit account IDs in ARNs
+literals, SSO start URLs (any scheme/host capitalization), email addresses, and 12-digit account IDs in ARNs
 of any service (empty-region `arn:aws:iam::…` style or regional
-`arn:aws:ssm:us-east-1:…` style); these
+`arn:aws:ssm:us-east-1:…` style, any capitalization of the `arn:aws`
+prefix and namespace spans); these
 value-shape detectors match the original
 line unchanged, because their grammar is case-bearing. It also treats
 runtime values as findings if they

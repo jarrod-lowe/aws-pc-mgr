@@ -1,2 +1,8 @@
 # Synthetic audit fixture: 12-digit AWS account ID inside an ARN.
+# The arn:aws prefix and partition/service/region spans are
+# canonical-lowercase (AWS ARN spelling), so the capitalized
+# spellings below are the same ARNs and must be flagged too; the
+# identity is the 12-digit account field.
 role_arn = "arn:aws:iam::123456789012:role/example"
+role_arn_caps = "ARN:AWS:iam::123456789012:role/example"
+role_arn_mixed = "Arn:Aws:Ssm:Us-East-1:123456789012:instance/example"

@@ -177,10 +177,20 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 #   * SHAPE detectors (SHAPE_DETECTORS) anchor on the VALUE's shape, whose
 #     grammar is case-bearing — AKIA…/ASIA… key IDs are uppercase, UUIDs
 #     and managed-node IDs are lowercase hex, SSO start URLs and email
-#     addresses carry their own case, and an ARN is lowercase up to its
+#     addresses carry their own case, and an ARN's identity is its
 #     12-digit account field — so they are matched against the ORIGINAL
 #     line unchanged; lowercasing the line would destroy exactly the
-#     thing they anchor on.
+#     thing they anchor on. Two detectors still bracket
+#     case-insensitive spans inside that original-line match: the SSO
+#     start URL's scheme and DNS labels ([hH][tT]…, [aA][wW]…), and the
+#     ARN's `arn:aws` prefix through its partition-suffix, service and
+#     region spans. Those spans are canonical-lowercase (RFC 3986/1035
+#     for URI scheme and hostname, AWS's canonical ARN spelling for the
+#     namespace fields), so the identity being detected does not live
+#     in their case — a hand-retyped `ARN:AWS:IAM:US-EAST-1:…` is the
+#     same ARN — unlike the AKIA/UUID shapes, where the case IS the
+#     grammar. The SSO /start path stays literal: paths ARE
+#     case-sensitive.
 #
 # Both lists: one detector per line, `name:ERE`, split on the first colon
 # (names never contain a colon). A line is a finding when it matches the
@@ -230,9 +240,9 @@ SHAPE_DETECTORS="aws-access-key-id:AKIA[0-9A-Z]{16}
 aws-session-key-id:ASIA[0-9A-Z]{16}
 managed-node-id:mi-[a-f0-9]{8,}
 uuid-literal:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}
-sso-start-url:https://[A-Za-z0-9-][A-Za-z0-9.-]*[.]awsapps[.]com/start
+sso-start-url:[hH][tT][tT][pP][sS]://[A-Za-z0-9-][A-Za-z0-9.-]*[aA][wW][sS][aA][pP][pP][sS][.][cC][oO][mM]/start
 email-address:[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]{2,}
-account-id-arn:arn:aws[a-z-]*:[a-z0-9-]*(:[a-z0-9-]*)?:[0-9]{12}"
+account-id-arn:[aA][rR][nN]:[aA][wW][sS][A-Za-z-]*:[A-Za-z0-9-]*(:[A-Za-z0-9-]*)?:[0-9]{12}"
 
 # Suppression marker (see header): a raw line containing this string is
 # skipped by every suppressible detector, in file mode and in history mode.

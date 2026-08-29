@@ -149,6 +149,24 @@ function Get-SsmRegistration {
     return ConvertFrom-SsmRegistrationJson -Json $json
 }
 
+# Service facts, or fail closed. Get-SsmServiceInfo never throws for a
+# MISSING service (it reports Exists = $false) but DOES throw for a FAILED
+# query, because a failed query must never be readable as the service being
+# absent - notably in the Reregister path, where that would let the clear
+# proceed against an agent that may still be running. Every call site after
+# the initial classification (which has its own try/catch) goes through this
+# wrapper, so a mid-script query failure stops the script with exit 1.
+function Get-ServiceInfoOrFail {
+    try {
+        return Get-SsmServiceInfo
+    } catch {
+        Write-Fail ("Could not query the AmazonSSMAgent service: " + $_.Exception.Message)
+        Write-Host 'A failed service query must not be read as the service being absent.'
+        Write-Host 'Nothing further was changed. Inspect the error and re-run.'
+        exit 1
+    }
+}
+
 # --- 1. elevation (SPEC 21 step 1) ------------------------------------------
 
 $windowsPrincipal = New-Object -TypeName Security.Principal.WindowsPrincipal -ArgumentList ([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -225,11 +243,11 @@ if ($action -eq 'NoOperation') {
     $registration = Get-SsmRegistration
 
     # Re-verify the service before declaring health (SPEC 22).
-    $currentService = Get-SsmServiceInfo
+    $currentService = Get-ServiceInfoOrFail
     if ($currentService.Status -ne 'Running') {
         Write-Step 'AmazonSSMAgent stopped since the check above; starting it (registration untouched).'
         Start-Service -Name 'AmazonSSMAgent'
-        $currentService = Get-SsmServiceInfo
+        $currentService = Get-ServiceInfoOrFail
         if ($currentService.Status -ne 'Running') {
             Write-Fail 'AmazonSSMAgent did not reach the Running state after Start-Service.'
             Write-Host 'Inspect: Get-Service AmazonSSMAgent and the SSM Agent log under'
@@ -258,7 +276,7 @@ if ($action -eq 'StartService') {
     # Restore Automatic startup before starting, like the Register path: a
     # Manual/Disabled start type would leave the node offline again after the
     # next reboot even though it is Running now.
-    $currentService = Get-SsmServiceInfo
+    $currentService = Get-ServiceInfoOrFail
     $startupRestored = $false
     if ($currentService.StartType -ne 'Automatic') {
         Write-Step ("Restoring AmazonSSMAgent startup type to Automatic (was '" + $currentService.StartType + "').")
@@ -267,7 +285,7 @@ if ($action -eq 'StartService') {
     }
 
     Start-Service -Name 'AmazonSSMAgent'
-    $currentService = Get-SsmServiceInfo
+    $currentService = Get-ServiceInfoOrFail
     if ($currentService.Status -ne 'Running') {
         Write-Fail 'AmazonSSMAgent did not reach the Running state after Start-Service.'
         Write-Host 'Inspect: Get-Service AmazonSSMAgent and the SSM Agent log. The existing'
@@ -363,7 +381,7 @@ if ($action -eq 'Register') {
         exit 1
     }
 
-    $serviceAfter = Get-SsmServiceInfo
+    $serviceAfter = Get-ServiceInfoOrFail
     if (-not $serviceAfter.Exists) {
         Write-Fail 'The AmazonSSMAgent service does not exist after registration.'
         Write-Host 'Inspect: installed services and the SSM Agent installation log. The'
@@ -373,12 +391,12 @@ if ($action -eq 'Register') {
     if ($serviceAfter.StartType -ne 'Automatic') {
         Write-Step ("Setting AmazonSSMAgent startup type to Automatic (was '" + $serviceAfter.StartType + "').")
         Set-Service -Name 'AmazonSSMAgent' -StartupType Automatic
-        $serviceAfter = Get-SsmServiceInfo
+        $serviceAfter = Get-ServiceInfoOrFail
     }
     if ($serviceAfter.Status -ne 'Running') {
         Write-Step 'AmazonSSMAgent is not running after registration; starting it.'
         Start-Service -Name 'AmazonSSMAgent'
-        $serviceAfter = Get-SsmServiceInfo
+        $serviceAfter = Get-ServiceInfoOrFail
     }
     if (($serviceAfter.Status -ne 'Running') -or ($serviceAfter.StartType -ne 'Automatic')) {
         Write-Fail ("AmazonSSMAgent is not Running/Automatic (status '" + $serviceAfter.Status + "', startup '" + $serviceAfter.StartType + "').")
@@ -449,7 +467,7 @@ if ($action -eq 'Reregister') {
     # stopped. The service is deliberately NOT started again in this run: with
     # no registration left it has nothing to run with, and the fresh Register
     # run (a new activation) brings it back.
-    $serviceBeforeClear = Get-SsmServiceInfo
+    $serviceBeforeClear = Get-ServiceInfoOrFail
     if (-not $serviceBeforeClear.Exists) {
         Write-Step 'AmazonSSMAgent service not found; nothing to stop before the clear.'
     } elseif ($serviceBeforeClear.Status -eq 'Stopped') {
@@ -466,7 +484,7 @@ if ($action -eq 'Reregister') {
         }
     }
 
-    $serviceAtClear = Get-SsmServiceInfo
+    $serviceAtClear = Get-ServiceInfoOrFail
     if ($serviceAtClear.Exists -and ($serviceAtClear.Status -ne 'Stopped')) {
         Write-Fail ("AmazonSSMAgent did not stop (status '" + $serviceAtClear.Status + "'); the registration was NOT cleared.")
         Write-Host 'Inspect: Get-Service AmazonSSMAgent and the SSM Agent log, then re-run.'

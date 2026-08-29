@@ -28,6 +28,84 @@ Describe 'Read-SsmSecret' {
     }
 }
 
+Describe 'Get-SsmServiceInfo' {
+    BeforeAll {
+        # Get-CimInstance does not exist in the Linux unit-test container, and
+        # Pester only mocks commands that resolve inside the target module's
+        # session state. So a stub is planted in SSMHybrid's scope for the
+        # Mocks below to replace; it is unexported (the module uses an
+        # explicit Export-ModuleMember list) and removed again in AfterAll so
+        # it never shadows the real cmdlet elsewhere.
+        $script:ssmHybridModule = Get-Module SSMHybrid
+        . $script:ssmHybridModule.NewBoundScriptBlock({
+            function Get-CimInstance {
+                [CmdletBinding()]
+                param([string]$ClassName, [string]$Filter)
+                # Failure mode of the real cmdlet: a NON-terminating error
+                # record whose disposition follows the caller's -ErrorAction
+                # (Stop makes it terminating, SilentlyContinue suppresses it).
+                $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
+                        [System.InvalidOperationException]::new('simulated CIM provider failure'),
+                        'SimulatedCimProviderFailure',
+                        [System.Management.Automation.ErrorCategory]::NotSpecified,
+                        $null))
+            }
+        })
+    }
+
+    AfterAll {
+        . $script:ssmHybridModule.NewBoundScriptBlock({
+            Remove-Item -Path Function:\Get-CimInstance -ErrorAction SilentlyContinue
+        })
+    }
+
+    It 'returns Exists $false with empty Status and StartType, without throwing, when the query succeeds but matches nothing' {
+        Mock Get-CimInstance -ModuleName SSMHybrid { return $null }
+
+        $result = Get-SsmServiceInfo
+
+        $result.Exists | Should -BeFalse
+        $result.Status | Should -Be ''
+        $result.StartType | Should -Be ''
+    }
+
+    It 'throws when the service query itself fails, so a failed query is never readable as the service being absent' {
+        # Deliberately NO Mock here: a Pester mock body neither sees the
+        # bound parameters nor inherits the caller's -ErrorAction, so a mock
+        # cannot faithfully simulate a non-terminating query failure. The
+        # stub planted in BeforeAll can: it fails exactly the way the real
+        # Get-CimInstance does, and the adapter's -ErrorAction alone decides
+        # whether that failure surfaces. Under SilentlyContinue (the old
+        # behavior) this query would silently read as Exists $false - the bug
+        # this test pins. The ErrorId wildcard covers the ',Get-CimInstance'
+        # suffix PowerShell appends to errors from advanced functions.
+        { Get-SsmServiceInfo } | Should -Throw -ErrorId 'SimulatedCimProviderFailure*'
+    }
+
+    It 'reports Exists $true and translates State/StartMode into the decision vocabulary' {
+        Mock Get-CimInstance -ModuleName SSMHybrid {
+            return [PSCustomObject]@{ State = 'Running'; StartMode = 'Auto' }
+        }
+
+        $result = Get-SsmServiceInfo
+
+        $result.Exists | Should -BeTrue
+        $result.Status | Should -Be 'Running'
+        $result.StartType | Should -Be 'Automatic'
+    }
+
+    It 'passes a Manual StartMode through untranslated' {
+        Mock Get-CimInstance -ModuleName SSMHybrid {
+            return [PSCustomObject]@{ State = 'Stopped'; StartMode = 'Manual' }
+        }
+
+        $result = Get-SsmServiceInfo
+
+        $result.Exists | Should -BeTrue
+        $result.StartType | Should -Be 'Manual'
+    }
+}
+
 Describe 'Module export surface' {
     It 'exports the eight contract functions plus the three Windows-only adapters (entry scripts call them after Import-Module)' {
         $exported = (Get-Module SSMHybrid).ExportedCommands.Keys | Sort-Object

@@ -19,11 +19,13 @@ $ErrorActionPreference = 'Stop'
 #
 # The functions below are thin fact-gatherers / runners for the Windows side
 # of enrollment. They are exported (setup.ps1 and check.ps1 call them
-# directly after Import-Module) but NOT unit-tested here: they call
-# Windows-only cmdlets (Get-CimInstance, Get-AuthenticodeSignature,
+# directly after Import-Module). With one exception they are NOT unit-tested
+# here: they call Windows-only cmdlets (Get-AuthenticodeSignature,
 # Invoke-WebRequest against Windows TLS settings, executing a .exe), which do
 # not exist in the Linux unit-test container. Windows-tier tests
-# (tests/windows/*.Tests.ps1) exercise them on the real machine.
+# (tests/windows/*.Tests.ps1) exercise them on the real machine. The
+# exception is Get-SsmServiceInfo, whose Get-CimInstance call is unit-tested
+# in tests/unit against a stub planted in this module's scope.
 #
 # Windows-only cmdlets appear only inside function bodies (never at module
 # scope) so importing this module on any OS succeeds.
@@ -43,14 +45,17 @@ vocabulary the decision functions compare against.
 
 .OUTPUTS
 [PSCustomObject] with Exists ([bool]), Status ([string], '' when absent) and
-StartType ([string], '' when absent). Never throws for a missing service.
+StartType ([string], '' when absent). Never throws for a MISSING service: a
+successful query that matches nothing simply reports Exists = $false. A
+FAILED query (for example a CIM provider error) DOES throw, so callers fail
+closed instead of misreading the failure as the service being absent.
 #>
 function Get-SsmServiceInfo {
     [CmdletBinding()]
     [OutputType([PSCustomObject])]
     param()
 
-    $service = Get-CimInstance -ClassName Win32_Service -Filter "Name='AmazonSSMAgent'" -ErrorAction SilentlyContinue
+    $service = Get-CimInstance -ClassName Win32_Service -Filter "Name='AmazonSSMAgent'" -ErrorAction Stop
 
     if ($null -eq $service) {
         return [PSCustomObject]@{
