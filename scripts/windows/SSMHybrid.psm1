@@ -440,8 +440,9 @@ returns exactly one node state:
   RegisteredUnhealthy    registration parseable, service missing or otherwise
                          not Running+Automatic (for example not Automatic, or
                          a status that is neither Running nor Stopped)
-  Ambiguous              registration file present but unparseable or
-                         incomplete (ConvertFrom-SsmRegistrationJson throws)
+  Ambiguous              registration file present but unparseable,
+                         incomplete, or carrying a malformed managed node ID
+                         (ConvertFrom-SsmRegistrationJson throws)
 
 Classification never destroys registration state; Ambiguous is reported
 rather than repaired so an operator can decide (SPEC 22/23).
@@ -530,14 +531,19 @@ The registration record an enrolled hybrid node keeps locally uses the key
 'ManagedInstanceID' (capital ID). This function parses that record and
 returns an object with the properties:
 
-  ManagedInstanceId - the mi-... managed-node identifier (string)
+  ManagedInstanceId - the mi-... managed-node identifier (string): lowercase
+                      'mi-' followed by at least eight lowercase hex digits
   Region            - the AWS region recorded at registration (string; $null
                       when the record carries no Region value)
 
 Throws when the JSON is malformed, is not an object, lacks a non-empty
-'ManagedInstanceID' key. Callers treat a throw as "registration present but
-unparseable/incomplete" and classify the node as Ambiguous rather than
-destroying registration state (SPEC 23).
+'ManagedInstanceID' key, or carries a ManagedInstanceID that is not a
+well-formed managed node ID. The ID shape is the audit's managed-node-id
+grammar ('mi-' followed by at least eight lowercase hex digits) and the
+match is case-sensitive, because AWS issues only lowercase IDs; any other
+shape means the record is corrupted. Callers treat a throw as "registration
+present but unparseable/incomplete" and classify the node as Ambiguous
+rather than destroying registration state (SPEC 23).
 
 .PARAMETER Json
 Raw JSON text read from the local registration file.
@@ -546,7 +552,7 @@ Raw JSON text read from the local registration file.
 [PSCustomObject] with ManagedInstanceId and Region.
 
 .EXAMPLE
-ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"mi-0123","Region":"ap-southeast-2"}'
+ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}' # audit-allow:synthetic
 #>
 function ConvertFrom-SsmRegistrationJson {
     [CmdletBinding()]
@@ -581,6 +587,15 @@ function ConvertFrom-SsmRegistrationJson {
         throw "ConvertFrom-SsmRegistrationJson: registration data has no non-empty 'ManagedInstanceID' key."
     }
 
+    # A parseable record can still carry a corrupted ID. AWS-issued hybrid
+    # node IDs are 'mi-' followed by lowercase hex (the audit's
+    # managed-node-id grammar); the match is case-sensitive because AWS
+    # issues only lowercase, so any other shape fails closed to Ambiguous.
+    $managedInstanceId = [string]$idProperty.Value
+    if ($managedInstanceId -cnotmatch '^mi-[a-f0-9]{8,}$') {
+        throw "ConvertFrom-SsmRegistrationJson: '$managedInstanceId' is not a valid managed node ID (expected the form 'mi-' followed by lowercase hex digits)."
+    }
+
     $region = $null
     $regionProperty = $parsed.PSObject.Properties |
         Where-Object { $_.Name -eq 'Region' } |
@@ -590,7 +605,7 @@ function ConvertFrom-SsmRegistrationJson {
     }
 
     return [PSCustomObject]@{
-        ManagedInstanceId = [string]$idProperty.Value
+        ManagedInstanceId = $managedInstanceId
         Region            = $region
     }
 }

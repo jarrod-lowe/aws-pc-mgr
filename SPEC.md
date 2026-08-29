@@ -1528,7 +1528,7 @@ Contracts (final names; entry scripts and Windows tests must use exactly these):
 | `Test-SsmRegion -Region` | true iff `^[a-z]{2}(-gov)?-[a-z]+-\d$` |
 | `Test-SsmActivationId -ActivationId` | true iff UUID format |
 | `Get-SsmSetupCliUrl -Region` | `https://amazon-ssm-<r>.s3.<r>.amazonaws.com/latest/windows_amd64/ssm-setup-cli.exe`; throws on invalid region |
-| `ConvertFrom-SsmRegistrationJson -Json` | object `{ ManagedInstanceId, Region }`; throws on malformed JSON / missing `ManagedInstanceID` (source key is `ManagedInstanceID`, exposed as `ManagedInstanceId`) |
+| `ConvertFrom-SsmRegistrationJson -Json` | object `{ ManagedInstanceId, Region }`; throws on malformed JSON / missing `ManagedInstanceID` / `ManagedInstanceID` not matching `^mi-[a-f0-9]{8,}$` (source key is `ManagedInstanceID`, exposed as `ManagedInstanceId`) |
 | `Get-SsmNodeState -RegistrationJson -ServiceExists -ServiceStatus -ServiceStartType` | returns one of `Absent`, `InstalledUnregistered`, `RegisteredHealthy`, `RegisteredStopped`, `RegisteredUnhealthy`, `Ambiguous` |
 | `Get-SsmSetupAction -State [-ForceReregister]` | maps state → `Register`, `StartService`, `NoOperation`, `ManualIntervention`, or `Reregister` (only with `-ForceReregister` + existing registration) |
 | `Test-SsmSignature -Status -SignerSubject` | object `{ Valid, Reason }`; Valid iff Status `-eq 'Valid'` and subject matches `*Amazon.com Services LLC*` |
@@ -1543,7 +1543,7 @@ Classification table (`Get-SsmNodeState`):
 | registration parseable + service Running + Automatic | `RegisteredHealthy` |
 | registration parseable + service Stopped | `RegisteredStopped` |
 | registration parseable + service missing or not Automatic | `RegisteredUnhealthy` |
-| registration file present but unparseable/incomplete | `Ambiguous` |
+| registration file present but unparseable/incomplete (including a malformed `ManagedInstanceID`) | `Ambiguous` |
 
 Action table (`Get-SsmSetupAction`): `Absent→Register`, `InstalledUnregistered→Register`, `RegisteredHealthy→NoOperation`, `RegisteredStopped→StartService`, `RegisteredUnhealthy→ManualIntervention`, `Ambiguous→ManualIntervention`; `ForceReregister` + any registered state → `Reregister`. Never destructive without the flag (§22/§23).
 

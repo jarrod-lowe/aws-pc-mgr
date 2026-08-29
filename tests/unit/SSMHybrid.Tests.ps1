@@ -315,6 +315,17 @@ Describe 'Get-SsmNodeState' {
             ServiceStartType  = 'Automatic'
             Expected          = 'Ambiguous'
         }
+        @{
+            # A parseable file whose ID is not a well-formed managed node ID
+            # must not be classifiable as healthy even with a healthy service:
+            # the shape failure throws, and the throw maps to Ambiguous.
+            Name              = 'registration parseable but ManagedInstanceID malformed, service healthy'
+            RegistrationJson  = '{"ManagedInstanceID":"garbage","Region":"ap-southeast-2"}'
+            ServiceExists     = $true
+            ServiceStatus     = 'Running'
+            ServiceStartType  = 'Automatic'
+            Expected          = 'Ambiguous'
+        }
     ) {
         param($RegistrationJson, $ServiceExists, $ServiceStatus, $ServiceStartType, $Expected)
         Get-SsmNodeState -RegistrationJson $RegistrationJson -ServiceExists $ServiceExists -ServiceStatus $ServiceStatus -ServiceStartType $ServiceStartType |
@@ -357,6 +368,25 @@ Describe 'ConvertFrom-SsmRegistrationJson' {
 
     It 'throws when ManagedInstanceID is empty' {
         { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"","Region":"ap-southeast-2"}' } | Should -Throw
+    }
+
+    It 'throws when ManagedInstanceID is not a managed node ID' {
+        { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"garbage","Region":"ap-southeast-2"}' } | Should -Throw
+    }
+
+    # Case is part of the shape: AWS issues only lowercase mi- IDs, and the
+    # audit's managed-node-id grammar (mi-[a-f0-9]{8,}) is case-sensitive, so
+    # an uppercase variant is corruption and must throw, not pass.
+    It 'throws when ManagedInstanceID is uppercase' {
+        { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"MI-0123456789ABCDEF0","Region":"ap-southeast-2"}' } | Should -Throw
+    }
+
+    It 'throws when ManagedInstanceID has too few hex digits' {
+        { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"mi-short","Region":"ap-southeast-2"}' } | Should -Throw
+    }
+
+    It 'throws when ManagedInstanceID has trailing junk after a valid ID' {
+        { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"mi-0123456789abcdef0 extra","Region":"ap-southeast-2"}' } | Should -Throw # audit-allow:synthetic
     }
 
     It 'throws when the JSON is not an object' {
