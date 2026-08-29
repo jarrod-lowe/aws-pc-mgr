@@ -263,8 +263,10 @@ Describe 'check.ps1 read-failure reporting (SPEC 24)' {
     # (the Linux test container, via check.ps1's -RegistrationPath and
     # -AgentLogPath seams) and is Skip-guarded on Windows, where an
     # unreadable fixture needs an ACL the test itself cannot set unelevated.
-    # The missing-log test below needs no unreadability arrangement, so it
-    # alone carries no Skip guard and runs on every OS.
+    # Tests that break an input by making it MISSING need no unreadability
+    # arrangement, so they carry no Skip guard and run on every OS (the
+    # missing-log test below, and the class-invariant block nested at the
+    # end of this Describe).
     BeforeAll {
         # Same child-process pattern as Invoke-CheckScript, with an optional
         # launcher executable prepended to the command line: a root test
@@ -277,13 +279,21 @@ Describe 'check.ps1 read-failure reporting (SPEC 24)' {
             param(
                 [string]$RegistrationPath = '',
                 [string]$AgentLogPath = '',
+                [string]$CheckPath = '',
                 [string]$LauncherExe = '',
                 [string[]]$LauncherArguments = @()
             )
 
-            $checkPath = Join-Path $PSScriptRoot '../../scripts/windows/check.ps1'
+            # -CheckPath defaults to the real script, so every invocation that
+            # does not pass it runs the committed check.ps1 exactly as before;
+            # the override exists so the class-invariant block below can be
+            # pointed at a scratch copy of check.ps1 (red/green demonstration
+            # of the invariant against a deliberately broken copy).
+            if ([string]::IsNullOrEmpty($CheckPath)) {
+                $CheckPath = Join-Path $PSScriptRoot '../../scripts/windows/check.ps1'
+            }
             $childArguments = @(
-                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $checkPath + '"'),
+                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $CheckPath + '"'),
                 '-RegistrationPath', ('"' + $RegistrationPath + '"')
             )
             if (-not [string]::IsNullOrEmpty($AgentLogPath)) {
@@ -496,5 +506,182 @@ Describe 'check.ps1 read-failure reporting (SPEC 24)' {
         $result.Output | Should -Match '(?m)^  - .*agent log was not found'
         $result.Output | Should -Not -Match 'All checks passed'
         $result.ExitCode | Should -Be 1
+    }
+
+    Describe 'class invariant: an unperformed diagnostic is always a recorded problem' {
+        # CLASS-LEVEL INVARIANT, not an instance fix: NO diagnostic in
+        # check.ps1 may be skipped silently. Whenever a diagnostic could not
+        # be performed - its input missing, or present but unreadable - the
+        # run must (1) exit 1, (2) never print 'All checks passed', (3) carry
+        # a Summary bullet for THAT diagnostic, and (4) never print that
+        # diagnostic's success line. Unperformed = problem, in every break
+        # mode, for every diagnostic. Two review rounds in a row (unreadable
+        # agent log, then missing agent log) each found a DIFFERENT instance
+        # of this class that the previous instance-level fix did not
+        # prevent, so this block breaks every independently-breakable
+        # diagnostic input AT ONCE and asserts the class property itself.
+        #
+        # Diagnostic-input inventory (check.ps1 param block + sections):
+        #   -RegistrationPath : param seam - broken below, both missing and
+        #                       present-but-unreadable
+        #   -AgentLogPath     : param seam - broken below, missing
+        #   module path       : derived from check.ps1's $PSScriptRoot - NOT
+        #                       breakable from outside; absence is itself an
+        #                       Add-Problem in check.ps1
+        #   agent exe path    : derived from $env:ProgramFiles - NOT
+        #                       breakable from outside; absence is an
+        #                       Add-Problem ('not installed') in check.ps1
+        #   OS query          : Get-CimInstance Win32_OperatingSystem - NOT
+        #                       breakable from outside; its catch records an
+        #                       Add-Problem in check.ps1
+        #   service query     : Get-Service / Win32_Service - NOT breakable
+        #                       from outside; failure and absence are each an
+        #                       Add-Problem in check.ps1
+        # Only the two param seams can be driven from outside a child
+        # process, so they carry the invariant here; each non-seam
+        # diagnostic already routes every failure path through Add-Problem.
+        BeforeAll {
+            # Both helpers normalize CRLF away so their line anchors hold on
+            # Windows hosts too (the missing-input It below runs on every OS).
+
+            # The set of sections announced by Write-Section must be exactly
+            # the SPEC 24 report items plus the script's own Summary footer -
+            # no more, no fewer. SPEC.md #24 requires reporting Windows
+            # edition/version and build; SSM Agent installation status and
+            # version; AmazonSSMAgent service existence, startup
+            # configuration and running state; whether local SSM
+            # registration appears to exist and the managed-node ID where
+            # locally discoverable; and relevant recent SSM Agent
+            # warnings/errors. check.ps1 groups these into the five
+            # diagnostic sections below and closes with its Summary. Exact
+            # set equality (not mere presence) is deliberate: if a future
+            # diagnostic section is added or renamed, this fails and forces
+            # this invariant block to be revisited - because a NEW section
+            # needs a problem-recording path for every way it can fail to
+            # run, and this block is where that is asserted.
+            function Assert-AnnouncedSectionSet {
+                param([string]$Output)
+                $expectedSections = @(
+                    'Windows',
+                    'SSM Agent installation',
+                    'AmazonSSMAgent service',
+                    'SSM registration',
+                    'Recent SSM Agent warnings/errors',
+                    'Summary'
+                )
+                $announcedSections = [Regex]::Matches(($Output -replace "`r", ''), '(?m)^=== (.+) ===$') |
+                    ForEach-Object { $_.Groups[1].Value }
+                $announcedSections | Should -Be $expectedSections
+            }
+
+            # The Summary must be a faithful list of exactly the recorded
+            # problems: one '  - ' bullet and one inline '[PROBLEM]' line per
+            # entry, matching the count in 'Problems found (N):'. A
+            # diagnostic that could not be performed is only safe if its
+            # problem actually reaches the Summary, and no bullet may exist
+            # that does not correspond to a recorded problem.
+            function Assert-SummaryListsEveryProblem {
+                param([string]$Output)
+                $normalized = $Output -replace "`r", ''
+                $normalized | Should -Match 'Problems found \(\d+\):'
+                $announcedCount = [int][Regex]::Match($normalized, 'Problems found \((\d+)\):').Groups[1].Value
+                $inlineCount = ([Regex]::Matches($normalized, '(?m)^  \[PROBLEM\]')).Count
+                $bulletCount = ([Regex]::Matches($normalized, '(?m)^  - ')).Count
+                $inlineCount | Should -Be $announcedCount
+                $bulletCount | Should -Be $announcedCount
+            }
+        }
+
+        It 'records a problem for every unperformed diagnostic when both param-seam inputs are missing' {
+            # Every independently-breakable input broken at once, in the
+            # missing form, which needs no unreadability arrangement and so
+            # runs on every OS - including a healthy enrolled Windows host,
+            # where this is the invariant at its strongest: a machine whose
+            # every performed diagnostic passes must still fail when one
+            # could not be performed.
+            $missingRegistration = Join-Path ([System.IO.Path]::GetTempPath()) ('ssm-check-invariant-missing-reg-' + [System.IO.Path]::GetRandomFileName())
+            $missingLog = Join-Path ([System.IO.Path]::GetTempPath()) ('ssm-check-invariant-missing-log-' + [System.IO.Path]::GetRandomFileName() + '.log')
+
+            $result = Invoke-CheckScriptViaLauncher -RegistrationPath $missingRegistration -AgentLogPath $missingLog
+
+            # Never exit 0 over an unperformed diagnostic...
+            $result.ExitCode | Should -Be 1
+            $result.Output | Should -Not -Match 'All checks passed'
+            # ...each unperformed diagnostic gets its own Summary bullet
+            # (the '^  - ' anchor matches a Summary bullet, not the inline
+            # hint)...
+            $result.Output | Should -Match '(?m)^  - .*No local SSM registration'
+            $result.Output | Should -Match '(?m)^  - .*agent log was not found'
+            # ...and no diagnostic that never ran may print its success
+            # line - a performed-and-clean claim over an unperformed
+            # diagnostic is the silent skip this invariant forbids.
+            $result.Output | Should -Not -Match '(?m)^  Managed node ID'
+            $result.Output | Should -Not -Match 'No warning/error lines in the last 500 lines of'
+            Assert-SummaryListsEveryProblem -Output $result.Output
+            Assert-AnnouncedSectionSet -Output $result.Output
+        }
+
+        It 'records a problem for every unperformed diagnostic when the registration file is unreadable and the log is missing' -Skip:($script:IsWindowsOs) {
+            # Same invariant with the OTHER break mode of the registration
+            # seam: present but unreadable. Same unreadability arrangement as
+            # the read-failure tests above (chmod 000, plus setpriv(1)
+            # running the child as nobody when the test process itself is
+            # root and would bypass the file mode), hence the same Windows
+            # Skip guard.
+            $fixture = Join-Path ([System.IO.Path]::GetTempPath()) ('ssm-check-invariant-unreadable-' + [System.IO.Path]::GetRandomFileName())
+            try {
+                Set-Content -LiteralPath $fixture -Value 'ssm-check-invariant-registration-sentinel'
+                & chmod 000 $fixture
+
+                $launcherExe = ''
+                $launcherArguments = @()
+                $unreadableDirectly = $false
+                try {
+                    $null = Get-Content -LiteralPath $fixture -Raw -ErrorAction Stop
+                } catch {
+                    $unreadableDirectly = $true
+                }
+                if (-not $unreadableDirectly) {
+                    $setpriv = Get-Command -Name setpriv -ErrorAction SilentlyContinue
+                    $cat = Get-Command -Name cat -ErrorAction SilentlyContinue
+                    if (($null -ne $setpriv) -and ($null -ne $cat)) {
+                        $probeInfo = New-Object -TypeName System.Diagnostics.ProcessStartInfo
+                        $probeInfo.FileName = $setpriv.Source
+                        $probeInfo.Arguments = ('--reuid=nobody --regid=nogroup --clear-groups ' + $cat.Source + ' ' + $fixture)
+                        $probeInfo.UseShellExecute = $false
+                        $probeInfo.RedirectStandardOutput = $true
+                        $probeInfo.RedirectStandardError = $true
+                        $probeInfo.CreateNoWindow = $true
+                        $probe = [System.Diagnostics.Process]::Start($probeInfo)
+                        $null = $probe.StandardOutput.ReadToEnd()
+                        $null = $probe.StandardError.ReadToEnd()
+                        $probe.WaitForExit()
+                        if ($probe.ExitCode -ne 0) {
+                            $launcherExe = $setpriv.Source
+                            $launcherArguments = @('--reuid=nobody', '--regid=nogroup', '--clear-groups', (Get-Process -Id $PID).Path)
+                        }
+                    }
+                }
+                if ((-not $unreadableDirectly) -and [string]::IsNullOrEmpty($launcherExe)) {
+                    Set-ItResult -Skipped -Because 'this host cannot make the fixture unreadable for the child process (root without setpriv)'
+                    return
+                }
+
+                $missingLog = Join-Path ([System.IO.Path]::GetTempPath()) ('ssm-check-invariant-missing-log-' + [System.IO.Path]::GetRandomFileName() + '.log')
+
+                $result = Invoke-CheckScriptViaLauncher -RegistrationPath $fixture -AgentLogPath $missingLog -LauncherExe $launcherExe -LauncherArguments $launcherArguments
+
+                $result.ExitCode | Should -Be 1
+                $result.Output | Should -Not -Match 'All checks passed'
+                $result.Output | Should -Match '(?m)^  - .*registration file exists but could not be read'
+                $result.Output | Should -Match '(?m)^  - .*agent log was not found'
+                $result.Output | Should -Not -Match '(?m)^  Managed node ID'
+                $result.Output | Should -Not -Match 'No warning/error lines in the last 500 lines of'
+                Assert-SummaryListsEveryProblem -Output $result.Output
+                Assert-AnnouncedSectionSet -Output $result.Output
+            } finally {
+                Remove-Item -LiteralPath $fixture -Force -ErrorAction SilentlyContinue
+            }
+        }
     }
 }
