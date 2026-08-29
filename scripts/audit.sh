@@ -16,7 +16,9 @@
 # What the default audit scans:
 #   * tracked files (git ls-files) — text files directly, UTF-16 files
 #     (BOM or NUL-interleaved bytes, e.g. Windows PowerShell `>` redirection
-#     output) decoded to UTF-8 and scanned in decoded form, and
+#     output) decoded to UTF-8 and scanned in decoded form — by every
+#     detector AND by the runtime-value literal scans below, so a UTF-16
+#     file is not a blind spot for the bucket/username/hostname checks, and
 #   * every commit, all refs: commit message body plus patch. The message
 #     body is scanned for EVERY commit independently of the patch: the patch
 #     stream is path-filtered (audit script and fixtures excluded), and a
@@ -289,42 +291,62 @@ has_nul_bytes() {
     return $?
 }
 
-# scan_binary_file PATH LABEL — PATH is non-empty and binary-looking (NUL
-# bytes, or `grep -I` calling it binary). UTF-16 files are decoded to UTF-8
-# and the decoded text scanned under LABEL; the encoding is chosen from the
-# first two bytes (BOM, or a NUL interleaved with ASCII says the byte order)
-# and the head-derived guess is tried BEFORE the BOM-less default, because
+# effective_scan_path FILE [LABEL] — decide ONCE per file which path holds
+# the content the detectors must grep, and set EFFECTIVE_PATH to it: FILE
+# itself when FILE is plain text, or a fresh temp file holding the UTF-8
+# decode when FILE is binary-looking and decodable UTF-16. LABEL, defaulting
+# to FILE, names FILE in findings. Binary-looking means NUL bytes or `grep
+# -I` calling it binary. The encoding is chosen from the first two bytes
+# (BOM, or a NUL interleaved with ASCII says the byte order) and the
+# head-derived guess is tried BEFORE the BOM-less default, because
 # `iconv -f UTF-16` on BOM-less input assumes an endianness and happily
-# decodes the wrong one into garbage. Anything not decodable — including a
-# missing iconv — fails closed with an explicit finding instead of a silent
-# pass (see header).
-scan_binary_file() {
-    _sb_path=$1
-    _sb_label=$2
-    _sb_head=$(od -An -N2 -t x1 -- "$_sb_path" 2>/dev/null | tr -d ' \n')
-    _sb_encs=
-    case "$_sb_head" in
-    fffe) _sb_encs='UTF-16 UTF-16LE' ;;
-    feff) _sb_encs='UTF-16 UTF-16BE' ;;
-    00*) _sb_encs='UTF-16BE UTF-16' ;;
-    ??00) _sb_encs='UTF-16LE UTF-16' ;;
+# decodes the wrong one into garbage. EFFECTIVE_PATH is empty when FILE is
+# empty (nothing to scan) or binary and not decodable — including when
+# iconv is unavailable — and the undecodable case fails closed with an
+# explicit finding instead of a silent pass (see header). A caller that
+# scans EFFECTIVE_PATH must afterwards drop_scan_temp EFFECTIVE_PATH FILE:
+# only a decoded temp is removed, never the tracked file itself.
+effective_scan_path() {
+    _es_path=$1
+    _es_label=${2-$_es_path}
+    EFFECTIVE_PATH=
+    [ -s "$_es_path" ] || return 0
+    if ! has_nul_bytes "$_es_path" && grep -Iq . "$_es_path" 2>/dev/null; then
+        EFFECTIVE_PATH=$_es_path
+        return 0
+    fi
+    _es_head=$(od -An -N2 -t x1 -- "$_es_path" 2>/dev/null | tr -d ' \n')
+    _es_encs=
+    case "$_es_head" in
+    fffe) _es_encs='UTF-16 UTF-16LE' ;;
+    feff) _es_encs='UTF-16 UTF-16BE' ;;
+    00*) _es_encs='UTF-16BE UTF-16' ;;
+    ??00) _es_encs='UTF-16LE UTF-16' ;;
     esac
-    if [ -n "$_sb_encs" ] && command -v iconv >/dev/null 2>&1; then
-        _sb_tmp=$(mktemp "${TMPDIR:-/tmp}/audit-utf16.XXXXXXXX") || _sb_tmp=
-        if [ -n "$_sb_tmp" ]; then
-            for _sb_enc in $_sb_encs; do
-                if iconv -f "$_sb_enc" -t UTF-8 -- "$_sb_path" \
-                    >"$_sb_tmp" 2>/dev/null; then
-                    scan_stream "$_sb_label" "$_sb_tmp"
-                    rm -f "$_sb_tmp"
+    if [ -n "$_es_encs" ] && command -v iconv >/dev/null 2>&1; then
+        _es_tmp=$(mktemp "${TMPDIR:-/tmp}/audit-utf16.XXXXXXXX") || _es_tmp=
+        if [ -n "$_es_tmp" ]; then
+            for _es_enc in $_es_encs; do
+                if iconv -f "$_es_enc" -t UTF-8 -- "$_es_path" \
+                    >"$_es_tmp" 2>/dev/null; then
+                    EFFECTIVE_PATH=$_es_tmp
                     return 0
                 fi
             done
-            rm -f "$_sb_tmp"
+            rm -f "$_es_tmp"
         fi
     fi
     printf 'FINDING %s: unscannable-binary-content (file skipped by detectors — decode, commit text, or verify manually)\n' \
-        "$_sb_label"
+        "$_es_label"
+    return 0
+}
+
+# drop_scan_temp SCAN_PATH FILE_PATH — remove SCAN_PATH when it is a decoded
+# temp, i.e. when it differs from FILE_PATH, the tracked file itself (never
+# touched). Called after the last scan of that content, so a decoded temp
+# never outlives its file's iteration.
+drop_scan_temp() {
+    [ "$1" = "$2" ] || rm -f -- "$1"
     return 0
 }
 
@@ -337,21 +359,21 @@ scan_binary_file() {
 # git-pathspec level; kept here so direct callers cannot bypass the
 # exclusion), and skips empty files. Binary-looking content (NUL bytes, a
 # UTF-16 BOM, or `grep -I` reporting binary) is handled fail-closed by
-# scan_binary_file: decoded and scanned when it is UTF-16, otherwise an
-# explicit unscannable-binary-content finding.
+# effective_scan_path: decoded and scanned when it is UTF-16, otherwise an
+# explicit unscannable-binary-content finding. PATH may itself be the path
+# effective_scan_path already produced for the file — its decoded temp —
+# which is plain text, so the decision re-runs as a no-op and no second
+# temp is created.
 scan_file() {
     _sf_path=$1
     _sf_label=${2-$_sf_path}
     case "$_sf_label" in
     scripts/audit.sh | tests/fixtures/audit | tests/fixtures/audit/*) return 0 ;;
     esac
-    [ -s "$_sf_path" ] || return 0
-    if has_nul_bytes "$_sf_path" ||
-        ! grep -Iq . "$_sf_path" 2>/dev/null; then
-        scan_binary_file "$_sf_path" "$_sf_label"
-        return 0
-    fi
-    scan_stream "$_sf_label" "$_sf_path"
+    effective_scan_path "$_sf_path" "$_sf_label"
+    [ -n "$EFFECTIVE_PATH" ] || return 0
+    scan_stream "$_sf_label" "$EFFECTIVE_PATH"
+    drop_scan_temp "$EFFECTIVE_PATH" "$_sf_path"
     return 0
 }
 
@@ -469,17 +491,28 @@ default_audit() {
     [ ${#_host} -ge 4 ] 2>/dev/null || _host=
     [ ${#_host_short} -ge 4 ] 2>/dev/null || _host_short=
 
-    # 1. Tracked text files. Opened via $ROOT/<path> so the audit works from
-    # any cwd; findings keep the repo-relative name as their label.
+    # 1. Tracked files. Opened via $ROOT/<path> so the audit works from any
+    # cwd; findings keep the repo-relative name as their label. The literal
+    # scans run over the SAME content the detectors scan: effective_scan_path
+    # decides once per file — plain text scans as itself, a UTF-16 file as
+    # its decoded form — so a decoded file is not a blind spot for the
+    # runtime values either; an undecodable file has already failed closed.
+    # _scan snapshots that one decision (scan_file re-runs it as a no-op on
+    # the already-effective path) and the decoded temp is dropped after the
+    # file's scans, never leaking across iterations.
     tracked_files |
         while IFS= read -r _f; do
             [ -n "$_f" ] || continue
             [ -f "$ROOT/$_f" ] || continue
-            scan_file "$ROOT/$_f" "$_f"
-            scan_literal state-bucket-name "$_f" "$ROOT/$_f" "$_bucket"
-            scan_literal username "$_f" "$ROOT/$_f" "$_user"
-            scan_literal hostname "$_f" "$ROOT/$_f" "$_host" ic
-            scan_literal hostname "$_f" "$ROOT/$_f" "$_host_short" ic
+            effective_scan_path "$ROOT/$_f" "$_f"
+            _scan=$EFFECTIVE_PATH
+            [ -n "$_scan" ] || continue
+            scan_file "$_scan" "$_f"
+            scan_literal state-bucket-name "$_f" "$_scan" "$_bucket"
+            scan_literal username "$_f" "$_scan" "$_user"
+            scan_literal hostname "$_f" "$_scan" "$_host" ic
+            scan_literal hostname "$_f" "$_scan" "$_host_short" ic
+            drop_scan_temp "$_scan" "$ROOT/$_f"
         done >"$_results"
 
     # 2. Full history (message bodies and patches).
