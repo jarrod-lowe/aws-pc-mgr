@@ -13,3 +13,6 @@ tests/audit-history-equivalence.txt
 # ed90ee9 (aws-sso-profile): commit message quoted the review finding's
 # synthetic example of a letter-only profile name.
 letter-only profile like AWS_PROFILE=production audited clean; the # audit-allow:synthetic
+# 4acfa8e (managed-node-id): commit message quoted the finding's synthetic
+# too-short node-ID example.
+digits, so mi-deadbeef still classified RegisteredHealthy and printed # audit-allow:synthetic
