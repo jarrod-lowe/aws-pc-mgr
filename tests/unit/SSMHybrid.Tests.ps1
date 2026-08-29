@@ -2,6 +2,48 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '../../scripts/windows/SSMHybrid.psm1') -Force
 }
 
+Describe 'ConvertFrom-SsmRegistrationJson' {
+    BeforeAll {
+        $script:goodJson = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}'
+    }
+
+    It 'maps the source key ManagedInstanceID to ManagedInstanceId' {
+        $result = ConvertFrom-SsmRegistrationJson -Json $script:goodJson
+        $result.ManagedInstanceId | Should -Be 'mi-0123456789abcdef0'
+    }
+
+    It 'passes the Region through unchanged' {
+        $result = ConvertFrom-SsmRegistrationJson -Json $script:goodJson
+        $result.Region | Should -Be 'ap-southeast-2'
+    }
+
+    It 'exposes exactly ManagedInstanceId and Region' {
+        $result = ConvertFrom-SsmRegistrationJson -Json $script:goodJson
+        $properties = @($result.PSObject.Properties | ForEach-Object { $_.Name })
+        $properties | Should -Be @('ManagedInstanceId', 'Region')
+    }
+
+    It 'throws on malformed JSON' {
+        { ConvertFrom-SsmRegistrationJson -Json 'not json {' } | Should -Throw
+    }
+
+    It 'throws on empty JSON' {
+        { ConvertFrom-SsmRegistrationJson -Json '' } | Should -Throw
+    }
+
+    It 'throws when ManagedInstanceID is missing' {
+        { ConvertFrom-SsmRegistrationJson -Json '{"Region":"ap-southeast-2"}' } | Should -Throw
+    }
+
+    It 'throws when ManagedInstanceID is empty' {
+        { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"","Region":"ap-southeast-2"}' } | Should -Throw
+    }
+
+    It 'throws when the JSON is not an object' {
+        { ConvertFrom-SsmRegistrationJson -Json '[1,2,3]' } | Should -Throw
+    }
+}
+
 Describe 'Get-SsmSetupCliUrl' {
     It 'builds the per-region URL' {
         Get-SsmSetupCliUrl -Region 'ap-southeast-2' | Should -Be 'https://amazon-ssm-ap-southeast-2.s3.ap-southeast-2.amazonaws.com/latest/windows_amd64/ssm-setup-cli.exe'

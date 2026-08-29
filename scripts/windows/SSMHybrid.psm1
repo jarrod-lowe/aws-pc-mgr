@@ -16,6 +16,80 @@ $ErrorActionPreference = 'Stop'
 
 <#
 .SYNOPSIS
+Parses local SSM hybrid registration JSON into a stable object.
+
+.DESCRIPTION
+The registration record an enrolled hybrid node keeps locally uses the key
+'ManagedInstanceID' (capital ID). This function parses that record and
+returns an object with the properties:
+
+  ManagedInstanceId - the mi-... managed-node identifier (string)
+  Region            - the AWS region recorded at registration (string; $null
+                      when the record carries no Region value)
+
+Throws when the JSON is malformed, is not an object, lacks a non-empty
+'ManagedInstanceID' key. Callers treat a throw as "registration present but
+unparseable/incomplete" and classify the node as Ambiguous rather than
+destroying registration state (SPEC 23).
+
+.PARAMETER Json
+Raw JSON text read from the local registration file.
+
+.OUTPUTS
+[PSCustomObject] with ManagedInstanceId and Region.
+
+.EXAMPLE
+ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"mi-0123","Region":"ap-southeast-2"}'
+#>
+function ConvertFrom-SsmRegistrationJson {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$Json
+    )
+
+    if ([string]::IsNullOrEmpty($Json)) {
+        throw 'ConvertFrom-SsmRegistrationJson: registration JSON is empty.'
+    }
+
+    $parsed = $null
+    try {
+        $parsed = ConvertFrom-Json -InputObject $Json -ErrorAction Stop
+    } catch {
+        throw "ConvertFrom-SsmRegistrationJson: registration data is not valid JSON: $($_.Exception.Message)"
+    }
+
+    $isPropertyBag = ($null -ne $parsed) -and ($parsed -is [System.Management.Automation.PSCustomObject])
+    if (-not $isPropertyBag) {
+        throw 'ConvertFrom-SsmRegistrationJson: registration data is not a JSON object.'
+    }
+
+    $idProperty = $parsed.PSObject.Properties |
+        Where-Object { $_.Name -eq 'ManagedInstanceID' } |
+        Select-Object -First 1
+    if ($null -eq $idProperty -or [string]::IsNullOrEmpty([string]$idProperty.Value)) {
+        throw "ConvertFrom-SsmRegistrationJson: registration data has no non-empty 'ManagedInstanceID' key."
+    }
+
+    $region = $null
+    $regionProperty = $parsed.PSObject.Properties |
+        Where-Object { $_.Name -eq 'Region' } |
+        Select-Object -First 1
+    if ($null -ne $regionProperty -and -not [string]::IsNullOrEmpty([string]$regionProperty.Value)) {
+        $region = [string]$regionProperty.Value
+    }
+
+    return [PSCustomObject]@{
+        ManagedInstanceId = [string]$idProperty.Value
+        Region            = $region
+    }
+}
+
+<#
+.SYNOPSIS
 Builds the regional download URL for the AWS ssm-setup-cli hybrid enrollment
 executable (Windows amd64).
 
@@ -112,5 +186,6 @@ function Test-SsmRegion {
 Export-ModuleMember -Function @(
     'Test-SsmRegion',
     'Test-SsmActivationId',
-    'Get-SsmSetupCliUrl'
+    'Get-SsmSetupCliUrl',
+    'ConvertFrom-SsmRegistrationJson'
 )
