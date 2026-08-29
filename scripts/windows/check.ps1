@@ -24,7 +24,9 @@
 
     Exit codes: 0 = healthy, 1 = problems found. Recent log warnings are
     reported for context but do not by themselves count as problems, because
-    a healthy agent can log transient warnings.
+    a healthy agent can log transient warnings; a log that exists but cannot
+    be read does count as a problem, because the log diagnostic was then
+    never performed.
 
 .PARAMETER AgentLogPath
     Agent log to excerpt warning/error lines from. Defaults to the
@@ -315,8 +317,21 @@ if (Test-Path -LiteralPath $AgentLogPath -PathType Leaf) {
             Write-Host ('  ' + $AgentLogPath)
         }
     } catch {
+        # Like the registration read failure above, this must be recorded as a
+        # problem, not just hinted at: otherwise a machine whose only fault is
+        # an unreadable log would exit 0 with 'All checks passed' even though
+        # this diagnostic was never performed. And, also like it, only the
+        # coarse failure category is reported, never the raw error text.
+        $logReadFailure = $_
+        $failureCategory = 'read error'
+        if (($logReadFailure.Exception -is [System.UnauthorizedAccessException]) -or
+            ($logReadFailure.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::PermissionDenied)) {
+            $failureCategory = 'access denied'
+        }
         Write-Host ('  The log exists but could not be read (try an elevated session):')
         Write-Host ('  ' + $AgentLogPath)
+        Write-Host ('  Failure category : ' + $failureCategory)
+        Add-Problem ('The agent log exists but could not be read (' + $failureCategory + '): ' + $AgentLogPath)
     }
 } else {
     Write-Host ('  Log file not found: ' + $AgentLogPath)

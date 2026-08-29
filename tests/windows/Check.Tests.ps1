@@ -248,27 +248,33 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
     }
 }
 
-Describe 'check.ps1 registration read-failure reporting (SPEC 24)' {
-    # A registration file can exist and still be UNREADABLE: check.ps1 is
-    # documented as runnable without elevation, and an unelevated session can
-    # be denied the registration file's ACL. That state must be reported as a
-    # read failure - path plus coarse category, never the file's content -
-    # and must count as a problem: folding it into the 'no registration file'
-    # report would misdiagnose an enrolled machine as unenrolled. This block
-    # is the inverse polarity of the machine-state blocks above: it runs
-    # wherever an unreadable file can be arranged without elevation (the
-    # Linux test container, via check.ps1's -RegistrationPath seam) and is
-    # Skip-guarded on Windows, where an unreadable fixture needs an ACL the
-    # test itself cannot set unelevated.
+Describe 'check.ps1 read-failure reporting (SPEC 24)' {
+    # A registration file - and likewise the agent log - can exist and still
+    # be UNREADABLE: check.ps1 is documented as runnable without elevation,
+    # and an unelevated session can be denied the file's ACL. That state must
+    # be reported as a read failure - path plus coarse category, never the
+    # file's content - and must count as a problem: folding a registration
+    # read failure into the 'no registration file' report would misdiagnose
+    # an enrolled machine as unenrolled, and leaving an agent-log read
+    # failure uncounted would let an otherwise healthy machine exit 0 with
+    # 'All checks passed' even though the log diagnostic was never performed.
+    # This block is the inverse polarity of the machine-state blocks above:
+    # it runs wherever an unreadable file can be arranged without elevation
+    # (the Linux test container, via check.ps1's -RegistrationPath and
+    # -AgentLogPath seams) and is Skip-guarded on Windows, where an
+    # unreadable fixture needs an ACL the test itself cannot set unelevated.
     BeforeAll {
         # Same child-process pattern as Invoke-CheckScript, with an optional
         # launcher executable prepended to the command line: a root test
         # process bypasses file modes (CAP_DAC_OVERRIDE), so making the
         # fixture genuinely unreadable for the child can require running the
-        # child as an unprivileged user through setpriv(1).
+        # child as an unprivileged user through setpriv(1). -AgentLogPath is
+        # appended only when given, so registration-only invocations are
+        # unchanged.
         function Invoke-CheckScriptViaLauncher {
             param(
-                [string]$RegistrationPath,
+                [string]$RegistrationPath = '',
+                [string]$AgentLogPath = '',
                 [string]$LauncherExe = '',
                 [string[]]$LauncherArguments = @()
             )
@@ -278,6 +284,9 @@ Describe 'check.ps1 registration read-failure reporting (SPEC 24)' {
                 '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $checkPath + '"'),
                 '-RegistrationPath', ('"' + $RegistrationPath + '"')
             )
+            if (-not [string]::IsNullOrEmpty($AgentLogPath)) {
+                $childArguments += @('-AgentLogPath', ('"' + $AgentLogPath + '"'))
+            }
 
             $startInfo = New-Object -TypeName System.Diagnostics.ProcessStartInfo
             if ([string]::IsNullOrEmpty($LauncherExe)) {
@@ -390,6 +399,79 @@ Describe 'check.ps1 registration read-failure reporting (SPEC 24)' {
             $result.Output | Should -Not -Match 'No local SSM registration file was found'
             $result.Output | Should -Not -Match 'No local SSM registration:'
             $result.ExitCode | Should -Be 1
+            $result.Output | Should -Not -Match ([Regex]::Escape($sentinel))
+        } finally {
+            Remove-Item -LiteralPath $fixture -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'reports an agent log that exists but cannot be read as a problem, so the check cannot pass' -Skip:($script:IsWindowsOs) {
+        $fixture = Join-Path ([System.IO.Path]::GetTempPath()) ('ssm-check-unreadable-log-' + [System.IO.Path]::GetRandomFileName() + '.log')
+        # Distinctive non-credential body: none of it may reach the output.
+        $sentinel = 'ssm-check-log-fixture-body-sentinel'
+        try {
+            Set-Content -LiteralPath $fixture -Value $sentinel
+            & chmod 000 $fixture
+
+            # Same unreadability arrangement as the registration fixture
+            # above: the fixture must be genuinely unreadable by whichever
+            # principal runs the child, or the test would exercise the wrong
+            # state. An unprivileged test process is already denied by the
+            # file mode; a root one bypasses it, so the child runs as nobody
+            # via setpriv(1) - and if even that cannot arrange a denial here,
+            # the test skips rather than assert against a readable fixture.
+            $launcherExe = ''
+            $launcherArguments = @()
+            $unreadableDirectly = $false
+            try {
+                $null = Get-Content -LiteralPath $fixture -Raw -ErrorAction Stop
+            } catch {
+                $unreadableDirectly = $true
+            }
+            if (-not $unreadableDirectly) {
+                $setpriv = Get-Command -Name setpriv -ErrorAction SilentlyContinue
+                $cat = Get-Command -Name cat -ErrorAction SilentlyContinue
+                if (($null -ne $setpriv) -and ($null -ne $cat)) {
+                    $probeInfo = New-Object -TypeName System.Diagnostics.ProcessStartInfo
+                    $probeInfo.FileName = $setpriv.Source
+                    $probeInfo.Arguments = ('--reuid=nobody --regid=nogroup --clear-groups ' + $cat.Source + ' ' + $fixture)
+                    $probeInfo.UseShellExecute = $false
+                    $probeInfo.RedirectStandardOutput = $true
+                    $probeInfo.RedirectStandardError = $true
+                    $probeInfo.CreateNoWindow = $true
+                    $probe = [System.Diagnostics.Process]::Start($probeInfo)
+                    $null = $probe.StandardOutput.ReadToEnd()
+                    $null = $probe.StandardError.ReadToEnd()
+                    $probe.WaitForExit()
+                    if ($probe.ExitCode -ne 0) {
+                        $launcherExe = $setpriv.Source
+                        $launcherArguments = @('--reuid=nobody', '--regid=nogroup', '--clear-groups', (Get-Process -Id $PID).Path)
+                    }
+                }
+            }
+            if ((-not $unreadableDirectly) -and [string]::IsNullOrEmpty($launcherExe)) {
+                Set-ItResult -Skipped -Because 'this host cannot make the fixture unreadable for the child process (root without setpriv)'
+                return
+            }
+
+            $result = Invoke-CheckScriptViaLauncher -AgentLogPath $fixture -LauncherExe $launcherExe -LauncherArguments $launcherArguments
+
+            # The read failure is reported distinctly, with the path and a
+            # coarse failure category - never as the plain 'log file not
+            # found' absence report for a missing log...
+            $result.Output | Should -Match 'log exists but could not be read'
+            $result.Output | Should -Match ([Regex]::Escape($fixture))
+            $result.Output | Should -Match 'Failure category'
+            $result.Output | Should -Not -Match 'Log file not found'
+            # ...it counts as a problem found, listed in the summary (the
+            # '^  - ' anchor matches a summary bullet, not the inline hint),
+            # so a healthy-looking 'All checks passed' with exit 0 is
+            # impossible when the log diagnostic was never performed...
+            $result.Output | Should -Match '(?m)^  - .*log exists but could not be read'
+            $result.Output | Should -Not -Match 'All checks passed'
+            $result.ExitCode | Should -Be 1
+            # ...and nothing from inside the file - nor error text quoting it -
+            # ever reaches the output.
             $result.Output | Should -Not -Match ([Regex]::Escape($sentinel))
         } finally {
             Remove-Item -LiteralPath $fixture -Force -ErrorAction SilentlyContinue
