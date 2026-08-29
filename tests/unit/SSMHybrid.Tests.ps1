@@ -2,6 +2,43 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '../../scripts/windows/SSMHybrid.psm1') -Force
 }
 
+Describe 'Test-SsmSignature' {
+    It 'accepts a Valid status signed by Amazon.com Services LLC' {
+        $result = Test-SsmSignature -Status 'Valid' -SignerSubject 'CN=Amazon.com Services LLC, O=Amazon.com Services LLC, L=Seattle, S=Washington, C=US'
+        $result.Valid | Should -BeTrue
+    }
+
+    It 'rejects a non-Valid status with a reason' {
+        $result = Test-SsmSignature -Status 'NotSigned' -SignerSubject 'CN=Amazon.com Services LLC, O=Amazon.com Services LLC, L=Seattle, S=Washington, C=US'
+        $result.Valid | Should -BeFalse
+        $result.Reason | Should -Match 'status'
+    }
+
+    It 'rejects a Valid status with the wrong signer and names the signer' {
+        $result = Test-SsmSignature -Status 'Valid' -SignerSubject 'CN=Evil Corp, O=Evil Corp, C=US'
+        $result.Valid | Should -BeFalse
+        $result.Reason | Should -Match 'Amazon'
+        $result.Reason | Should -Match 'Evil Corp'
+    }
+
+    It 'rejects a Valid status with an empty signer subject' {
+        $result = Test-SsmSignature -Status 'Valid' -SignerSubject ''
+        $result.Valid | Should -BeFalse
+        $result.Reason | Should -Match 'Amazon'
+    }
+
+    It 'accepts the Amazon signer with extra surrounding subject text' {
+        $result = Test-SsmSignature -Status 'Valid' -SignerSubject 'Microsoft Code Signing PCA 2011 - signer Amazon.com Services LLC intermediate'
+        $result.Valid | Should -BeTrue
+    }
+
+    It 'exposes exactly Valid and Reason' {
+        $result = Test-SsmSignature -Status 'Valid' -SignerSubject 'CN=Amazon.com Services LLC'
+        $properties = @($result.PSObject.Properties | ForEach-Object { $_.Name })
+        $properties | Should -Be @('Valid', 'Reason')
+    }
+}
+
 Describe 'Get-SsmSetupAction' {
     It 'maps <State> without -ForceReregister to <Expected>' -TestCases @(
         @{ State = 'Absent';                Expected = 'Register' }

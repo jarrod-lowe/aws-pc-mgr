@@ -16,6 +16,69 @@ $ErrorActionPreference = 'Stop'
 
 <#
 .SYNOPSIS
+Decides whether an Authenticode signature result is an acceptable AWS
+ssm-setup-cli signature.
+
+.DESCRIPTION
+Valid is true only when both hold:
+
+  - Status is 'Valid' (the value Get-AuthenticodeSignature reports for a
+    trusted, intact signature; comparison is case-insensitive);
+  - SignerSubject contains 'Amazon.com Services LLC' anywhere (the signer
+    AWS ships ssm-setup-cli under; -like wildcards, case-insensitive).
+
+Reason always explains the first failed check (or states why the signature
+was accepted) so callers can log it. Neither parameter is secret.
+
+.PARAMETER Status
+Get-AuthenticodeSignature Status value, for example 'Valid', 'NotSigned',
+'HashMismatch', 'UnknownError'.
+
+.PARAMETER SignerSubject
+Signer certificate subject of the signature's signercertificate.
+
+.OUTPUTS
+[PSCustomObject] with Valid ([bool]) and Reason ([string]).
+#>
+function Test-SsmSignature {
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$Status,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$SignerSubject
+    )
+
+    $expectedSigner = 'Amazon.com Services LLC'
+
+    if ($Status -ne 'Valid') {
+        return [PSCustomObject]@{
+            Valid  = $false
+            Reason = "Authenticode status is '$Status'; expected 'Valid'."
+        }
+    }
+
+    if ($SignerSubject -notlike ('*' + $expectedSigner + '*')) {
+        return [PSCustomObject]@{
+            Valid  = $false
+            Reason = "Signer subject '$SignerSubject' does not match the expected signer '$expectedSigner'."
+        }
+    }
+
+    return [PSCustomObject]@{
+        Valid  = $true
+        Reason = "Signature status is Valid and signer subject matches '$expectedSigner'."
+    }
+}
+
+<#
+.SYNOPSIS
 Decides what the enrollment runner should do for a given node state.
 
 .DESCRIPTION
@@ -346,5 +409,6 @@ Export-ModuleMember -Function @(
     'Get-SsmSetupCliUrl',
     'ConvertFrom-SsmRegistrationJson',
     'Get-SsmNodeState',
-    'Get-SsmSetupAction'
+    'Get-SsmSetupAction',
+    'Test-SsmSignature'
 )
