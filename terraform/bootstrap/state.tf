@@ -34,3 +34,11 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
     }
   }
 }
+
+resource "aws_s3_bucket_ownership_controls" "state" {
+  bucket = aws_s3_bucket.state.id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}

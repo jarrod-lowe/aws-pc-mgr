@@ -89,3 +89,16 @@ run "encrypted_with_sse_s3" {
     error_message = "state must be encrypted with S3-managed keys (AES256)"
   }
 }
+
+run "ownership_bucket_owner_enforced" {
+  command = apply
+
+  variables {
+    bucket_name = "win11-ssm-tfstate-replaceme"
+  }
+
+  assert {
+    condition     = aws_s3_bucket_ownership_controls.state.rule[0].object_ownership == "BucketOwnerEnforced"
+    error_message = "object ownership must be BucketOwnerEnforced to disable ACLs"
+  }
+}
