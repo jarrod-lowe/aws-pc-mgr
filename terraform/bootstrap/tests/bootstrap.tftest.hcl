@@ -71,3 +71,21 @@ run "public_access_blocked" {
     error_message = "restrict_public_buckets must be true"
   }
 }
+
+run "encrypted_with_sse_s3" {
+  command = apply
+
+  variables {
+    bucket_name = "win11-ssm-tfstate-replaceme"
+  }
+
+  # "rule" is a set in the AWS provider schema, so index via a for expression
+  # instead of [0].
+  assert {
+    condition = length(aws_s3_bucket_server_side_encryption_configuration.state.rule) == 1 && alltrue([
+      for rule in aws_s3_bucket_server_side_encryption_configuration.state.rule :
+      rule.apply_server_side_encryption_by_default[0].sse_algorithm == "AES256"
+    ])
+    error_message = "state must be encrypted with S3-managed keys (AES256)"
+  }
+}
