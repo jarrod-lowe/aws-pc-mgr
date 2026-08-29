@@ -198,6 +198,9 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
                 '2026-08-29 00:00:08 WARN enrollment failed Activation Code = EXAMPLE rejected'
                 '2026-08-29 00:00:09 WARN enrollment failed Session Token: EXAMPLE rejected'
                 '2026-08-29 00:00:10 WARN enrollment failed ActivationId = 00000000-0000-0000-0000-000000000000 rejected' # audit-allow:synthetic
+                '2026-08-29 00:00:11 WARN enrollment failed "ActivationCode": "EXAMPLE" rejected'
+                '2026-08-29 00:00:12 WARN enrollment failed ACTIVATION CODE: EXAMPLE rejected'
+                '2026-08-29 00:00:13 WARN enrollment failed Secret Access Key = EXAMPLE rejected'
             ) | Set-Content -LiteralPath $tempLog
 
             $result = Invoke-CheckScript -ExtraArguments @('-AgentLogPath', ('"' + $tempLog + '"'))
@@ -207,28 +210,38 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
             $result.Output | Should -Match ([Regex]::Escape('agent heartbeat still fine'))
             # Credential-bearing lines are withheld behind the placeholder...
             $result.Output | Should -Match ([Regex]::Escape('[line withheld: possible credential material]'))
-            # ...and their material never reaches the output. ActivationCode
-            # covers the camelCase spelling the agent log actually uses;
-            # activation[-_]?id covers ActivationId / 'Activation ID' /
-            # activation_id - the ID is not a secret, but a log echoing it
-            # identifies the enrollment, so it is withheld too;
-            # security[-_]?token covers the X-Amz-Security-Token header
-            # spelling, and the bare token\s*= covers Token=. The last three
-            # lines use whitespace-separated labels ('Activation Code =',
-            # 'Session Token:', 'ActivationId =') - the label alternations
-            # tolerate separators INSIDE the label, so those spellings are
-            # withheld too.
+            # ...and their material never reaches the output. The fixture log
+            # walks the systematic label-variant set the credential pattern
+            # is built to cover: camelCase (ActivationCode, AccessKeyId,
+            # SecretAccessKey, PrivateKey - the spellings the agent log
+            # actually uses), JSON-style camelCase with a quoted key
+            # ('"ActivationCode":'), UPPERCASE ('ACTIVATION CODE:'), spaced
+            # title-case ('Activation Code =', 'Session Token:',
+            # 'Secret Access Key ='), and underscore/dashed env-style where
+            # they appear. check.ps1 builds every label alternation from word
+            # arrays joined with [\s_-]* under (?i), so all case and
+            # separator variants are covered by construction; activation
+            # id-variants cover ActivationId / 'Activation ID' /
+            # activation_id (the ID is not a secret, but a log echoing it
+            # identifies the enrollment, so it is withheld too);
+            # security-token covers the X-Amz-Security-Token header spelling,
+            # and the bare token\s*= covers Token=. The EXAMPLE values stay
+            # under the repo audit's value-length anchors, so this test file
+            # itself stays audit-clean.
             $result.Output | Should -Not -Match ([Regex]::Escape('AccessKeyId=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('SecretAccessKey=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('PrivateKey=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('ActivationCode=EXAMPLE'))
+            $result.Output | Should -Not -Match ([Regex]::Escape('"ActivationCode": "EXAMPLE"'))
+            $result.Output | Should -Not -Match ([Regex]::Escape('ACTIVATION CODE: EXAMPLE'))
+            $result.Output | Should -Not -Match ([Regex]::Escape('Secret Access Key = EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('X-Amz-Security-Token=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('Token=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('Activation Code = EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('Session Token: EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('ActivationId = 00000000-0000-0000-0000-000000000000')) # audit-allow:synthetic
             # The withheld count is reported in the summary.
-            $result.Output | Should -Match '9 recent log warning/error line\(s\) withheld'
+            $result.Output | Should -Match '12 recent log warning/error line\(s\) withheld'
         } finally {
             Remove-Item -LiteralPath $tempLog -Force -ErrorAction SilentlyContinue
         }

@@ -601,14 +601,20 @@ The default audit scans all tracked files — text directly, UTF-16 files
 scanned in decoded form — and the **full history of every commit** (message
 bodies, scanned for every commit independently of the path-filtered patches,
 plus the patches) for: AWS access-key IDs (`AKIA...`,
-`ASIA...`), secret-key assignments in any spelling (HCL
+`ASIA...`), secret-key and activation-code label assignments — the label
+detectors match a **lowercased copy of each line** with
+separator-wildcarded label words, so every case variant (lowercase HCL
 `aws_secret_access_key`, env `AWS_SECRET_ACCESS_KEY`, camelCase
-`SecretAccessKey`, JSON `"SecretAccessKey": "..."` — `=` or `: ` separated,
+`SecretAccessKey`, JSON `"SecretAccessKey": "..."`, spaced
+`Secret Access Key = ...`) and every separator spelling inside the label
+is the same pattern — with the assignment `=` or `:` separated and
 value-length-anchored, so short synthetic literals like
-`SecretAccessKey=EXAMPLE` in the Windows-tier tests cannot trip it),
+`SecretAccessKey=EXAMPLE` in the Windows-tier tests cannot trip it —
 managed-node IDs (`mi-...`), UUID
 literals, SSO start URLs, email addresses, and 12-digit account IDs (in ARNs
-or account-keyed contexts). It also treats runtime values as findings if they
+or account-keyed contexts); these value-shape detectors match the original
+line unchanged, because their grammar is case-bearing. It also treats
+runtime values as findings if they
 appear in tracked files or history: the bucket name from your local untracked
 `terraform/bootstrap/terraform.tfvars`, plus your local `whoami` and `hostname`
 values. `--selftest` runs the same engine over the synthetic fixtures in
@@ -622,9 +628,15 @@ patterns.
 comment — normally trailing on the very line holding the value — is skipped by
 every *suppressible* detector, in both file mode and history mode (history
 checks the raw patch line). It exists only for **synthetic** test/doc values
-(example UUIDs in module help, invented `mi-` literals in unit tests). Two
+(example UUIDs in module help, invented `mi-` literals in unit tests) and
+for **label-shape collisions in code**, where the deliberately broad label
+detectors match an ordinary assignment whose "value" is code rather than a
+credential — setup.ps1 carries
+`$activationCode = Read-ActivationCode # audit-allow:synthetic` verbatim
+for exactly that reason. Two
 hard rules, enforced in code: the marker can **never** silence AWS key
-material (`AKIA`/`ASIA` key IDs, secret-key assignments in any spelling) or the
+material (`AKIA`/`ASIA` key IDs, secret-key assignments in any spelling or
+case) or the
 runtime per-machine value checks (bucket name, username, hostname) — those are
 real by definition. And history equivalence: a finding in an already-committed
 line is also skipped when the byte-identical line exists in the current tree

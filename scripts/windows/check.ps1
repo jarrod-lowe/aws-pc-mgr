@@ -51,24 +51,53 @@ $problems = New-Object -TypeName System.Collections.Generic.List[string]
 # Such lines are never printed: the agent log can echo these back, and this
 # diagnostic must not reproduce them (SPEC 24/43). The whole pattern is
 # case-insensitive, so the AKIA/ASIA key shapes also match lower-case
-# spellings. Label spellings tolerate any mix of whitespace and -/_ separators
-# INSIDE the label, so 'ActivationCode=', 'Activation Code =', 'activation_code'
-# and 'ACTIVATION-CODE' all match: a label like 'Session Token: ...' with a
-# space separator is exactly the shape a log line realistically takes.
-# activation[\s_-]*code matches ActivationCode, Activation Code, activation-code
-# and activation_code; activation[\s_-]*id matches ActivationId, 'Activation
-# ID' and activation_id - an activation ID is not itself a secret, but a log
-# echoing it identifies the enrollment (and its pairing code line), so it is
-# withheld too; access[\s_-]*key[\s_-]*id matches AccessKeyId,
-# 'Access Key ID' and access_key_id; secret[\s_-]*access[\s_-]*key matches
-# SecretAccessKey, aws_secret_access_key and "Secret Access Key";
-# session[\s_-]*token matches SessionToken and 'Session Token';
-# security[\s_-]*token matches SecurityToken, security_token and the
-# signed-request header spelling X-Amz-Security-Token=; private[\s_-]*key
-# matches PrivateKey, IdentityPrivateKey, PRIVATE-KEY and private_key as
-# substrings; and the bare token\s*= matches Token= (and unavoidably
-# PaginationToken=-style keys) - withholding too much is safe, leaking is not.
-$credentialLinePattern = '(?i)activation[\s_-]*code|activation[\s_-]*id|access[\s_-]*key[\s_-]*id|secret[\s_-]*access[\s_-]*key|session[\s_-]*token|security[\s_-]*token|token\s*=|private[\s_-]*key|aws_secret_access_key|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}'
+# spellings.
+#
+# Single-source construction: every credential LABEL alternation is built by
+# Get-SsmCredentialLabelPattern from a word array joined with '[\s_-]*', so
+# matching every spelling of a label - any case variant and any mix of
+# whitespace, '-' and '_' separators INSIDE the label ('ActivationCode=',
+# 'Activation Code =', 'activation_code', 'ACTIVATION-CODE') - is a property
+# of the construction, not of a hand-written and hand-maintained alternation.
+# Word lists:
+#   activation/code    ActivationCode (the agent log spelling), spaced,
+#                      dashed, underscored, any case
+#   activation/id      ActivationId, 'Activation ID', activation_id - an
+#                      activation ID is not itself a secret, but a log echoing
+#                      it identifies the enrollment (and its pairing code
+#                      line), so it is withheld too
+#   access/key/id      AccessKeyId, 'Access Key ID', access_key_id
+#   secret/access/key  SecretAccessKey, "Secret Access Key"
+#   session/token      SessionToken, 'Session Token'
+#   security/token     SecurityToken, security_token and the signed-request
+#                      header spelling X-Amz-Security-Token=
+#   private/key        PrivateKey, IdentityPrivateKey, PRIVATE-KEY,
+#                      private_key (as substrings)
+#   aws/secret/access/key  aws_secret_access_key (subsumed by
+#                      secret/access/key above, kept as its own atom to match
+#                      the audit-side label exactly)
+# The non-label atoms appended to the alternation - the bare token\s*= (Token=
+# and unavoidably PaginationToken=-style keys) and the AKIA/ASIA key-ID shapes
+# - are not word lists and stay literal. Withholding too much is safe,
+# leaking is not.
+function Get-SsmCredentialLabelPattern {
+    param([string[]]$Words)
+    return ($Words -join '[\s_-]*')
+}
+
+$credentialLinePattern = '(?i)' + (@(
+        (Get-SsmCredentialLabelPattern @('activation', 'code'))
+        (Get-SsmCredentialLabelPattern @('activation', 'id'))
+        (Get-SsmCredentialLabelPattern @('access', 'key', 'id'))
+        (Get-SsmCredentialLabelPattern @('secret', 'access', 'key'))
+        (Get-SsmCredentialLabelPattern @('session', 'token'))
+        (Get-SsmCredentialLabelPattern @('security', 'token'))
+        (Get-SsmCredentialLabelPattern @('private', 'key'))
+        (Get-SsmCredentialLabelPattern @('aws', 'secret', 'access', 'key'))
+        'token\s*='
+        'AKIA[0-9A-Z]{16}'
+        'ASIA[0-9A-Z]{16}'
+    ) -join '|')
 $withheldLineCount = 0
 
 function Write-Section {

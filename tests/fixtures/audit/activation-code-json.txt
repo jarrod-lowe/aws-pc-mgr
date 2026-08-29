@@ -1,0 +1,6 @@
+# Synthetic audit fixture: SSM hybrid activation code in the camelCase JSON
+# form (quoted key, colon separator, quoted value), the shape an enrollment
+# payload, credential-file dump or structured log echo takes. The label
+# detector matches a lowercased copy of the line, so the camelCase spelling
+# is detected like any other case variant. Synthetic value.
+  "ActivationCode": "SYNTHETICACTIVATIONCODE0123456789AB"

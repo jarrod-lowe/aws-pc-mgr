@@ -66,19 +66,32 @@
 #   by every suppressible detector, in BOTH file mode and history mode.
 #   History mode checks the raw patch line, so a `+value # audit-allow:
 #   synthetic` line produced by `git log -p`/`git show` is skipped the same
-#   way. The marker exists ONLY for SYNTHETIC test/doc values: invented
-#   fixture literals such as `mi-0123456789abcdef0` registration JSON or
-#   example UUIDs in comment help. SPEC §27 is otherwise unchanged:
+#   way. The marker exists ONLY for two kinds of known-safe line:
+#   * SYNTHETIC test/doc values: invented fixture literals such as
+#     `mi-0123456789abcdef0` registration JSON or example UUIDs in comment
+#     help.
+#   * LABEL-SHAPE COLLISIONS in code: the label detectors are deliberately
+#     broad (over-detection is the safe direction — a PowerShell line
+#     `$activationCode = '<real code>'` is exactly what a leak looks like),
+#     so an ordinary assignment whose matched "value" is itself code — a
+#     function invocation or identifier, not a credential literal, e.g.
+#     `$activationCode = Read-ActivationCode` in scripts/windows/setup.ps1
+#     — matches too. Such a line carries the marker rather than narrowing
+#     the detector and re-opening a miss.
+#   SPEC §27 is otherwise unchanged:
 #   runtime-discovered values (real activation IDs/codes, keys, account,
 #   bucket, machine or person identifiers) must never be committed, and the
 #   marker does not make committing one acceptable.
 #
 #   HARD RULE (no exception, by construction): the marker NEVER suppresses
 #   real AWS key material. A line matching an AKIA…/ASIA… access or session
-#   key ID, or a secret-key assignment in any spelling (HCL
-#   `aws_secret_access_key = …`, env `AWS_SECRET_ACCESS_KEY=…`, camelCase
-#   `SecretAccessKey=…`, JSON `"SecretAccessKey": "…"`), is ALWAYS a finding,
-#   even when the marker is present on that line. These detector classes
+#   key ID, or a secret-key assignment in any spelling — in ANY CASE VARIANT
+#   (lowercase HCL `aws_secret_access_key = …`, uppercase env
+#   `AWS_SECRET_ACCESS_KEY=…`, camelCase `SecretAccessKey=…`, JSON
+#   `"SecretAccessKey": "…"`, spaced `Secret Access Key = …`) and any
+#   separator spelling, because the label detectors match a lowercased copy
+#   of each line — is ALWAYS a finding, even when the marker is present on
+#   that line. These detector classes
 #   (aws-access-key-id, aws-session-key-id, aws-secret-access-key) cannot
 #   be silenced by any marker. The runtime per-machine value checks
 #   (state-bucket-name, username, hostname) are likewise never
@@ -132,32 +145,47 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 # Detection engine (used by both the default audit and --selftest)
 # ---------------------------------------------------------------------------
 
-# Detectors: one per line, `name:ERE`, split on the first colon (names never
-# contain a colon). A line is a finding when it matches the ERE.
-# QUOTE_CLASS is an optional quote character around a value: after the
+# Detectors come in TWO classes, split so that case and separator handling
+# is a property of the engine rather than of hand-enumerated spellings (a
+# detector that lists `SecretAccessKey` will always be missing the next
+# variant someone types; matching a lowercased line cannot be):
+#
+#   * LABEL detectors (LABEL_DETECTORS) anchor on a multi-word credential
+#     LABEL. They are matched against a LOWERCASED copy of each line
+#     (scan_stream below), so their EREs are written lowercase-only and
+#     match every case variant of the label — lowercase, UPPER, camelCase,
+#     MiXeD — without enumerating any of them. Between the words of a
+#     label, `[[:space:]_-]*` accepts every separator spelling: none
+#     (camelCase), `-`, `_`, a space, or any run mixing them, so
+#     `activation_code`, `ACTIVATION-CODE`, `Activation Code` and
+#     `activationcode` are all the same pattern.
+#   * SHAPE detectors (SHAPE_DETECTORS) anchor on the VALUE's shape, whose
+#     grammar is case-bearing — AKIA…/ASIA… key IDs are uppercase, UUIDs
+#     and managed-node IDs are lowercase hex, SSO start URLs and email
+#     addresses carry their own case — so they are matched against the
+#     ORIGINAL line unchanged; lowercasing the line would destroy exactly
+#     the thing they anchor on.
+#
+# Both lists: one detector per line, `name:ERE`, split on the first colon
+# (names never contain a colon). A line is a finding when it matches the
+# ERE. QUOTE_CLASS is an optional quote character around a value: after the
 # separator it opens the value (secret keys are quoted in HCL and JSON),
 # and before the separator it closes a quoted JSON key.
-# The secret-key detector accepts the spellings a leak realistically
-# takes — lowercase HCL `aws_secret_access_key = …`, uppercase env
-# `AWS_SECRET_ACCESS_KEY=…`, camelCase `SecretAccessKey=…` (the SSM agent
-# log spelling), and the JSON-style colon form `"SecretAccessKey": "…"`
-# (quoted key, colon separator) — splitting keyword from value on `=` or
-# `:` with optional surrounding whitespace, and anchoring on the value
-# length (35-45 base64-ish chars), so short synthetic literals such as
-# `SecretAccessKey=EXAMPLE` in the Windows-tier tests can never
-# false-positive. The activation-code detector takes the same
-# labeled-assignment shape for the enrollment secret an SSM activation
-# carries: lowercase keyword (HCL `activation_code`, CLI-flag
-# `activation-code`), separator = or : with optional quotes on either side,
-# and a value anchored at 8-plus base64-ish characters, so the repository's
-# legitimate mentions — the `terraform output -raw activation_code` command
-# line, an output block's `"activation_code"` key, prose like "the
-# activation code" (space inside the label, no assignment) — never match.
+#
+# The label detectors keep the assignment+value anchors that make prose
+# safe: the label must be split from its value by `=` or `:` (with optional
+# quotes and whitespace on either side) and the value is length-anchored —
+# 35-45 base64-ish chars for a secret key, 8-plus for an activation code —
+# so a sentence, comment, or output-block key merely CONTAINING the label
+# words never matches, while short synthetic literals such as
+# `SecretAccessKey=EXAMPLE` in the Windows-tier tests cannot
+# false-positive. The aws- prefix on the secret-key label stays optional,
+# so a bare `SecretAccessKey:` (the SSM agent log spelling) matches too.
 QUOTE_CLASS="[\"']?"
-DETECTORS="aws-access-key-id:AKIA[0-9A-Z]{16}
+LABEL_DETECTORS="aws-secret-access-key:(aws[[:space:]_-]*)?secret[[:space:]_-]*access[[:space:]_-]*key[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
+aws-activation-code:activation[[:space:]_-]*code[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}"
+SHAPE_DETECTORS="aws-access-key-id:AKIA[0-9A-Z]{16}
 aws-session-key-id:ASIA[0-9A-Z]{16}
-aws-secret-access-key:(aws_secret_access_key|AWS_SECRET_ACCESS_KEY|SecretAccessKey)[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
-aws-activation-code:activation[-_]?code[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
 managed-node-id:mi-[a-f0-9]{8,}
 uuid-literal:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}
 sso-start-url:https://[A-Za-z0-9-][A-Za-z0-9.-]*[.]awsapps[.]com/start
@@ -234,16 +262,37 @@ emit_hits() {
     return 0
 }
 
-# scan_matches NAME LABEL ERE FILE [ERE2] — lines of FILE matching ERE (and
-# ERE2 too, when given) are findings. The email detector runs on input with
-# the allowlisted address removed.
+# scan_matches NAME LABEL ERE FILE [ERE2 [MODE]] — lines of FILE matching
+# ERE (and ERE2 too, when given) are findings. MODE 'lower' (the label
+# class) matches a LOWERCASED copy of FILE's lines — grep numbers the copy's
+# lines exactly as FILE's — and then restores each hit's line text from
+# FILE, so a finding carries (and the suppression machinery in emit_hits
+# judges: marker, history equivalence) the ORIGINAL line, never the
+# lowercased matching copy; any other MODE (or none) matches FILE unchanged.
+# The email detector runs on input with the allowlisted address removed.
 scan_matches() {
     _sm_name=$1
     _sm_label=$2
     _sm_ere=$3
     _sm_file=$4
     _sm_ere2=${5-}
-    if [ -n "$_sm_ere2" ]; then
+    _sm_mode=${6-}
+    if [ "$_sm_mode" = 'lower' ]; then
+        _sm_hits=$(
+            tr '[:upper:]' '[:lower:]' <"$_sm_file" 2>/dev/null |
+                grep -nE -- "$_sm_ere" 2>/dev/null |
+                awk -v f="$_sm_file" '
+                    BEGIN {
+                        while ((getline _sm_line < f) > 0) _sm_orig[++_sm_n] = _sm_line
+                    }
+                    {
+                        _sm_no = $0
+                        sub(/:.*/, "", _sm_no)
+                        print _sm_no ":" _sm_orig[_sm_no]
+                    }
+                '
+        )
+    elif [ -n "$_sm_ere2" ]; then
         _sm_hits=$(grep -nE -- "$_sm_ere" "$_sm_file" 2>/dev/null |
             grep -E -- "$_sm_ere2")
     elif [ "$_sm_name" = 'email-address' ]; then
@@ -274,15 +323,25 @@ scan_literal() {
 }
 
 # scan_stream LABEL FILE — run every detector (including the compound
-# account-id one) over FILE.
+# account-id one) over FILE: the label detectors against a lowercased copy
+# of FILE's lines (case-insensitive by construction, with the original line
+# text restored onto every finding — see scan_matches), the shape detectors
+# and the compound account-id detector against FILE unchanged.
 scan_stream() {
     _ss_label=$1
     _ss_file=$2
     while IFS= read -r _ss_det; do
         [ -n "$_ss_det" ] || continue
+        scan_matches "${_ss_det%%:*}" "$_ss_label" "${_ss_det#*:}" \
+            "$_ss_file" '' lower
+    done <<EOF
+$LABEL_DETECTORS
+EOF
+    while IFS= read -r _ss_det; do
+        [ -n "$_ss_det" ] || continue
         scan_matches "${_ss_det%%:*}" "$_ss_label" "${_ss_det#*:}" "$_ss_file"
     done <<EOF
-$DETECTORS
+$SHAPE_DETECTORS
 EOF
     scan_matches account-id-context "$_ss_label" \
         "$ACCOUNT_ID_ERE" "$_ss_file" "$ACCOUNT_CONTEXT_ERE"
@@ -571,8 +630,10 @@ selftest() {
 '
     _status=0
 
-    # Every detector must fire somewhere in the fixture corpus.
-    for _name in $(printf '%s\n' "$DETECTORS" | sed 's/:.*//') account-id-context; do
+    # Every detector — both classes — must fire somewhere in the fixture
+    # corpus.
+    for _name in $(printf '%s\n%s\n' "$LABEL_DETECTORS" "$SHAPE_DETECTORS" |
+        sed 's/:.*//') account-id-context; do
         case "$_nl$_detected$_nl" in
         *"$_nl$_name$_nl"*)
             printf 'selftest: PASS  %-22s detected\n' "$_name"
