@@ -16,6 +16,39 @@ $ErrorActionPreference = 'Stop'
 
 <#
 .SYNOPSIS
+Builds the regional download URL for the AWS ssm-setup-cli hybrid enrollment
+executable (Windows amd64).
+
+.DESCRIPTION
+Returns https://amazon-ssm-<region>.s3.<region>.amazonaws.com/latest/windows_amd64/ssm-setup-cli.exe
+for a validated region. Throws for any region that does not pass
+Test-SsmRegion, so an unusable URL can never be constructed.
+
+.PARAMETER Region
+AWS region code, for example ap-southeast-2.
+
+.OUTPUTS
+[System.String] The download URL.
+
+.EXAMPLE
+Get-SsmSetupCliUrl -Region 'ap-southeast-2'
+#>
+function Get-SsmSetupCliUrl {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Region
+    )
+
+    if (-not (Test-SsmRegion -Region $Region)) {
+        throw "Get-SsmSetupCliUrl: '$Region' is not a valid AWS region code (expected the form 'us-east-1')."
+    }
+    return ('https://amazon-ssm-{0}.s3.{0}.amazonaws.com/latest/windows_amd64/ssm-setup-cli.exe' -f $Region)
+}
+
+<#
+.SYNOPSIS
 Tests whether a string is a well-formed UUID, as an SSM activation ID must be.
 
 .DESCRIPTION
@@ -78,5 +111,6 @@ function Test-SsmRegion {
 
 Export-ModuleMember -Function @(
     'Test-SsmRegion',
-    'Test-SsmActivationId'
+    'Test-SsmActivationId',
+    'Get-SsmSetupCliUrl'
 )

@@ -2,6 +2,24 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '../../scripts/windows/SSMHybrid.psm1') -Force
 }
 
+Describe 'Get-SsmSetupCliUrl' {
+    It 'builds the per-region URL' {
+        Get-SsmSetupCliUrl -Region 'ap-southeast-2' | Should -Be 'https://amazon-ssm-ap-southeast-2.s3.ap-southeast-2.amazonaws.com/latest/windows_amd64/ssm-setup-cli.exe'
+    }
+
+    It 'builds the URL for a gov-cloud region' {
+        Get-SsmSetupCliUrl -Region 'us-gov-west-1' | Should -Be 'https://amazon-ssm-us-gov-west-1.s3.us-gov-west-1.amazonaws.com/latest/windows_amd64/ssm-setup-cli.exe'
+    }
+
+    It 'rejects an invalid region' {
+        { Get-SsmSetupCliUrl -Region 'nope' } | Should -Throw
+    }
+
+    It 'rejects an empty region' {
+        { Get-SsmSetupCliUrl -Region '' } | Should -Throw
+    }
+}
+
 Describe 'Test-SsmActivationId' {
     It 'accepts <ActivationId>' -TestCases @(
         @{ ActivationId = '08e51e79-2c3f-4a5d-8f6e-9a7b0c1d2e3f' }
