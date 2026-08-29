@@ -16,6 +16,95 @@ $ErrorActionPreference = 'Stop'
 
 <#
 .SYNOPSIS
+Classifies the local SSM hybrid enrollment state of this machine.
+
+.DESCRIPTION
+Combines the local registration record with AmazonSSMAgent service facts and
+returns exactly one node state:
+
+  Absent                 no service and no registration file
+  InstalledUnregistered  service present, no registration file
+  RegisteredHealthy      registration parseable, service Running and Automatic
+  RegisteredStopped      registration parseable, service Stopped
+  RegisteredUnhealthy    registration parseable, service missing or otherwise
+                         not Running+Automatic (for example not Automatic, or
+                         a status that is neither Running nor Stopped)
+  Ambiguous              registration file present but unparseable or
+                         incomplete (ConvertFrom-SsmRegistrationJson throws)
+
+Classification never destroys registration state; Ambiguous is reported
+rather than repaired so an operator can decide (SPEC 22/23).
+
+.PARAMETER RegistrationJson
+Raw registration file JSON, or an empty string when no file exists.
+
+.PARAMETER ServiceExists
+Whether the AmazonSSMAgent service exists.
+
+.PARAMETER ServiceStatus
+Service status, for example 'Running' or 'Stopped'.
+
+.PARAMETER ServiceStartType
+Service start type, for example 'Automatic' or 'Manual'.
+
+.OUTPUTS
+[System.String] One of the six state names above.
+#>
+function Get-SsmNodeState {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$RegistrationJson,
+
+        [bool]$ServiceExists = $false,
+
+        [AllowEmptyString()]
+        [string]$ServiceStatus = '',
+
+        [AllowEmptyString()]
+        [string]$ServiceStartType = ''
+    )
+
+    $hasRegistrationJson = -not [string]::IsNullOrEmpty($RegistrationJson)
+
+    if (-not $hasRegistrationJson) {
+        if ($ServiceExists) {
+            return 'InstalledUnregistered'
+        }
+        return 'Absent'
+    }
+
+    # A registration file exists: it must parse cleanly, otherwise the
+    # situation is ambiguous and must not be auto-repaired.
+    try {
+        ConvertFrom-SsmRegistrationJson -Json $RegistrationJson -ErrorAction Stop | Out-Null
+    } catch {
+        return 'Ambiguous'
+    }
+
+    if (-not $ServiceExists) {
+        return 'RegisteredUnhealthy'
+    }
+
+    if ($ServiceStatus -eq 'Running') {
+        if ($ServiceStartType -eq 'Automatic') {
+            return 'RegisteredHealthy'
+        }
+        return 'RegisteredUnhealthy'
+    }
+
+    if ($ServiceStatus -eq 'Stopped') {
+        return 'RegisteredStopped'
+    }
+
+    return 'RegisteredUnhealthy'
+}
+
+<#
+.SYNOPSIS
 Parses local SSM hybrid registration JSON into a stable object.
 
 .DESCRIPTION
@@ -187,5 +276,6 @@ Export-ModuleMember -Function @(
     'Test-SsmRegion',
     'Test-SsmActivationId',
     'Get-SsmSetupCliUrl',
-    'ConvertFrom-SsmRegistrationJson'
+    'ConvertFrom-SsmRegistrationJson',
+    'Get-SsmNodeState'
 )

@@ -2,6 +2,87 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '../../scripts/windows/SSMHybrid.psm1') -Force
 }
 
+Describe 'Get-SsmNodeState' {
+    It 'classifies <Name> as <Expected>' -TestCases @(
+        @{
+            Name              = 'no service and no registration file'
+            RegistrationJson  = ''
+            ServiceExists     = $false
+            ServiceStatus     = ''
+            ServiceStartType  = ''
+            Expected          = 'Absent'
+        }
+        @{
+            Name              = 'service present but no registration file'
+            RegistrationJson  = ''
+            ServiceExists     = $true
+            ServiceStatus     = 'Running'
+            ServiceStartType  = 'Automatic'
+            Expected          = 'InstalledUnregistered'
+        }
+        @{
+            Name              = 'registration parseable, service running and automatic'
+            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}'
+            ServiceExists     = $true
+            ServiceStatus     = 'Running'
+            ServiceStartType  = 'Automatic'
+            Expected          = 'RegisteredHealthy'
+        }
+        @{
+            Name              = 'registration parseable, service stopped'
+            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}'
+            ServiceExists     = $true
+            ServiceStatus     = 'Stopped'
+            ServiceStartType  = 'Automatic'
+            Expected          = 'RegisteredStopped'
+        }
+        @{
+            Name              = 'registration parseable, service stopped with non-automatic start'
+            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}'
+            ServiceExists     = $true
+            ServiceStatus     = 'Stopped'
+            ServiceStartType  = 'Manual'
+            Expected          = 'RegisteredStopped'
+        }
+        @{
+            Name              = 'registration parseable, service missing'
+            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}'
+            ServiceExists     = $false
+            ServiceStatus     = ''
+            ServiceStartType  = ''
+            Expected          = 'RegisteredUnhealthy'
+        }
+        @{
+            Name              = 'registration parseable, service running but not automatic'
+            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}'
+            ServiceExists     = $true
+            ServiceStatus     = 'Running'
+            ServiceStartType  = 'Manual'
+            Expected          = 'RegisteredUnhealthy'
+        }
+        @{
+            Name              = 'registration file present but unparseable'
+            RegistrationJson  = 'not json {'
+            ServiceExists     = $true
+            ServiceStatus     = 'Running'
+            ServiceStartType  = 'Automatic'
+            Expected          = 'Ambiguous'
+        }
+        @{
+            Name              = 'registration file present but incomplete (missing ManagedInstanceID)'
+            RegistrationJson  = '{"Region":"ap-southeast-2"}'
+            ServiceExists     = $true
+            ServiceStatus     = 'Running'
+            ServiceStartType  = 'Automatic'
+            Expected          = 'Ambiguous'
+        }
+    ) {
+        param($RegistrationJson, $ServiceExists, $ServiceStatus, $ServiceStartType, $Expected)
+        Get-SsmNodeState -RegistrationJson $RegistrationJson -ServiceExists $ServiceExists -ServiceStatus $ServiceStatus -ServiceStartType $ServiceStartType |
+            Should -Be $Expected
+    }
+}
+
 Describe 'ConvertFrom-SsmRegistrationJson' {
     BeforeAll {
         $script:goodJson = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}'
