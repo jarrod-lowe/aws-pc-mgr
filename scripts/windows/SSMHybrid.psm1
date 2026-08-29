@@ -16,6 +16,47 @@ $ErrorActionPreference = 'Stop'
 
 <#
 .SYNOPSIS
+Prompts the operator for a secret without echoing it and returns it as a
+plain in-memory string.
+
+.DESCRIPTION
+Reads the value with Read-Host -AsSecureString so nothing appears on screen
+(and the activation code never lands in PowerShell command history, SPEC 20),
+then decodes the SecureString to a plain string in memory via a BSTR that is
+zeroed immediately after use. The value is returned to the caller only; this
+function never writes, logs, or echoes it (SPEC 43). Callers must not print
+the result.
+
+.PARAMETER Prompt
+Prompt text shown to the operator, for example 'Activation Code'.
+
+.OUTPUTS
+[System.String] The secret as plain text, for short-lived in-memory use.
+#>
+function Read-SsmSecret {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Prompt
+    )
+
+    $secure = Read-Host -Prompt $Prompt -AsSecureString
+
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+        $plain = [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    } finally {
+        if ($null -ne $bstr -and $bstr -ne [IntPtr]::Zero) {
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+    }
+
+    return $plain
+}
+
+<#
+.SYNOPSIS
 Decides whether an Authenticode signature result is an acceptable AWS
 ssm-setup-cli signature.
 
@@ -410,5 +451,6 @@ Export-ModuleMember -Function @(
     'ConvertFrom-SsmRegistrationJson',
     'Get-SsmNodeState',
     'Get-SsmSetupAction',
-    'Test-SsmSignature'
+    'Test-SsmSignature',
+    'Read-SsmSecret'
 )

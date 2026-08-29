@@ -2,6 +2,49 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '../../scripts/windows/SSMHybrid.psm1') -Force
 }
 
+Describe 'Read-SsmSecret' {
+    It 'prompts with Read-Host -AsSecureString and returns the plain string' {
+        Mock Read-Host -ModuleName SSMHybrid {
+            return (ConvertTo-SecureString 'correct horse battery staple' -AsPlainText -Force)
+        }
+
+        $result = Read-SsmSecret -Prompt 'Activation Code'
+
+        Should -Invoke Read-Host -ModuleName SSMHybrid -Exactly 1 -ParameterFilter {
+            $Prompt -eq 'Activation Code' -and $AsSecureString -eq $true
+        }
+        $result | Should -BeOfType [string]
+        $result | Should -Be 'correct horse battery staple'
+    }
+
+    It 'prompts exactly once and returns only the secret (no extra output)' {
+        Mock Read-Host -ModuleName SSMHybrid {
+            return (ConvertTo-SecureString 's3cret' -AsPlainText -Force)
+        }
+
+        $output = Read-SsmSecret -Prompt 'Code'
+        @($output).Count | Should -Be 1
+        $output | Should -Be 's3cret'
+    }
+}
+
+Describe 'Module export surface' {
+    It 'exports exactly the eight contract functions' {
+        $exported = (Get-Module SSMHybrid).ExportedCommands.Keys | Sort-Object
+        $expected = @(
+            'ConvertFrom-SsmRegistrationJson',
+            'Get-SsmNodeState',
+            'Get-SsmSetupAction',
+            'Get-SsmSetupCliUrl',
+            'Read-SsmSecret',
+            'Test-SsmActivationId',
+            'Test-SsmRegion',
+            'Test-SsmSignature'
+        ) | Sort-Object
+        $exported | Should -Be $expected
+    }
+}
+
 Describe 'Test-SsmSignature' {
     It 'accepts a Valid status signed by Amazon.com Services LLC' {
         $result = Test-SsmSignature -Status 'Valid' -SignerSubject 'CN=Amazon.com Services LLC, O=Amazon.com Services LLC, L=Seattle, S=Washington, C=US'
