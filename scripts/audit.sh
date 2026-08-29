@@ -124,6 +124,16 @@
 # not scan. (No binary files are tracked in this repository, so a clean
 # audit contains no such finding.)
 #
+# Failed reads fail CLOSED the same way. A `git show` that exits nonzero for
+# an individual commit — corrupt object or blob, an I/O error, a failing
+# git — is an explicit `unreadable-commit-content` finding naming that
+# commit, never a silent skip; only exit 0 with empty output is a legitimate
+# skip (an empty commit message, or a commit whose changed paths are all
+# excluded). And the enumerations the verdict rests on are fatal when they
+# fail: `git rev-list` (the commit list), `git ls-files` (the tracked-file
+# list) and every temp allocation abort the audit with an error instead of
+# letting it report clean over zero commits or zero files.
+#
 # Limitation: file paths containing newline characters are not supported.
 
 LC_ALL=C
@@ -460,30 +470,53 @@ scan_file() {
     return 0
 }
 
-# tracked_files — newline-separated tracked files, excluding the audit script
-# and the fixtures. (Paths containing newlines are not supported.)
+# tracked_files FILE — write to FILE the tracked files, one per line,
+# excluding the audit script and the fixtures. (Paths containing newlines are
+# not supported.) Fails closed: returns nonzero when `git ls-files` itself
+# fails, because a caller that swallowed that would iterate over ZERO files
+# while the audit still reported "tracked files and full history scanned" —
+# a false clean over an unreadable index or a failing git. git's -z output is
+# captured to its own temp first: piping it straight through `tr` would hide
+# git's exit status, since the pipe reports tr's.
 tracked_files() {
-    git -C "$ROOT" ls-files -z -- \
+    _tf_z=$(mktemp "${TMPDIR:-/tmp}/audit-lsfiles.XXXXXXXX") || return 1
+    if ! git -C "$ROOT" ls-files -z -- \
         ':(exclude)scripts/audit.sh' \
-        ':(exclude)tests/fixtures/audit' |
-        tr '\0' '\n'
+        ':(exclude)tests/fixtures/audit' >"$_tf_z"; then
+        rm -f "$_tf_z"
+        return 1
+    fi
+    tr '\0' '\n' <"$_tf_z" >"$1"
+    _tf_rc=$?
+    rm -f "$_tf_z"
+    return "$_tf_rc"
 }
 
 # annotated_current_lines FILE — fill FILE with the content of every line in
 # the current tracked tree that carries the suppression marker, with the
 # marker and trailing whitespace removed. One entry per annotated line; used
-# for the history-equivalence rule (see header).
+# for the history-equivalence rule (see header). Returns nonzero only when
+# the tracked-file enumeration itself fails (tracked_files), which the caller
+# treats as fatal: an empty-but-successful run merely means no annotated
+# lines exist, while a failed one means the equivalence set could not be
+# built at all.
 annotated_current_lines() {
     _acl_file=$1
-    tracked_files |
-        while IFS= read -r _acl_f; do
-            [ -n "$_acl_f" ] || continue
-            [ -f "$ROOT/$_acl_f" ] || continue
-            grep -hF -- "$MARKER" "$ROOT/$_acl_f" 2>/dev/null
-        done |
+    _acl_list=$(mktemp "${TMPDIR:-/tmp}/audit-annotated-src.XXXXXXXX") ||
+        return 1
+    if ! tracked_files "$_acl_list"; then
+        rm -f "$_acl_list"
+        return 1
+    fi
+    while IFS= read -r _acl_f; do
+        [ -n "$_acl_f" ] || continue
+        [ -f "$ROOT/$_acl_f" ] || continue
+        grep -hF -- "$MARKER" "$ROOT/$_acl_f" 2>/dev/null
+    done <"$_acl_list" |
         sed -e 's/[[:space:]]*'"$MARKER"'[[:space:]]*$//' \
             -e 's/[[:space:]]*$//' |
         grep -v '^$' >"$_acl_file" 2>/dev/null
+    rm -f "$_acl_list"
     return 0
 }
 
@@ -495,7 +528,9 @@ annotated_current_lines() {
 # so a credential in such a message would otherwise go unscanned. Binary
 # content in a patch appears only as a `Binary files ... differ` marker and
 # is therefore not content-scanned: that fails closed with an explicit
-# finding. The runtime values (bucket name, username, hostname including
+# finding, and so does any per-commit `git show` that exits nonzero —
+# empty output is a legitimate skip, a failed read never is (see the loop).
+# The runtime values (bucket name, username, hostname including
 # its short form) are scanned against BOTH streams, with the same
 # scan_literal calls the tracked-file loop makes — same needles, hostname
 # case-insensitive as there — so a value that only ever reached history
@@ -531,7 +566,13 @@ scan_history() {
         printf '%s: error: cannot create annotated-lines temp file - failing closed\n' "$SCRIPT_NAME" >&2
         exit 1
     }
-    annotated_current_lines "$ANNOTATED_LINES"
+    if ! annotated_current_lines "$ANNOTATED_LINES"; then
+        rm -f "$_sh_tmp" "$_sh_msg" "$_sh_revs" "$ANNOTATED_LINES"
+        ANNOTATED_LINES=
+        printf '%s: error: cannot enumerate tracked files for the history-equivalence set (git ls-files failed?) - failing closed, no clean result\n' \
+            "$SCRIPT_NAME" >&2
+        exit 1
+    fi
     # The commit list is produced BEFORE the scan loop and its failure is
     # fatal, in the mktemp style above: piping a failing `git rev-list`
     # straight into the loop would leave it iterating over ZERO commits
@@ -546,9 +587,21 @@ scan_history() {
     while IFS= read -r _sh_sha; do
         [ -n "$_sh_sha" ] || continue
         _sh_label="git-history $_sh_sha"
-        # Message body: fetched unfiltered, scanned for its own sake.
-        if git -C "$ROOT" show -s --no-color --format=%B "$_sh_sha" \
-            >"$_sh_msg" 2>/dev/null && [ -s "$_sh_msg" ]; then
+        # Per-commit reads fail CLOSED, with the exit status captured before
+        # any [ -s ] test: emptiness and failure are different facts. Exit 0
+        # with empty output is legitimate (an empty commit message here, a
+        # commit whose changed paths are all excluded below) and stays a
+        # skip; a nonzero exit means git could not read that commit's content
+        # at all — corrupt object or blob, an I/O error, a failing git — and
+        # becomes an explicit finding naming the commit, so the audit cannot
+        # report clean over a commit it could not scan.
+        git -C "$ROOT" show -s --no-color --format=%B "$_sh_sha" \
+            >"$_sh_msg" 2>/dev/null
+        _sh_msg_rc=$?
+        if [ "$_sh_msg_rc" -ne 0 ]; then
+            printf 'FINDING %s: unreadable-commit-content (git show failed — corrupt object or I/O error; verify manually)\n' \
+                "$_sh_label"
+        elif [ -s "$_sh_msg" ]; then
             scan_stream "$_sh_label" "$_sh_msg"
             scan_literal state-bucket-name "$_sh_label" "$_sh_msg" \
                 "$_sh_bucket"
@@ -557,11 +610,20 @@ scan_history() {
             scan_literal hostname "$_sh_label" "$_sh_msg" \
                 "$_sh_host_short" ic
         fi
-        # Patch content, with the audit script and fixtures excluded.
+        # Patch content, with the audit script and fixtures excluded. Same
+        # rule: a failing read is a finding, not a skip. The message form is
+        # still attempted above even when this one fails (and vice versa),
+        # because one can fail while the other succeeds.
         git -C "$ROOT" show --no-color --patch --format= "$_sh_sha" -- \
             ':(exclude)scripts/audit.sh' \
             ':(exclude)tests/fixtures/audit' \
-            >"$_sh_tmp" 2>/dev/null || continue
+            >"$_sh_tmp" 2>/dev/null
+        _sh_patch_rc=$?
+        if [ "$_sh_patch_rc" -ne 0 ]; then
+            printf 'FINDING %s: unreadable-commit-content (git show failed — corrupt object or I/O error; verify manually)\n' \
+                "$_sh_label"
+            continue
+        fi
         [ -s "$_sh_tmp" ] || continue
         if grep -Eq '^Binary files .* differ' "$_sh_tmp" 2>/dev/null; then
             printf 'FINDING %s: unscannable-binary-content (binary content changed in history — not content-scanned; verify manually)\n' \
@@ -617,7 +679,25 @@ default_audit() {
     [ ${#_host} -ge 4 ] 2>/dev/null || _host=
     [ ${#_host_short} -ge 4 ] 2>/dev/null || _host_short=
 
-    # 1. Tracked files. Opened via $ROOT/<path> so the audit works from any
+    # 1. Tracked files. The list is captured BEFORE the loop and its failure
+    # is fatal, in the same style as `git rev-list` inside scan_history:
+    # piping a failing `git ls-files` straight into the loop would leave it
+    # iterating over ZERO files while default_audit still reported "tracked
+    # files and full history scanned" — a false clean over an unreadable
+    # index or a failing git.
+    _files=$(mktemp "${TMPDIR:-/tmp}/audit-tracked.XXXXXXXX") || {
+        rm -f "$_results"
+        printf '%s: error: cannot create tracked-file list temp file (TMPDIR writable? disk full?) - failing closed\n' \
+            "$SCRIPT_NAME" >&2
+        exit 2
+    }
+    if ! tracked_files "$_files"; then
+        rm -f "$_files" "$_results"
+        printf '%s: error: git ls-files failed (unreadable index or failing git?) - failing closed, no clean result\n' \
+            "$SCRIPT_NAME" >&2
+        exit 1
+    fi
+    # Each file is opened via $ROOT/<path> so the audit works from any
     # cwd; findings keep the repo-relative name as their label. The literal
     # scans run over the SAME content the detectors scan: effective_scan_path
     # decides once per file — plain text scans as itself, a UTF-16 file as
@@ -626,20 +706,20 @@ default_audit() {
     # _scan snapshots that one decision (scan_file re-runs it as a no-op on
     # the already-effective path) and the decoded temp is dropped after the
     # file's scans, never leaking across iterations.
-    tracked_files |
-        while IFS= read -r _f; do
-            [ -n "$_f" ] || continue
-            [ -f "$ROOT/$_f" ] || continue
-            effective_scan_path "$ROOT/$_f" "$_f"
-            _scan=$EFFECTIVE_PATH
-            [ -n "$_scan" ] || continue
-            scan_file "$_scan" "$_f"
-            scan_literal state-bucket-name "$_f" "$_scan" "$_bucket"
-            scan_literal username "$_f" "$_scan" "$_user"
-            scan_literal hostname "$_f" "$_scan" "$_host" ic
-            scan_literal hostname "$_f" "$_scan" "$_host_short" ic
-            drop_scan_temp "$_scan" "$ROOT/$_f"
-        done >"$_results"
+    while IFS= read -r _f; do
+        [ -n "$_f" ] || continue
+        [ -f "$ROOT/$_f" ] || continue
+        effective_scan_path "$ROOT/$_f" "$_f"
+        _scan=$EFFECTIVE_PATH
+        [ -n "$_scan" ] || continue
+        scan_file "$_scan" "$_f"
+        scan_literal state-bucket-name "$_f" "$_scan" "$_bucket"
+        scan_literal username "$_f" "$_scan" "$_user"
+        scan_literal hostname "$_f" "$_scan" "$_host" ic
+        scan_literal hostname "$_f" "$_scan" "$_host_short" ic
+        drop_scan_temp "$_scan" "$ROOT/$_f"
+    done <"$_files" >"$_results"
+    rm -f "$_files"
 
     # 2. Full history (message bodies and patches). The guarded runtime
     # values pass through so history gets the same literal scans the
