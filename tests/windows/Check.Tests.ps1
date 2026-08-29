@@ -247,3 +247,152 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
         }
     }
 }
+
+Describe 'check.ps1 registration read-failure reporting (SPEC 24)' {
+    # A registration file can exist and still be UNREADABLE: check.ps1 is
+    # documented as runnable without elevation, and an unelevated session can
+    # be denied the registration file's ACL. That state must be reported as a
+    # read failure - path plus coarse category, never the file's content -
+    # and must count as a problem: folding it into the 'no registration file'
+    # report would misdiagnose an enrolled machine as unenrolled. This block
+    # is the inverse polarity of the machine-state blocks above: it runs
+    # wherever an unreadable file can be arranged without elevation (the
+    # Linux test container, via check.ps1's -RegistrationPath seam) and is
+    # Skip-guarded on Windows, where an unreadable fixture needs an ACL the
+    # test itself cannot set unelevated.
+    BeforeAll {
+        # Same child-process pattern as Invoke-CheckScript, with an optional
+        # launcher executable prepended to the command line: a root test
+        # process bypasses file modes (CAP_DAC_OVERRIDE), so making the
+        # fixture genuinely unreadable for the child can require running the
+        # child as an unprivileged user through setpriv(1).
+        function Invoke-CheckScriptViaLauncher {
+            param(
+                [string]$RegistrationPath,
+                [string]$LauncherExe = '',
+                [string[]]$LauncherArguments = @()
+            )
+
+            $checkPath = Join-Path $PSScriptRoot '../../scripts/windows/check.ps1'
+            $childArguments = @(
+                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $checkPath + '"'),
+                '-RegistrationPath', ('"' + $RegistrationPath + '"')
+            )
+
+            $startInfo = New-Object -TypeName System.Diagnostics.ProcessStartInfo
+            if ([string]::IsNullOrEmpty($LauncherExe)) {
+                $startInfo.FileName = (Get-Process -Id $PID).Path
+                $startInfo.Arguments = ($childArguments -join ' ')
+            } else {
+                $startInfo.FileName = $LauncherExe
+                $startInfo.Arguments = (($LauncherArguments + $childArguments) -join ' ')
+            }
+            $startInfo.UseShellExecute = $false
+            $startInfo.RedirectStandardInput = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            $startInfo.CreateNoWindow = $true
+
+            $process = [System.Diagnostics.Process]::Start($startInfo)
+            $process.StandardInput.Close()
+            $errorReader = $process.StandardError.ReadToEndAsync()
+            $outputText = $process.StandardOutput.ReadToEnd()
+            $process.WaitForExit()
+
+            return [PSCustomObject]@{
+                Output   = ($outputText + [Environment]::NewLine + $errorReader.Result)
+                ExitCode = $process.ExitCode
+            }
+        }
+    }
+
+    It 'reports a registration file that exists but cannot be read as a read failure, not as absence' -Skip:($script:IsWindowsOs) {
+        $fixture = Join-Path ([System.IO.Path]::GetTempPath()) ('ssm-check-unreadable-' + [System.IO.Path]::GetRandomFileName())
+        # Distinctive non-credential body: none of it may reach the output.
+        $sentinel = 'ssm-check-fixture-body-sentinel'
+        try {
+            Set-Content -LiteralPath $fixture -Value $sentinel
+            & chmod 000 $fixture
+
+            # The fixture must be genuinely unreadable by whichever principal
+            # runs the child, or the test would exercise the wrong state. An
+            # unprivileged test process is already denied by the file mode; a
+            # root one bypasses it, so the child runs as nobody via setpriv(1)
+            # - and if even that cannot arrange a denial here, the test skips
+            # rather than assert against a readable fixture.
+            $launcherExe = ''
+            $launcherArguments = @()
+            $unreadableDirectly = $false
+            try {
+                $null = Get-Content -LiteralPath $fixture -Raw -ErrorAction Stop
+            } catch {
+                $unreadableDirectly = $true
+            }
+            if (-not $unreadableDirectly) {
+                $setpriv = Get-Command -Name setpriv -ErrorAction SilentlyContinue
+                $cat = Get-Command -Name cat -ErrorAction SilentlyContinue
+                if (($null -ne $setpriv) -and ($null -ne $cat)) {
+                    $probeInfo = New-Object -TypeName System.Diagnostics.ProcessStartInfo
+                    $probeInfo.FileName = $setpriv.Source
+                    $probeInfo.Arguments = ('--reuid=nobody --regid=nogroup --clear-groups ' + $cat.Source + ' ' + $fixture)
+                    $probeInfo.UseShellExecute = $false
+                    $probeInfo.RedirectStandardOutput = $true
+                    $probeInfo.RedirectStandardError = $true
+                    $probeInfo.CreateNoWindow = $true
+                    $probe = [System.Diagnostics.Process]::Start($probeInfo)
+                    $null = $probe.StandardOutput.ReadToEnd()
+                    $null = $probe.StandardError.ReadToEnd()
+                    $probe.WaitForExit()
+                    if ($probe.ExitCode -ne 0) {
+                        $launcherExe = $setpriv.Source
+                        $launcherArguments = @('--reuid=nobody', '--regid=nogroup', '--clear-groups', (Get-Process -Id $PID).Path)
+                    }
+                }
+            }
+            if ((-not $unreadableDirectly) -and [string]::IsNullOrEmpty($launcherExe)) {
+                Set-ItResult -Skipped -Because 'this host cannot make the fixture unreadable for the child process (root without setpriv)'
+                return
+            }
+
+            $result = Invoke-CheckScriptViaLauncher -RegistrationPath $fixture -LauncherExe $launcherExe -LauncherArguments $launcherArguments
+
+            # The read failure is reported distinctly, with the path and a
+            # coarse failure category...
+            $result.Output | Should -Match 'registration file exists but could not be read'
+            $result.Output | Should -Match ([Regex]::Escape($fixture))
+            $result.Output | Should -Match 'Failure category'
+            # ...never as the absence report for an unenrolled machine...
+            $result.Output | Should -Not -Match 'No local SSM registration file was found'
+            $result.Output | Should -Not -Match 'No local SSM registration:'
+            # ...it counts as a problem found, since health could not be
+            # verified...
+            $result.ExitCode | Should -Be 1
+            # ...and nothing from inside the file - nor error text quoting it -
+            # ever reaches the output.
+            $result.Output | Should -Not -Match ([Regex]::Escape($sentinel))
+        } finally {
+            Remove-Item -LiteralPath $fixture -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'reports an unparseable registration file as invalid data, not as absence' -Skip:($script:IsWindowsOs) {
+        $fixture = Join-Path ([System.IO.Path]::GetTempPath()) ('ssm-check-unparseable-' + [System.IO.Path]::GetRandomFileName())
+        # Truncated JSON whose body must stay out of the output: the parser's
+        # own error text can quote the payload, so it is never printed either.
+        $sentinel = 'ssm-check-parse-sentinel'
+        try {
+            Set-Content -LiteralPath $fixture -Value ('{"ManagedInstanceID":"' + $sentinel)
+
+            $result = Invoke-CheckScriptViaLauncher -RegistrationPath $fixture
+
+            $result.Output | Should -Match 'registration file exists but could not be parsed'
+            $result.Output | Should -Match ([Regex]::Escape($fixture))
+            $result.Output | Should -Not -Match 'No local SSM registration file was found'
+            $result.Output | Should -Not -Match 'No local SSM registration:'
+            $result.ExitCode | Should -Be 1
+            $result.Output | Should -Not -Match ([Regex]::Escape($sentinel))
+        } finally {
+            Remove-Item -LiteralPath $fixture -Force -ErrorAction SilentlyContinue
+        }
+    }
+}

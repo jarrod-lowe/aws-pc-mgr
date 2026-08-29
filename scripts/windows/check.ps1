@@ -32,12 +32,19 @@
     Windows-tier tests can point the script at a fixture log (the same
     seam pattern as Get-SsmRegistrationFileJson's -Path).
 
+.PARAMETER RegistrationPath
+    Registration file to inspect. Defaults to the conventional hybrid-agent
+    location under ProgramData (mirroring Get-SsmRegistrationFileJson's -Path
+    default); overridable so Windows-tier tests can point the script at a
+    fixture file, the same seam pattern as -AgentLogPath.
+
 .EXAMPLE
     .\check.ps1
 #>
 
 param(
-    [string]$AgentLogPath
+    [string]$AgentLogPath,
+    [string]$RegistrationPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -121,8 +128,16 @@ if (Test-Path -LiteralPath $modulePath -PathType Leaf) {
     Add-Problem ("SSMHybrid.psm1 was not found next to this script: " + $modulePath)
 }
 
-$agentExePath = Join-Path -Path $env:ProgramFiles -ChildPath 'Amazon\SSM\amazon-ssm-agent.exe'
-if ([string]::IsNullOrEmpty($AgentLogPath)) {
+# Both conventional locations are guarded: on a host without the Windows
+# ProgramFiles/ProgramData variables (a non-Windows test container) Join-Path
+# would throw on the null parent and abort the report mid-way. On Windows both
+# variables are always set, so the guarded form resolves the same paths.
+$agentExePath = ''
+if (-not [string]::IsNullOrEmpty($env:ProgramFiles)) {
+    $agentExePath = Join-Path -Path $env:ProgramFiles -ChildPath 'Amazon\SSM\amazon-ssm-agent.exe'
+}
+if ([string]::IsNullOrEmpty($AgentLogPath) -and
+    -not [string]::IsNullOrEmpty($env:ProgramData)) {
     $AgentLogPath = Join-Path -Path $env:ProgramData -ChildPath 'Amazon\SSM\Logs\amazon-ssm-agent.log'
 }
 
@@ -205,25 +220,65 @@ try {
 
 Write-Section 'SSM registration'
 if ($moduleLoaded) {
-    $registrationJson = $null
-    try {
-        $registrationJson = Get-SsmRegistrationFileJson
-    } catch {
-        $registrationJson = $null
+    # Resolved here, mirroring Get-SsmRegistrationFileJson's -Path default, so
+    # the read-failure report below can name the file; -RegistrationPath
+    # overrides it for tests (the same seam pattern as -AgentLogPath).
+    if ([string]::IsNullOrEmpty($RegistrationPath) -and
+        -not [string]::IsNullOrEmpty($env:ProgramData)) {
+        $RegistrationPath = Join-Path -Path $env:ProgramData -ChildPath 'Amazon\SSM\InstanceData\registration'
     }
-    if ([string]::IsNullOrEmpty($registrationJson)) {
+
+    if ([string]::IsNullOrEmpty($RegistrationPath) -or
+        -not (Test-Path -LiteralPath $RegistrationPath -PathType Leaf)) {
+        # State 1: no registration file on disk.
         Write-Host '  No local SSM registration file was found.'
         Add-Problem 'No local SSM registration: this machine is not enrolled as a hybrid managed node.'
     } else {
-        # The raw file is never printed: it may contain key material. Only the
-        # parsed managed node ID and region are shown (SPEC 24/43).
+        # The file exists, and that fact is kept apart from whether it could be
+        # read. This script documents that it runs without elevation, and an
+        # unelevated session can be denied the registration file's ACL: a read
+        # failure must be REPORTED as a read failure, because folding it into
+        # the 'no registration file' report above would misdiagnose an
+        # enrolled machine as unenrolled (SPEC 24).
+        $registrationJson = $null
+        $readFailure = $null
         try {
-            $registration = ConvertFrom-SsmRegistrationJson -Json $registrationJson
-            Write-Host ('  Managed node ID : ' + $registration.ManagedInstanceId)
-            Write-Host ('  Region          : ' + $registration.Region)
+            $registrationJson = Get-SsmRegistrationFileJson -Path $RegistrationPath
         } catch {
-            Write-Host '  A registration file exists but it could not be parsed.'
-            Add-Problem ('The registration file is present but unparseable: ' + $_.Exception.Message)
+            $readFailure = $_
+        }
+
+        if ($null -ne $readFailure) {
+            # State 2a: present but unreadable. The error's message text is
+            # never printed: it can quote file content, and the registration
+            # file may carry key material (SPEC 24/43). Only the coarse
+            # failure category is reported, never the content.
+            $failureCategory = 'read error'
+            if (($readFailure.Exception -is [System.UnauthorizedAccessException]) -or
+                ($readFailure.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::PermissionDenied)) {
+                $failureCategory = 'access denied'
+            }
+            Write-Host '  The registration file exists but could not be read (try an elevated session):'
+            Write-Host ('  ' + $RegistrationPath)
+            Write-Host ('  Failure category : ' + $failureCategory)
+            Add-Problem ('The registration file exists but could not be read (' + $failureCategory + '): ' + $RegistrationPath)
+        } else {
+            # The raw file is never printed: it may contain key material. Only
+            # the parsed managed node ID and region are shown (SPEC 24/43).
+            try {
+                $registration = ConvertFrom-SsmRegistrationJson -Json $registrationJson
+                # State 3: read and parsed.
+                Write-Host ('  Managed node ID : ' + $registration.ManagedInstanceId)
+                Write-Host ('  Region          : ' + $registration.Region)
+            } catch {
+                # State 2b: present and readable but not valid registration
+                # data (empty, malformed JSON, or missing the managed-instance
+                # key). The parser's message is never printed either: it can
+                # quote the file's contents (SPEC 24/43).
+                Write-Host '  The registration file exists but could not be parsed.'
+                Write-Host ('  ' + $RegistrationPath)
+                Add-Problem ('The registration file exists but is not valid registration data: ' + $RegistrationPath)
+            }
         }
     }
 } else {

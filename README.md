@@ -465,6 +465,16 @@ prints labeled sections:
 * recent warning/error lines from the SSM Agent log (last 500 lines scanned,
   last 50 shown).
 
+A registration file that **exists but cannot be read** — for example from an
+unelevated session hitting its ACL, since this script is documented as usable
+without elevation — is reported as a read failure (its path plus a coarse
+failure category, `access denied` vs `read error`), never as "no registration
+file": misreporting an enrolled machine as unenrolled would be a false
+diagnosis. The same applies to a file that exists but does not parse as
+registration data. Both states count as problems (**exit 1**), because the
+diagnostic could not verify health, and in neither is anything from inside
+the file — nor error text quoting it — ever printed.
+
 It never prints the Activation Code or any credential material. **Exit codes:**
 `0` healthy, `1` problems found (each problem is listed). Recent log warnings
 are reported for context but do not by themselves count as problems, since a
