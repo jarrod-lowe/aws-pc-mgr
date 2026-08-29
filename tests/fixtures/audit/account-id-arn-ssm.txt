@@ -1,0 +1,4 @@
+# Synthetic audit fixture: 12-digit AWS account ID inside a regional-service
+# ARN (ssm style: populated region field), not only the empty-region iam
+# spelling the detector originally matched.
+document_arn = "arn:aws:ssm:us-east-1:123456789012:document/Example"

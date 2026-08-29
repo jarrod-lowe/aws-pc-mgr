@@ -26,7 +26,8 @@
 #     commit — makes `git show --patch -- <paths>` emit nothing at all,
 #     message included. Message bodies therefore get their own unfiltered
 #     `git show -s --format=%B` pass.
-#   * the values `whoami` and `hostname` return locally (tracked files only),
+#   * the values `whoami` and `hostname` return locally (tracked files and
+#     history — both the message-body and the patch stream),
 #   * the bucket_name from the local untracked terraform/bootstrap/
 #     terraform.tfvars, if that file exists (tracked files and history).
 #
@@ -100,6 +101,10 @@
 #   synthetic activation-code literals occur in tests and documentation,
 #   and the marker exists precisely to exempt them, while a real
 #   activation code in a labeled assignment (no marker) is a finding.
+#   The aws-session-token class is outside the hard rule too, but its
+#   16-plus value anchor already keeps every known synthetic spelling
+#   (`Session Token: EXAMPLE`, 7 characters) far below it, so no line in
+#   this repository needs a marker to stay silent.
 #
 #   History equivalence: commits made before the marker existed cannot
 #   carry it, and this repository does not rewrite history. A history
@@ -162,9 +167,10 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 #   * SHAPE detectors (SHAPE_DETECTORS) anchor on the VALUE's shape, whose
 #     grammar is case-bearing — AKIA…/ASIA… key IDs are uppercase, UUIDs
 #     and managed-node IDs are lowercase hex, SSO start URLs and email
-#     addresses carry their own case — so they are matched against the
-#     ORIGINAL line unchanged; lowercasing the line would destroy exactly
-#     the thing they anchor on.
+#     addresses carry their own case, and an ARN is lowercase up to its
+#     12-digit account field — so they are matched against the ORIGINAL
+#     line unchanged; lowercasing the line would destroy exactly the
+#     thing they anchor on.
 #
 # Both lists: one detector per line, `name:ERE`, split on the first colon
 # (names never contain a colon). A line is a finding when it matches the
@@ -175,22 +181,25 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 # The label detectors keep the assignment+value anchors that make prose
 # safe: the label must be split from its value by `=` or `:` (with optional
 # quotes and whitespace on either side) and the value is length-anchored —
-# 35-45 base64-ish chars for a secret key, 8-plus for an activation code —
-# so a sentence, comment, or output-block key merely CONTAINING the label
-# words never matches, while short synthetic literals such as
-# `SecretAccessKey=EXAMPLE` in the Windows-tier tests cannot
-# false-positive. The aws- prefix on the secret-key label stays optional,
-# so a bare `SecretAccessKey:` (the SSM agent log spelling) matches too.
+# 35-45 base64-ish chars for a secret key, 8-plus for an activation code,
+# 16-plus for a session token — so a sentence, comment, or output-block key
+# merely CONTAINING the label words never matches, while short synthetic
+# literals such as `SecretAccessKey=EXAMPLE` or `Session Token: EXAMPLE`
+# in the Windows-tier tests cannot false-positive. The aws- prefix on the
+# secret-key and session-token labels stays optional, so a bare
+# `SecretAccessKey:` (the SSM agent log spelling) and a bare
+# `SessionToken:` match too.
 QUOTE_CLASS="[\"']?"
 LABEL_DETECTORS="aws-secret-access-key:(aws[[:space:]_-]*)?secret[[:space:]_-]*access[[:space:]_-]*key[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
-aws-activation-code:activation[[:space:]_-]*code[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}"
+aws-activation-code:activation[[:space:]_-]*code[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
+aws-session-token:(aws[[:space:]_-]*)?session[[:space:]_-]*token[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}"
 SHAPE_DETECTORS="aws-access-key-id:AKIA[0-9A-Z]{16}
 aws-session-key-id:ASIA[0-9A-Z]{16}
 managed-node-id:mi-[a-f0-9]{8,}
 uuid-literal:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}
 sso-start-url:https://[A-Za-z0-9-][A-Za-z0-9.-]*[.]awsapps[.]com/start
 email-address:[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]{2,}
-account-id-arn:arn:aws[a-z-]*:iam::[0-9]{12}"
+account-id-arn:arn:aws[a-z-]*:[a-z0-9-]*(:[a-z0-9-]*)?:[0-9]{12}"
 
 # Suppression marker (see header): a raw line containing this string is
 # skipped by every suppressible detector, in file mode and in history mode.
@@ -209,7 +218,10 @@ NEVER_SUPPRESSED=' aws-access-key-id aws-session-key-id aws-secret-access-key st
 ANNOTATED_LINES=
 
 # Compound detector: a 12-digit AWS account ID on a line that also names an
-# account variable (a bare 12-digit number alone is too generic to flag).
+# account variable (a bare 12-digit number alone is too generic to flag;
+# an account ID inside an ARN is the account-id-arn SHAPE detector's job —
+# any service, region field empty as in iam:: or populated as in
+# ssm:us-east-1: — not this one's).
 ACCOUNT_ID_ERE='[0-9]{12}'
 ACCOUNT_CONTEXT_ERE='account_id|aws_account|AccountId|AWS_ACCOUNT'
 
@@ -475,16 +487,27 @@ annotated_current_lines() {
     return 0
 }
 
-# scan_history BUCKET — scan every commit's message body and patch (all
-# refs), excluding the audit script and fixtures from the patches. Message
-# bodies are scanned separately from the patches: a pathspec-filtered
-# `git show --patch` emits NOTHING — message included — for a commit
-# whose changed paths are all excluded (or an empty commit), so a credential
-# in such a message would otherwise go unscanned. Binary content in a patch
-# appears only as a `Binary files ... differ` marker and is therefore not
-# content-scanned: that fails closed with an explicit finding.
+# scan_history BUCKET USER HOST HOST_SHORT — scan every commit's message
+# body and patch (all refs), excluding the audit script and fixtures from
+# the patches. Message bodies are scanned separately from the patches: a
+# pathspec-filtered `git show --patch` emits NOTHING — message included —
+# for a commit whose changed paths are all excluded (or an empty commit),
+# so a credential in such a message would otherwise go unscanned. Binary
+# content in a patch appears only as a `Binary files ... differ` marker and
+# is therefore not content-scanned: that fails closed with an explicit
+# finding. The runtime values (bucket name, username, hostname including
+# its short form) are scanned against BOTH streams, with the same
+# scan_literal calls the tracked-file loop makes — same needles, hostname
+# case-insensitive as there — so a value that only ever reached history
+# (a file later removed, a commit message naming the machine) is still a
+# finding. The values arrive already carrying default_audit's guards
+# (generic-user skip, short-hostname minimum), the same guarded forms the
+# tracked-file loop scans.
 scan_history() {
     _sh_bucket=${1-}
+    _sh_user=${2-}
+    _sh_host=${3-}
+    _sh_host_short=${4-}
     # Temp allocation failures fail CLOSED: returning success here would let
     # default_audit report "clean (tracked files and full history scanned)"
     # without having scanned any history (unwritable TMPDIR, full disk).
@@ -497,39 +520,61 @@ scan_history() {
         printf '%s: error: cannot create history message temp file - failing closed\n' "$SCRIPT_NAME" >&2
         exit 1
     }
+    _sh_revs=$(mktemp "${TMPDIR:-/tmp}/audit-history-revs.XXXXXXXX") || {
+        rm -f "$_sh_tmp" "$_sh_msg"
+        printf '%s: error: cannot create history rev-list temp file - failing closed\n' "$SCRIPT_NAME" >&2
+        exit 1
+    }
     # History-equivalence set: current tracked lines carrying the marker.
     ANNOTATED_LINES=$(mktemp "${TMPDIR:-/tmp}/audit-annotated.XXXXXXXX") || {
-        rm -f "$_sh_tmp" "$_sh_msg"
+        rm -f "$_sh_tmp" "$_sh_msg" "$_sh_revs"
         printf '%s: error: cannot create annotated-lines temp file - failing closed\n' "$SCRIPT_NAME" >&2
         exit 1
     }
     annotated_current_lines "$ANNOTATED_LINES"
-    git -C "$ROOT" rev-list --abbrev-commit --all |
-        while IFS= read -r _sh_sha; do
-            [ -n "$_sh_sha" ] || continue
-            _sh_label="git-history $_sh_sha"
-            # Message body: fetched unfiltered, scanned for its own sake.
-            if git -C "$ROOT" show -s --no-color --format=%B "$_sh_sha" \
-                >"$_sh_msg" 2>/dev/null && [ -s "$_sh_msg" ]; then
-                scan_stream "$_sh_label" "$_sh_msg"
-                scan_literal state-bucket-name "$_sh_label" "$_sh_msg" \
-                    "$_sh_bucket"
-            fi
-            # Patch content, with the audit script and fixtures excluded.
-            git -C "$ROOT" show --no-color --patch --format= "$_sh_sha" -- \
-                ':(exclude)scripts/audit.sh' \
-                ':(exclude)tests/fixtures/audit' \
-                >"$_sh_tmp" 2>/dev/null || continue
-            [ -s "$_sh_tmp" ] || continue
-            if grep -Eq '^Binary files .* differ' "$_sh_tmp" 2>/dev/null; then
-                printf 'FINDING %s: unscannable-binary-content (binary content changed in history — not content-scanned; verify manually)\n' \
-                    "$_sh_label"
-            fi
-            scan_stream "$_sh_label" "$_sh_tmp"
-            scan_literal state-bucket-name "$_sh_label" "$_sh_tmp" \
+    # The commit list is produced BEFORE the scan loop and its failure is
+    # fatal, in the mktemp style above: piping a failing `git rev-list`
+    # straight into the loop would leave it iterating over ZERO commits
+    # while default_audit still reports "full history scanned" — a false
+    # clean (corrupt or unreadable history, a failing git).
+    if ! git -C "$ROOT" rev-list --abbrev-commit --all >"$_sh_revs"; then
+        rm -f "$_sh_tmp" "$_sh_msg" "$_sh_revs" "$ANNOTATED_LINES"
+        ANNOTATED_LINES=
+        printf '%s: error: git rev-list failed (corrupt or unreadable history?) - failing closed, no clean result\n' "$SCRIPT_NAME" >&2
+        exit 1
+    fi
+    while IFS= read -r _sh_sha; do
+        [ -n "$_sh_sha" ] || continue
+        _sh_label="git-history $_sh_sha"
+        # Message body: fetched unfiltered, scanned for its own sake.
+        if git -C "$ROOT" show -s --no-color --format=%B "$_sh_sha" \
+            >"$_sh_msg" 2>/dev/null && [ -s "$_sh_msg" ]; then
+            scan_stream "$_sh_label" "$_sh_msg"
+            scan_literal state-bucket-name "$_sh_label" "$_sh_msg" \
                 "$_sh_bucket"
-        done
-    rm -f "$_sh_tmp" "$_sh_msg" "$ANNOTATED_LINES"
+            scan_literal username "$_sh_label" "$_sh_msg" "$_sh_user"
+            scan_literal hostname "$_sh_label" "$_sh_msg" "$_sh_host" ic
+            scan_literal hostname "$_sh_label" "$_sh_msg" \
+                "$_sh_host_short" ic
+        fi
+        # Patch content, with the audit script and fixtures excluded.
+        git -C "$ROOT" show --no-color --patch --format= "$_sh_sha" -- \
+            ':(exclude)scripts/audit.sh' \
+            ':(exclude)tests/fixtures/audit' \
+            >"$_sh_tmp" 2>/dev/null || continue
+        [ -s "$_sh_tmp" ] || continue
+        if grep -Eq '^Binary files .* differ' "$_sh_tmp" 2>/dev/null; then
+            printf 'FINDING %s: unscannable-binary-content (binary content changed in history — not content-scanned; verify manually)\n' \
+                "$_sh_label"
+        fi
+        scan_stream "$_sh_label" "$_sh_tmp"
+        scan_literal state-bucket-name "$_sh_label" "$_sh_tmp" \
+            "$_sh_bucket"
+        scan_literal username "$_sh_label" "$_sh_tmp" "$_sh_user"
+        scan_literal hostname "$_sh_label" "$_sh_tmp" "$_sh_host" ic
+        scan_literal hostname "$_sh_label" "$_sh_tmp" "$_sh_host_short" ic
+    done <"$_sh_revs"
+    rm -f "$_sh_tmp" "$_sh_msg" "$_sh_revs" "$ANNOTATED_LINES"
     ANNOTATED_LINES=
     return 0
 }
@@ -596,8 +641,10 @@ default_audit() {
             drop_scan_temp "$_scan" "$ROOT/$_f"
         done >"$_results"
 
-    # 2. Full history (message bodies and patches).
-    scan_history "$_bucket" >>"$_results"
+    # 2. Full history (message bodies and patches). The guarded runtime
+    # values pass through so history gets the same literal scans the
+    # tracked-file loop above applies.
+    scan_history "$_bucket" "$_user" "$_host" "$_host_short" >>"$_results"
 
     if [ -s "$_results" ]; then
         printf 'audit: FAIL - %s finding(s)\n' "$(grep -c . "$_results")"

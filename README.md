@@ -601,21 +601,27 @@ The default audit scans all tracked files — text directly, UTF-16 files
 scanned in decoded form — and the **full history of every commit** (message
 bodies, scanned for every commit independently of the path-filtered patches,
 plus the patches) for: AWS access-key IDs (`AKIA...`,
-`ASIA...`), secret-key and activation-code label assignments — the label
+`ASIA...`), secret-key, activation-code and session-token label assignments
+— the label
 detectors match a **lowercased copy of each line** with
 separator-wildcarded label words, so every case variant (lowercase HCL
 `aws_secret_access_key`, env `AWS_SECRET_ACCESS_KEY`, camelCase
 `SecretAccessKey`, JSON `"SecretAccessKey": "..."`, spaced
-`Secret Access Key = ...`) and every separator spelling inside the label
+`Secret Access Key = ...`, env `AWS_SESSION_TOKEN`, `SessionToken`) and
+every separator spelling inside the label
 is the same pattern — with the assignment `=` or `:` separated and
 value-length-anchored, so short synthetic literals like
-`SecretAccessKey=EXAMPLE` in the Windows-tier tests cannot trip it —
+`SecretAccessKey=EXAMPLE` or `Session Token: EXAMPLE` in the Windows-tier
+tests cannot trip it —
 managed-node IDs (`mi-...`), UUID
 literals, SSO start URLs, email addresses, and 12-digit account IDs (in ARNs
-or account-keyed contexts); these value-shape detectors match the original
+of any service — empty-region `arn:aws:iam::…` style or regional
+`arn:aws:ssm:us-east-1:…` style — or account-keyed contexts); these
+value-shape detectors match the original
 line unchanged, because their grammar is case-bearing. It also treats
 runtime values as findings if they
-appear in tracked files or history: the bucket name from your local untracked
+appear in tracked files or in history (commit message bodies and patches
+alike): the bucket name from your local untracked
 `terraform/bootstrap/terraform.tfvars`, plus your local `whoami` and `hostname`
 values. `--selftest` runs the same engine over the synthetic fixtures in
 `tests/fixtures/audit/` (each constructed to trip a detector) and exits 0 only
@@ -649,7 +655,10 @@ not decodable UTF-16 (or when `iconv` is unavailable), and any commit whose
 patch shows only git's `Binary files ... differ` marker, each produce an
 explicit `unscannable-binary-content` finding: the audit never passes
 silently over content it could not scan — decode the file, commit text, or
-verify that history manually.
+verify that history manually. The history scan fails closed the same way
+when it cannot even enumerate commits: a failing `git rev-list` (corrupt or
+unreadable history) exits with an error rather than reporting a clean
+zero-commit scan.
 
 ### tf-init.sh
 
