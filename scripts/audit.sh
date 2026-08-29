@@ -86,25 +86,24 @@
 #
 #   HARD RULE (no exception, by construction): the marker NEVER suppresses
 #   real AWS key material. A line matching an AKIA…/ASIA… access or session
-#   key ID, or a secret-key assignment in any spelling — in ANY CASE VARIANT
-#   (lowercase HCL `aws_secret_access_key = …`, uppercase env
-#   `AWS_SECRET_ACCESS_KEY=…`, camelCase `SecretAccessKey=…`, JSON
-#   `"SecretAccessKey": "…"`, spaced `Secret Access Key = …`) and any
+#   key ID, or a secret-key or session-token assignment in any spelling —
+#   in ANY CASE VARIANT (lowercase HCL `aws_secret_access_key = …`,
+#   uppercase env `AWS_SECRET_ACCESS_KEY=…`, camelCase `SecretAccessKey=…`,
+#   JSON `"SecretAccessKey": "…"`, spaced `Secret Access Key = …`) and any
 #   separator spelling, because the label detectors match a lowercased copy
 #   of each line — is ALWAYS a finding, even when the marker is present on
-#   that line. These detector classes
-#   (aws-access-key-id, aws-session-key-id, aws-secret-access-key) cannot
-#   be silenced by any marker. The runtime per-machine value checks
-#   (state-bucket-name, username, hostname) are likewise never
-#   suppressible: those values are real by definition, never synthetic.
-#   The aws-activation-code class is deliberately OUTSIDE that hard rule:
-#   synthetic activation-code literals occur in tests and documentation,
-#   and the marker exists precisely to exempt them, while a real
-#   activation code in a labeled assignment (no marker) is a finding.
-#   The aws-session-token class is outside the hard rule too, but its
-#   16-plus value anchor already keeps every known synthetic spelling
-#   (`Session Token: EXAMPLE`, 7 characters) far below it, so no line in
-#   this repository needs a marker to stay silent.
+#   that line. A session-token match therefore always carries a real token:
+#   the detector's 16-plus value anchor keeps every known synthetic
+#   spelling (`Session Token: EXAMPLE`, 7 characters) from matching at all,
+#   so no marker exemption is needed for one. These detector classes
+#   (aws-access-key-id, aws-session-key-id, aws-secret-access-key,
+#   aws-session-token) cannot be silenced by any marker. The runtime
+#   per-machine value checks (state-bucket-name, username, hostname) are
+#   likewise never suppressible: those values are real by definition, never
+#   synthetic. The aws-activation-code class is deliberately OUTSIDE that
+#   hard rule: synthetic activation-code literals occur in tests and
+#   documentation, and the marker exists precisely to exempt them, while a
+#   real activation code in a labeled assignment (no marker) is a finding.
 #
 #   History equivalence: commits made before the marker existed cannot
 #   carry it, and this repository does not rewrite history. A history
@@ -151,8 +150,8 @@ FIXTURE_DIR=tests/fixtures/audit
 # Fixtures (paths relative to the repository root) that must produce NO
 # findings: synthetic values carrying the suppression marker. Everything
 # else under $FIXTURE_DIR must produce at least one finding — including
-# marker-ignored-akia.txt, whose AKIA key shape must survive the marker
-# (hard rule, see header).
+# marker-ignored-akia.txt and marker-ignored-session-token.txt, whose
+# hard-rule credential shapes must survive the marker (see header).
 SILENT_FIXTURES='tests/fixtures/audit/synthetic-suppressed.txt'
 GENERIC_USERS=' root admin administrator user users runner ubuntu ci build builder jenkins github actions deploy deployer test tests vagrant ec2-user staff daemon nobody operator '
 
@@ -249,9 +248,9 @@ account-id-arn:[aA][rR][nN]:[aA][wW][sS][A-Za-z-]*:[A-Za-z0-9-]*(:[A-Za-z0-9-]*)
 MARKER='# audit-allow:synthetic'
 
 # Detector classes the marker can NEVER silence (see header):
-#   * the three AWS key-material classes — hard rule, no exception;
+#   * the four AWS key-material classes — hard rule, no exception;
 #   * the runtime per-machine value classes — real values, never synthetic.
-NEVER_SUPPRESSED=' aws-access-key-id aws-session-key-id aws-secret-access-key state-bucket-name username hostname '
+NEVER_SUPPRESSED=' aws-access-key-id aws-session-key-id aws-secret-access-key aws-session-token state-bucket-name username hostname '
 
 # ANNOTATED_LINES, when non-empty, names a file holding the content of every
 # current tracked line that carries the marker (marker and trailing
@@ -813,8 +812,9 @@ selftest() {
     done
 
     # Marker fixtures: synthetic values carrying the marker must produce NO
-    # finding (a), and a real AWS key-ID shape carrying the marker must STILL
-    # be detected as aws-access-key-id (b) — the hard rule in the header.
+    # finding (a), and a real AWS key-ID shape (b) or a session-token
+    # assignment clearing its 16-plus value anchor (c) carrying the marker
+    # must STILL be detected — the hard rule in the header.
     for _rel in $SILENT_FIXTURES; do
         if [ ! -f "$ROOT/$_rel" ]; then
             printf 'selftest: FAIL  %-44s fixture missing\n' "$_rel"
@@ -841,6 +841,18 @@ selftest() {
         printf 'selftest: PASS  %-44s AKIA still detected with marker\n' "$_rel"
     else
         printf 'selftest: FAIL  %-44s AKIA not detected with marker\n' "$_rel"
+        _status=1
+    fi
+
+    _rel="$FIXTURE_DIR/marker-ignored-session-token.txt"
+    if [ ! -f "$ROOT/$_rel" ]; then
+        printf 'selftest: FAIL  %-44s fixture missing\n' "$_rel"
+        _status=1
+    elif printf '%s\n' "$_found" |
+        grep -q "^FINDING $_rel:[0-9]*: aws-session-token\$"; then
+        printf 'selftest: PASS  %-44s session token still detected with marker\n' "$_rel"
+    else
+        printf 'selftest: FAIL  %-44s session token not detected with marker\n' "$_rel"
         _status=1
     fi
 

@@ -668,8 +668,8 @@ credential — setup.ps1 carries
 `$activationCode = Read-ActivationCode # audit-allow:synthetic` verbatim
 for exactly that reason. Two
 hard rules, enforced in code: the marker can **never** silence AWS key
-material (`AKIA`/`ASIA` key IDs, secret-key assignments in any spelling or
-case) or the
+material (`AKIA`/`ASIA` key IDs, secret-key or session-token assignments in
+any spelling or case) or the
 runtime per-machine value checks (bucket name, username, hostname) — those are
 real by definition. And history equivalence: a finding in an already-committed
 line is also skipped when the byte-identical line exists in the current tree

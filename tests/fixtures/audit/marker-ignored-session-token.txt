@@ -1,0 +1,7 @@
+# Synthetic audit fixture: the suppression marker must NOT silence a
+# session-token assignment whose value clears the detector's 16-plus value
+# anchor. Hard rule in the audit.sh header: the marker is for synthetic
+# values only and can never silence the AWS key-material classes. The value
+# below is synthetic (the first 20 letters of the alphabet, not a real
+# credential); this fixture is expected to still be detected.
+AWS_SESSION_TOKEN=abcdefghijklmnopqrst # audit-allow:synthetic
