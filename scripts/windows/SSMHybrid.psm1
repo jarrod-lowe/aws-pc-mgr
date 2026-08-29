@@ -531,17 +531,18 @@ The registration record an enrolled hybrid node keeps locally uses the key
 'ManagedInstanceID' (capital ID). This function parses that record and
 returns an object with the properties:
 
-  ManagedInstanceId - the mi-... managed-node identifier (string): lowercase
-                      'mi-' followed by at least eight lowercase hex digits
+  ManagedInstanceId - the mi-... managed-node identifier (string): 'mi-'
+                      followed by exactly 17 lowercase hex digits
   Region            - the AWS region recorded at registration (string; $null
                       when the record carries no Region value)
 
 Throws when the JSON is malformed, is not an object, lacks a non-empty
 'ManagedInstanceID' key, or carries a ManagedInstanceID that is not a
-well-formed managed node ID. The ID shape is the audit's managed-node-id
-grammar ('mi-' followed by at least eight lowercase hex digits) and the
-match is case-sensitive, because AWS issues only lowercase IDs; any other
-shape means the record is corrupted. Callers treat a throw as "registration
+well-formed managed node ID. The ID shape is the exact form AWS issues
+('mi-' followed by exactly 17 lowercase hex digits; tighter than the
+audit's managed-node-id grammar, which is a deliberately broad scan) and
+the match is case-sensitive, because AWS issues only lowercase IDs; any
+other shape means the record is corrupted. Callers treat a throw as "registration
 present but unparseable/incomplete" and classify the node as Ambiguous
 rather than destroying registration state (SPEC 23).
 
@@ -588,12 +589,12 @@ function ConvertFrom-SsmRegistrationJson {
     }
 
     # A parseable record can still carry a corrupted ID. AWS-issued hybrid
-    # node IDs are 'mi-' followed by lowercase hex (the audit's
-    # managed-node-id grammar); the match is case-sensitive because AWS
-    # issues only lowercase, so any other shape fails closed to Ambiguous.
+    # node IDs are 'mi-' followed by exactly 17 lowercase hex digits; the
+    # match is case-sensitive because AWS issues only lowercase, so any
+    # other shape fails closed to Ambiguous.
     $managedInstanceId = [string]$idProperty.Value
-    if ($managedInstanceId -cnotmatch '^mi-[a-f0-9]{8,}$') {
-        throw "ConvertFrom-SsmRegistrationJson: '$managedInstanceId' is not a valid managed node ID (expected the form 'mi-' followed by lowercase hex digits)."
+    if ($managedInstanceId -cnotmatch '^mi-[a-f0-9]{17}$') {
+        throw "ConvertFrom-SsmRegistrationJson: '$managedInstanceId' is not a valid managed node ID (expected 'mi-' followed by exactly 17 lowercase hex digits)."
     }
 
     $region = $null

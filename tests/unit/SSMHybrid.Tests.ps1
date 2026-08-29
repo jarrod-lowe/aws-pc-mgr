@@ -374,15 +374,30 @@ Describe 'ConvertFrom-SsmRegistrationJson' {
         { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"garbage","Region":"ap-southeast-2"}' } | Should -Throw
     }
 
-    # Case is part of the shape: AWS issues only lowercase mi- IDs, and the
-    # audit's managed-node-id grammar (mi-[a-f0-9]{8,}) is case-sensitive, so
-    # an uppercase variant is corruption and must throw, not pass.
+    # Case is part of the shape: AWS issues only lowercase mi- IDs, so an
+    # uppercase variant is corruption and must throw, not pass.
     It 'throws when ManagedInstanceID is uppercase' {
         { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"MI-0123456789ABCDEF0","Region":"ap-southeast-2"}' } | Should -Throw
     }
 
     It 'throws when ManagedInstanceID has too few hex digits' {
         { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"mi-short","Region":"ap-southeast-2"}' } | Should -Throw
+    }
+
+    # Length is part of the shape too: AWS issues exactly 17 lowercase hex
+    # digits after 'mi-', so 8, 16, and 18 digits (all of which sit inside
+    # the audit's broad managed-node-id grammar) are corruption and must
+    # throw rather than classify as registered.
+    It 'throws when ManagedInstanceID has eight hex digits' {
+        { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"mi-deadbeef","Region":"ap-southeast-2"}' } | Should -Throw # audit-allow:synthetic
+    }
+
+    It 'throws when ManagedInstanceID has sixteen hex digits' {
+        { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"mi-0123456789abcdef","Region":"ap-southeast-2"}' } | Should -Throw # audit-allow:synthetic
+    }
+
+    It 'throws when ManagedInstanceID has eighteen hex digits' {
+        { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"mi-0123456789abcdef01","Region":"ap-southeast-2"}' } | Should -Throw # audit-allow:synthetic
     }
 
     It 'throws when ManagedInstanceID has trailing junk after a valid ID' {
