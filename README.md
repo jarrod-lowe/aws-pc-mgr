@@ -625,7 +625,10 @@ detectors match a **lowercased copy of each line** with
 separator-wildcarded label words, so every case variant (lowercase HCL
 `aws_secret_access_key`, env `AWS_SECRET_ACCESS_KEY`, camelCase
 `SecretAccessKey`, JSON `"SecretAccessKey": "..."`, spaced
-`Secret Access Key = ...`, env `AWS_SESSION_TOKEN`, `SessionToken`) and
+`Secret Access Key = ...`, env `AWS_SESSION_TOKEN`, `SessionToken`, and
+the security-token spellings of the same credential — signed-request
+header `X-Amz-Security-Token`, JSON `SecurityToken`, env
+`SECURITY_TOKEN`) and
 every separator spelling inside the label
 is the same pattern — the account label likewise matches with or without
 its `id` suffix in any case (`account_id`, `accountId`, UPPER

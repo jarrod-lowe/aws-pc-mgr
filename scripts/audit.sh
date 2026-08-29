@@ -199,7 +199,11 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 # in the Windows-tier tests cannot false-positive. The aws- prefix on the
 # secret-key and session-token labels stays optional, so a bare
 # `SecretAccessKey:` (the SSM agent log spelling) and a bare
-# `SessionToken:` match too.
+# `SessionToken:` match too. The session-token detector also takes
+# `security` as an alternative first word: temporary credentials ride the
+# signed-request header `X-Amz-Security-Token` and the JSON `SecurityToken`
+# key as often as the session-token spelling, and since the label matches a
+# span inside the lowcased line the `x-amz-` prefix needs no case of its own.
 #
 # The account-id-context detector is the same machinery with a one-word
 # label — `account`, its `id` suffix optional — so snake_case `account_id`,
@@ -220,7 +224,7 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 QUOTE_CLASS="[\"']?"
 LABEL_DETECTORS="aws-secret-access-key:(aws[[:space:]_-]*)?secret[[:space:]_-]*access[[:space:]_-]*key[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
 aws-activation-code:activation[[:space:]_-]*code[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
-aws-session-token:(aws[[:space:]_-]*)?session[[:space:]_-]*token[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}
+aws-session-token:(aws[[:space:]_-]*)?(session|security)[[:space:]_-]*token[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}
 account-id-context:account([[:space:]_-]*id)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[[:space:]]*[0-9]{12}"
 SHAPE_DETECTORS="aws-access-key-id:AKIA[0-9A-Z]{16}
 aws-session-key-id:ASIA[0-9A-Z]{16}

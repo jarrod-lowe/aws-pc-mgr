@@ -263,6 +263,8 @@ Describe 'check.ps1 read-failure reporting (SPEC 24)' {
     # (the Linux test container, via check.ps1's -RegistrationPath and
     # -AgentLogPath seams) and is Skip-guarded on Windows, where an
     # unreadable fixture needs an ACL the test itself cannot set unelevated.
+    # The missing-log test below needs no unreadability arrangement, so it
+    # alone carries no Skip guard and runs on every OS.
     BeforeAll {
         # Same child-process pattern as Invoke-CheckScript, with an optional
         # launcher executable prepended to the command line: a root test
@@ -476,5 +478,23 @@ Describe 'check.ps1 read-failure reporting (SPEC 24)' {
         } finally {
             Remove-Item -LiteralPath $fixture -Force -ErrorAction SilentlyContinue
         }
+    }
+
+    It 'reports an agent log that is missing as a problem, so the check cannot pass' {
+        # No unreadability arrangement needed - just a path that does not
+        # exist - so unlike the fixtures above this runs on Windows too.
+        $missingLog = Join-Path ([System.IO.Path]::GetTempPath()) ('ssm-check-missing-log-' + [System.IO.Path]::GetRandomFileName() + '.log')
+
+        $result = Invoke-CheckScriptViaLauncher -AgentLogPath $missingLog
+
+        # The absence is reported inline with its path...
+        $result.Output | Should -Match 'Log file not found'
+        $result.Output | Should -Match ([Regex]::Escape($missingLog))
+        # ...and, like the unreadable log, it counts as a problem found: a
+        # summary bullet, no 'All checks passed', exit 1. The log diagnostic
+        # was never performed, so a passing check must be impossible.
+        $result.Output | Should -Match '(?m)^  - .*agent log was not found'
+        $result.Output | Should -Not -Match 'All checks passed'
+        $result.ExitCode | Should -Be 1
     }
 }

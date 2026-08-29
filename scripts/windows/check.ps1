@@ -24,9 +24,9 @@
 
     Exit codes: 0 = healthy, 1 = problems found. Recent log warnings are
     reported for context but do not by themselves count as problems, because
-    a healthy agent can log transient warnings; a log that exists but cannot
-    be read does count as a problem, because the log diagnostic was then
-    never performed.
+    a healthy agent can log transient warnings; a log that is missing or
+    cannot be read does count as a problem, because the log diagnostic was
+    then never performed.
 
 .PARAMETER AgentLogPath
     Agent log to excerpt warning/error lines from. Defaults to the
@@ -334,7 +334,11 @@ if (Test-Path -LiteralPath $AgentLogPath -PathType Leaf) {
         Add-Problem ('The agent log exists but could not be read (' + $failureCategory + '): ' + $AgentLogPath)
     }
 } else {
+    # Same reasoning as the unreadable log above: a missing log means the
+    # diagnostic was never performed, so it must not be possible to exit 0
+    # with 'All checks passed' over it.
     Write-Host ('  Log file not found: ' + $AgentLogPath)
+    Add-Problem ('The agent log was not found: ' + $AgentLogPath)
 }
 
 # --- summary -----------------------------------------------------------------
