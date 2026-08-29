@@ -1,0 +1,2 @@
+# Synthetic audit fixture: 12-digit AWS account ID inside an ARN.
+role_arn = "arn:aws:iam::123456789012:role/example"

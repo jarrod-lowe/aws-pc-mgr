@@ -1,0 +1,2 @@
+# Synthetic audit fixture: AWS access key ID shape. Not a real credential.
+variable = "AKIAABCDEFGHIJKLMNOP"

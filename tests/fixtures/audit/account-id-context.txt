@@ -1,0 +1,2 @@
+# Synthetic audit fixture: 12-digit AWS account ID in an account-keyed line.
+account_id = "123456789012"
