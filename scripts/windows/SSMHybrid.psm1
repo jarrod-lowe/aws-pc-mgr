@@ -18,8 +18,9 @@ $ErrorActionPreference = 'Stop'
 # Windows-only adapters
 #
 # The functions below are thin fact-gatherers / runners for the Windows side
-# of enrollment. They are deliberately NOT exported and NOT unit-tested:
-# they call Windows-only cmdlets (Get-CimInstance, Get-AuthenticodeSignature,
+# of enrollment. They are exported (setup.ps1 and check.ps1 call them
+# directly after Import-Module) but NOT unit-tested here: they call
+# Windows-only cmdlets (Get-CimInstance, Get-AuthenticodeSignature,
 # Invoke-WebRequest against Windows TLS settings, executing a .exe), which do
 # not exist in the Linux unit-test container. Windows-tier tests
 # (tests/windows/*.Tests.ps1) exercise them on the real machine.
@@ -123,9 +124,11 @@ Thin runner for the Register action:
   5. removes the temp executable.
 
 SECURITY: the activation code is passed to the executable only. The command
-line is never echoed, written or logged, and the tool's stdout/stderr are
-captured but not printed, because they may reflect arguments (SPEC 43).
-Only a success/failure verdict is returned.
+line is never echoed, written or logged, and the tool's stdout AND stderr are
+both discarded (redirected together and piped to Out-Null under a temporarily
+relaxed $ErrorActionPreference), because they may reflect arguments (SPEC 43).
+Only a success/failure verdict is returned: a non-zero exit code throws, and
+the tool's own text never reaches the console or any log.
 
 .PARAMETER Region
 Validated AWS region code.
@@ -191,8 +194,20 @@ function Invoke-SsmEnrollment {
         }
 
         # Command line carries the activation code: it is executed but never
-        # echoed, logged, or captured into any output the caller sees.
-        $null = & $exePath -register -region $Region -activation-id $ActivationId -activation-code $ActivationCode
+        # echoed, logged, or captured into any output the caller sees. BOTH
+        # streams are discarded: on 5.1, '$null = & exe' suppresses only the
+        # success stream, leaving the tool's stderr on the console, and under
+        # a caller's $ErrorActionPreference = 'Stop' redirected stderr can
+        # raise a NativeCommandError embedding the tool's text. Relaxing
+        # ErrorActionPreference around the call keeps the merged redirect
+        # quiet; $LASTEXITCODE still carries the verdict.
+        $previousEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $exePath -register -region $Region -activation-id $ActivationId -activation-code $ActivationCode 2>&1 | Out-Null
+        } finally {
+            $ErrorActionPreference = $previousEap
+        }
         if ($LASTEXITCODE -ne 0) {
             throw "Invoke-SsmEnrollment: ssm-setup-cli exited with code $LASTEXITCODE. Registration may have partially completed; inspect the SSM Agent log before re-running."
         }
@@ -633,6 +648,10 @@ function Test-SsmRegion {
     return ($Region -cmatch '^[a-z]{2}(-gov)?-[a-z]+-\d$')
 }
 
+# Eight cross-platform contract functions plus the three Windows-only
+# adapters above: setup.ps1 and check.ps1 call Get-SsmServiceInfo,
+# Get-SsmRegistrationFileJson and Invoke-SsmEnrollment directly after
+# Import-Module, so they must be part of the export surface.
 Export-ModuleMember -Function @(
     'Test-SsmRegion',
     'Test-SsmActivationId',
@@ -641,5 +660,8 @@ Export-ModuleMember -Function @(
     'Get-SsmNodeState',
     'Get-SsmSetupAction',
     'Test-SsmSignature',
-    'Read-SsmSecret'
+    'Read-SsmSecret',
+    'Get-SsmServiceInfo',
+    'Get-SsmRegistrationFileJson',
+    'Invoke-SsmEnrollment'
 )

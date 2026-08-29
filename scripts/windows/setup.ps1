@@ -215,6 +215,17 @@ if ($action -eq 'StartService') {
     $registration = Get-SsmRegistration
     Write-Step 'Registration exists and AmazonSSMAgent is stopped; starting the existing service (SPEC 23).'
 
+    # Restore Automatic startup before starting, like the Register path: a
+    # Manual/Disabled start type would leave the node offline again after the
+    # next reboot even though it is Running now.
+    $currentService = Get-SsmServiceInfo
+    $startupRestored = $false
+    if ($currentService.StartType -ne 'Automatic') {
+        Write-Step ("Restoring AmazonSSMAgent startup type to Automatic (was '" + $currentService.StartType + "').")
+        Set-Service -Name 'AmazonSSMAgent' -StartupType Automatic
+        $startupRestored = $true
+    }
+
     Start-Service -Name 'AmazonSSMAgent'
     $currentService = Get-SsmServiceInfo
     if ($currentService.Status -ne 'Running') {
@@ -227,7 +238,11 @@ if ($action -eq 'StartService') {
     Write-Host ''
     Write-Host ('Managed node ID : ' + $registration.ManagedInstanceId)
     Write-Host ('Service         : AmazonSSMAgent ' + $currentService.Status + ' / startup ' + $currentService.StartType)
-    Write-Step 'Service started; existing registration preserved.'
+    if ($startupRestored) {
+        Write-Step 'Service started and Automatic startup restored; existing registration preserved.'
+    } else {
+        Write-Step 'Service started; existing registration preserved.'
+    }
     exit 0
 }
 

@@ -29,13 +29,16 @@ Describe 'Read-SsmSecret' {
 }
 
 Describe 'Module export surface' {
-    It 'exports exactly the eight contract functions' {
+    It 'exports the eight contract functions plus the three Windows-only adapters (entry scripts call them after Import-Module)' {
         $exported = (Get-Module SSMHybrid).ExportedCommands.Keys | Sort-Object
         $expected = @(
             'ConvertFrom-SsmRegistrationJson',
             'Get-SsmNodeState',
+            'Get-SsmRegistrationFileJson',
+            'Get-SsmServiceInfo',
             'Get-SsmSetupAction',
             'Get-SsmSetupCliUrl',
+            'Invoke-SsmEnrollment',
             'Read-SsmSecret',
             'Test-SsmActivationId',
             'Test-SsmRegion',

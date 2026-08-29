@@ -617,7 +617,11 @@ it from the repository root.
   bucket configuration, the IAM trust policy and policy attachment, the
   activation settings, and the outputs.
 * **Module unit tests** — `tests/unit/SSMHybrid.Tests.ps1` (Pester 5) covers
-  the eight exported `SSMHybrid.psm1` functions; the module is written so it
+  the eight exported `SSMHybrid.psm1` contract functions; the module also
+  exports three Windows-only adapters (`Get-SsmServiceInfo`,
+  `Get-SsmRegistrationFileJson`, `Invoke-SsmEnrollment`), which `setup.ps1`
+  and `check.ps1` call after `Import-Module` — the adapters are exercised by
+  the Windows-tier tests below, not here, and the module is written so it
   imports on any OS. Run in the PowerShell 7 container:
 
   ```sh
