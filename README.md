@@ -583,7 +583,8 @@ The default audit scans all tracked text files and the **full history of every
 commit** (message bodies and patches) for: AWS access-key IDs (`AKIA...`,
 `ASIA...`), secret-key assignments in any spelling (HCL
 `aws_secret_access_key`, env `AWS_SECRET_ACCESS_KEY`, camelCase
-`SecretAccessKey` — value-length-anchored, so short synthetic literals like
+`SecretAccessKey`, JSON `"SecretAccessKey": "..."` — `=` or `: ` separated,
+value-length-anchored, so short synthetic literals like
 `SecretAccessKey=EXAMPLE` in the Windows-tier tests cannot trip it),
 managed-node IDs (`mi-...`), UUID
 literals, SSO start URLs, email addresses, and 12-digit account IDs (in ARNs

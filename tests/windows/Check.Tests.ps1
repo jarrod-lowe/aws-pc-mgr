@@ -155,6 +155,8 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
                 '2026-08-29 00:00:03 WARN agent heartbeat still fine'
                 '2026-08-29 00:00:04 WARN enrollment failed PrivateKey=EXAMPLE rejected'
                 '2026-08-29 00:00:05 WARN enrollment failed ActivationCode=EXAMPLE rejected'
+                '2026-08-29 00:00:06 WARN enrollment failed X-Amz-Security-Token=EXAMPLE rejected'
+                '2026-08-29 00:00:07 WARN enrollment failed Token=EXAMPLE rejected'
             ) | Set-Content -LiteralPath $tempLog
 
             $result = Invoke-CheckScript -ExtraArguments @('-AgentLogPath', ('"' + $tempLog + '"'))
@@ -165,13 +167,17 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
             # Credential-bearing lines are withheld behind the placeholder...
             $result.Output | Should -Match ([Regex]::Escape('[line withheld: possible credential material]'))
             # ...and their material never reaches the output. ActivationCode
-            # covers the camelCase spelling the agent log actually uses.
+            # covers the camelCase spelling the agent log actually uses;
+            # security[-_]?token covers the X-Amz-Security-Token header
+            # spelling, and the bare token\s*= covers Token=.
             $result.Output | Should -Not -Match ([Regex]::Escape('AccessKeyId=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('SecretAccessKey=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('PrivateKey=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('ActivationCode=EXAMPLE'))
+            $result.Output | Should -Not -Match ([Regex]::Escape('X-Amz-Security-Token=EXAMPLE'))
+            $result.Output | Should -Not -Match ([Regex]::Escape('Token=EXAMPLE'))
             # The withheld count is reported in the summary.
-            $result.Output | Should -Match '4 recent log warning/error line\(s\) withheld'
+            $result.Output | Should -Match '6 recent log warning/error line\(s\) withheld'
         } finally {
             Remove-Item -LiteralPath $tempLog -Force -ErrorAction SilentlyContinue
         }

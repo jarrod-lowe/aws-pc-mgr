@@ -51,10 +51,13 @@ $problems = New-Object -TypeName System.Collections.Generic.List[string]
 # diagnostic must not reproduce them (SPEC 24/43). The whole pattern is
 # case-insensitive, so the AKIA/ASIA key shapes also match lower-case
 # spellings; activation[-_]?code matches ActivationCode, activation-code and
-# activation_code; and private[-_]?key matches PrivateKey, IdentityPrivateKey,
-# PRIVATE-KEY and private_key as substrings - withholding too much is safe,
+# activation_code; private[-_]?key matches PrivateKey, IdentityPrivateKey,
+# PRIVATE-KEY and private_key as substrings; security[-_]?token matches
+# SecurityToken, security_token and the signed-request header spelling
+# X-Amz-Security-Token=; and the bare token\s*= matches Token= (and
+# unavoidably PaginationToken=-style keys) - withholding too much is safe,
 # leaking is not.
-$credentialLinePattern = '(?i)activation[-_]?code|accesskeyid|secretaccesskey|sessiontoken|private[-_]?key|aws_secret_access_key|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}'
+$credentialLinePattern = '(?i)activation[-_]?code|accesskeyid|secretaccesskey|sessiontoken|security[-_]?token|token\s*=|private[-_]?key|aws_secret_access_key|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}'
 $withheldLineCount = 0
 
 function Write-Section {
