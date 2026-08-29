@@ -7,6 +7,11 @@
 #   scripts/audit.sh --selftest   run the same detection engine over the
 #                                 synthetic fixtures in tests/fixtures/audit/;
 #                                 exit 0 iff every fixture class is detected
+#                                 as expected, including the two marker
+#                                 fixtures: synthetic values carrying the
+#                                 suppression marker stay silent, and an
+#                                 AKIA key shape carrying the marker is still
+#                                 detected (hard rule below)
 #
 # What the default audit scans:
 #   * tracked text files (git ls-files), and
@@ -45,6 +50,37 @@
 # describes this pattern (`https://…awsapps.com/start`, Unicode ellipsis)
 # does not, so the specification's self-reference is not a finding.
 #
+# SUPPRESSION MARKER `# audit-allow:synthetic`:
+#   A line carrying the marker comment `# audit-allow:synthetic` — normally
+#   as a trailing comment on the very line that holds the value — is skipped
+#   by every suppressible detector, in BOTH file mode and history mode.
+#   History mode checks the raw patch line, so a `+value # audit-allow:
+#   synthetic` line produced by `git log -p`/`git show` is skipped the same
+#   way. The marker exists ONLY for SYNTHETIC test/doc values: invented
+#   fixture literals such as `mi-0123456789abcdef0` registration JSON or
+#   example UUIDs in comment help. SPEC §27 is otherwise unchanged:
+#   runtime-discovered values (real activation IDs/codes, keys, account,
+#   bucket, machine or person identifiers) must never be committed, and the
+#   marker does not make committing one acceptable.
+#
+#   HARD RULE (no exception, by construction): the marker NEVER suppresses
+#   real AWS key material. A line matching an AKIA…/ASIA… access or session
+#   key ID, or an aws_secret_access_key assignment, is ALWAYS a finding,
+#   even when the marker is present on that line. These detector classes
+#   (aws-access-key-id, aws-session-key-id, aws-secret-access-key) cannot
+#   be silenced by any marker. The runtime per-machine value checks
+#   (state-bucket-name, username, hostname) are likewise never
+#   suppressible: those values are real by definition, never synthetic.
+#
+#   History equivalence: commits made before the marker existed cannot
+#   carry it, and this repository does not rewrite history. A history
+#   finding is therefore also skipped when the byte-identical line (git
+#   diff +/-/space prefix and trailing whitespace ignored) exists in the
+#   current tracked tree carrying the marker — the same synthetic line,
+#   annotated today, also covers its already-committed copies. Only
+#   suppressible classes receive this treatment; the hard-rule classes
+#   above never do.
+#
 # Limitation: file paths containing newline characters are not supported.
 
 LC_ALL=C
@@ -59,6 +95,12 @@ ROOT=$(CDPATH=; cd -- "$SELF_DIR/.." && pwd) || {
 }
 
 FIXTURE_DIR=tests/fixtures/audit
+# Fixtures (paths relative to the repository root) that must produce NO
+# findings: synthetic values carrying the suppression marker. Everything
+# else under $FIXTURE_DIR must produce at least one finding — including
+# marker-ignored-akia.txt, whose AKIA key shape must survive the marker
+# (hard rule, see header).
+SILENT_FIXTURES='tests/fixtures/audit/synthetic-suppressed.txt'
 GENERIC_USERS=' root admin administrator user users runner ubuntu ci build builder jenkins github actions deploy deployer test tests vagrant ec2-user staff daemon nobody operator '
 
 # ---------------------------------------------------------------------------
@@ -78,6 +120,22 @@ sso-start-url:https://[A-Za-z0-9-][A-Za-z0-9.-]*[.]awsapps[.]com/start
 email-address:[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]{2,}
 account-id-arn:arn:aws[a-z-]*:iam::[0-9]{12}"
 
+# Suppression marker (see header): a raw line containing this string is
+# skipped by every suppressible detector, in file mode and in history mode.
+MARKER='# audit-allow:synthetic'
+
+# Detector classes the marker can NEVER silence (see header):
+#   * the three AWS key-material classes — hard rule, no exception;
+#   * the runtime per-machine value classes — real values, never synthetic.
+NEVER_SUPPRESSED=' aws-access-key-id aws-session-key-id aws-secret-access-key state-bucket-name username hostname '
+
+# ANNOTATED_LINES, when non-empty, names a file holding the content of every
+# current tracked line that carries the marker (marker and trailing
+# whitespace stripped). History findings on byte-identical lines are
+# suppressed against it (history equivalence, see header). It is filled by
+# scan_history and removed when the history scan completes.
+ANNOTATED_LINES=
+
 # Compound detector: a 12-digit AWS account ID on a line that also names an
 # account variable (a bare 12-digit number alone is too generic to flag).
 ACCOUNT_ID_ERE='[0-9]{12}'
@@ -87,14 +145,46 @@ ACCOUNT_CONTEXT_ERE='account_id|aws_account|AccountId|AWS_ACCOUNT'
 ALLOWLIST_SED='s/noreply@anthropic[.]com//g'
 
 # emit_hits NAME LABEL HITS — HITS is grep -n output; first field is a line
-# number. Prints one `FINDING` record per hit.
+# number. Prints one `FINDING` record per surviving hit. Suppression (see
+# header): a hit whose raw line carries the marker is skipped for
+# suppressible classes; in history mode a hit is additionally skipped when
+# the byte-identical line exists in the current tracked tree carrying the
+# marker (git diff +/-/space prefix stripped). NEVER_SUPPRESSED classes
+# never skip — the marker cannot silence AWS key material or runtime
+# per-machine values.
 emit_hits() {
     _eh_name=$1
     _eh_label=$2
     _eh_hits=$3
     [ -n "$_eh_hits" ] || return 0
+    case "$NEVER_SUPPRESSED" in
+    *" $_eh_name "*) _eh_gate=no ;;
+    *) _eh_gate=yes ;;
+    esac
+    case "$_eh_label" in
+    'git-history '*) _eh_hist=yes ;;
+    *) _eh_hist=no ;;
+    esac
     printf '%s\n' "$_eh_hits" |
         while IFS= read -r _eh_hit; do
+            [ -n "$_eh_hit" ] || continue
+            if [ "$_eh_gate" = yes ]; then
+                _eh_line=${_eh_hit#*:}
+                case "$_eh_line" in
+                *"$MARKER"*) continue ;;
+                esac
+                if [ "$_eh_hist" = yes ] && [ -n "$ANNOTATED_LINES" ] &&
+                    [ -s "$ANNOTATED_LINES" ]; then
+                    _eh_body=$_eh_line
+                    case "$_eh_line" in
+                    '+'* | '-'* | ' '*) _eh_body=${_eh_line#?} ;;
+                    esac
+                    if printf '%s\n' "$_eh_body" | sed 's/[[:space:]]*$//' |
+                        grep -qxF -f "$ANNOTATED_LINES"; then
+                        continue
+                    fi
+                fi
+            fi
             printf 'FINDING %s:%s: %s\n' "$_eh_label" "${_eh_hit%%:*}" "$_eh_name"
         done
     return 0
@@ -178,11 +268,33 @@ tracked_files() {
         tr '\0' '\n'
 }
 
+# annotated_current_lines FILE — fill FILE with the content of every line in
+# the current tracked tree that carries the suppression marker, with the
+# marker and trailing whitespace removed. One entry per annotated line; used
+# for the history-equivalence rule (see header).
+annotated_current_lines() {
+    _acl_file=$1
+    tracked_files |
+        while IFS= read -r _acl_f; do
+            [ -n "$_acl_f" ] || continue
+            [ -f "$ROOT/$_acl_f" ] || continue
+            grep -hF -- "$MARKER" "$ROOT/$_acl_f" 2>/dev/null
+        done |
+        sed -e 's/[[:space:]]*'"$MARKER"'[[:space:]]*$//' \
+            -e 's/[[:space:]]*$//' |
+        grep -v '^$' >"$_acl_file" 2>/dev/null
+    return 0
+}
+
 # scan_history BUCKET — scan every commit's message body and patch (all
 # refs), excluding the audit script and fixtures from the patches.
 scan_history() {
     _sh_bucket=${1-}
     _sh_tmp=$(mktemp "${TMPDIR:-/tmp}/audit-history.XXXXXXXX") || return 0
+    # History-equivalence set: current tracked lines carrying the marker.
+    ANNOTATED_LINES=$(mktemp "${TMPDIR:-/tmp}/audit-annotated.XXXXXXXX") ||
+        ANNOTATED_LINES=
+    [ -n "$ANNOTATED_LINES" ] && annotated_current_lines "$ANNOTATED_LINES"
     git -C "$ROOT" rev-list --abbrev-commit --all |
         while IFS= read -r _sh_sha; do
             [ -n "$_sh_sha" ] || continue
@@ -195,7 +307,8 @@ scan_history() {
             scan_stream "$_sh_label" "$_sh_tmp"
             scan_literal state-bucket-name "$_sh_label" "$_sh_tmp" "$_sh_bucket"
         done
-    rm -f "$_sh_tmp"
+    rm -f "$_sh_tmp" "$ANNOTATED_LINES"
+    ANNOTATED_LINES=
     return 0
 }
 
@@ -296,9 +409,13 @@ selftest() {
         esac
     done
 
-    # Every fixture file must produce at least one finding.
+    # Every fixture file must produce at least one finding, except the
+    # fixtures that exist to prove the marker suppresses synthetic values.
     for _fx in $(find "$_dir" -type f | LC_ALL=C sort); do
         _rel="$FIXTURE_DIR/${_fx#"$_dir"/}"
+        case " $SILENT_FIXTURES " in
+        *" $_rel "*) continue ;;
+        esac
         case "$_nl$_found$_nl" in
         *"$_rel:"*)
             printf 'selftest: PASS  %-44s detected\n' "$_rel"
@@ -310,8 +427,40 @@ selftest() {
         esac
     done
 
+    # Marker fixtures: synthetic values carrying the marker must produce NO
+    # finding (a), and a real AWS key-ID shape carrying the marker must STILL
+    # be detected as aws-access-key-id (b) — the hard rule in the header.
+    for _rel in $SILENT_FIXTURES; do
+        if [ ! -f "$ROOT/$_rel" ]; then
+            printf 'selftest: FAIL  %-44s fixture missing\n' "$_rel"
+            _status=1
+            continue
+        fi
+        case "$_nl$_found$_nl" in
+        *"$_rel:"*)
+            printf 'selftest: FAIL  %-44s marker did not suppress\n' "$_rel"
+            _status=1
+            ;;
+        *)
+            printf 'selftest: PASS  %-44s suppressed by marker\n' "$_rel"
+            ;;
+        esac
+    done
+
+    _rel="$FIXTURE_DIR/marker-ignored-akia.txt"
+    if [ ! -f "$ROOT/$_rel" ]; then
+        printf 'selftest: FAIL  %-44s fixture missing\n' "$_rel"
+        _status=1
+    elif printf '%s\n' "$_found" |
+        grep -q "^FINDING $_rel:[0-9]*: aws-access-key-id\$"; then
+        printf 'selftest: PASS  %-44s AKIA still detected with marker\n' "$_rel"
+    else
+        printf 'selftest: FAIL  %-44s AKIA not detected with marker\n' "$_rel"
+        _status=1
+    fi
+
     if [ "$_status" -eq 0 ]; then
-        printf 'selftest: all pattern classes detected\n'
+        printf 'selftest: all classes detected (or suppressed) as expected\n'
     else
         printf 'selftest: FAIL\n' >&2
     fi

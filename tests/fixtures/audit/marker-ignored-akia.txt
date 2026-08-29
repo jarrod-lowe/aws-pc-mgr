@@ -1,0 +1,5 @@
+# Synthetic audit fixture: the suppression marker must NOT silence a real
+# AWS access key ID shape. Hard rule in the audit.sh header: the marker is
+# for synthetic values only and can never suppress AKIA/ASIA/secret-key
+# classes. This fixture is expected to still be detected.
+variable = "AKIAABCDEFGHIJKLMNOP" # audit-allow:synthetic

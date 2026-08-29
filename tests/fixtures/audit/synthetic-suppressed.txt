@@ -1,0 +1,6 @@
+# Synthetic audit fixture: values carrying the suppression marker must
+# produce NO finding in any detector class (see the audit.sh header for the
+# marker convention). This fixture is expected to be silent.
+registration_json = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}' # audit-allow:synthetic
+activation_id = "123e4567-e89b-12d3-a456-426614174000" # audit-allow:synthetic
+managed_node_id = "mi-abcdef0123456789" # audit-allow:synthetic

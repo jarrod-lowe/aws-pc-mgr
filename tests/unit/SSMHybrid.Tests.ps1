@@ -138,7 +138,7 @@ Describe 'Get-SsmNodeState' {
         }
         @{
             Name              = 'registration parseable, service running and automatic'
-            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}'
+            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}' # audit-allow:synthetic
             ServiceExists     = $true
             ServiceStatus     = 'Running'
             ServiceStartType  = 'Automatic'
@@ -146,7 +146,7 @@ Describe 'Get-SsmNodeState' {
         }
         @{
             Name              = 'registration parseable, service stopped'
-            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}'
+            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}' # audit-allow:synthetic
             ServiceExists     = $true
             ServiceStatus     = 'Stopped'
             ServiceStartType  = 'Automatic'
@@ -154,7 +154,7 @@ Describe 'Get-SsmNodeState' {
         }
         @{
             Name              = 'registration parseable, service stopped with non-automatic start'
-            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}'
+            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}' # audit-allow:synthetic
             ServiceExists     = $true
             ServiceStatus     = 'Stopped'
             ServiceStartType  = 'Manual'
@@ -162,7 +162,7 @@ Describe 'Get-SsmNodeState' {
         }
         @{
             Name              = 'registration parseable, service missing'
-            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}'
+            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}' # audit-allow:synthetic
             ServiceExists     = $false
             ServiceStatus     = ''
             ServiceStartType  = ''
@@ -170,7 +170,7 @@ Describe 'Get-SsmNodeState' {
         }
         @{
             Name              = 'registration parseable, service running but not automatic'
-            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}'
+            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}' # audit-allow:synthetic
             ServiceExists     = $true
             ServiceStatus     = 'Running'
             ServiceStartType  = 'Manual'
@@ -201,12 +201,12 @@ Describe 'Get-SsmNodeState' {
 
 Describe 'ConvertFrom-SsmRegistrationJson' {
     BeforeAll {
-        $script:goodJson = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}'
+        $script:goodJson = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}' # audit-allow:synthetic
     }
 
     It 'maps the source key ManagedInstanceID to ManagedInstanceId' {
         $result = ConvertFrom-SsmRegistrationJson -Json $script:goodJson
-        $result.ManagedInstanceId | Should -Be 'mi-0123456789abcdef0'
+        $result.ManagedInstanceId | Should -Be 'mi-0123456789abcdef0' # audit-allow:synthetic
     }
 
     It 'passes the Region through unchanged' {
@@ -261,8 +261,8 @@ Describe 'Get-SsmSetupCliUrl' {
 
 Describe 'Test-SsmActivationId' {
     It 'accepts <ActivationId>' -TestCases @(
-        @{ ActivationId = '08e51e79-2c3f-4a5d-8f6e-9a7b0c1d2e3f' }
-        @{ ActivationId = '123E4567-E89B-12D3-A456-426614174000' }
+        @{ ActivationId = '08e51e79-2c3f-4a5d-8f6e-9a7b0c1d2e3f' } # audit-allow:synthetic
+        @{ ActivationId = '123E4567-E89B-12D3-A456-426614174000' } # audit-allow:synthetic
     ) {
         param($ActivationId)
         Test-SsmActivationId -ActivationId $ActivationId | Should -BeTrue
@@ -272,7 +272,7 @@ Describe 'Test-SsmActivationId' {
         @{ ActivationId = 'not-a-uuid' }
         @{ ActivationId = '08e51e792c3f4a5d8f6e9a7b0c1d2e3f' }
         @{ ActivationId = '08e51e79-2c3f-4a5d-8f6e' }
-        @{ ActivationId = '{08e51e79-2c3f-4a5d-8f6e-9a7b0c1d2e3f}' }
+        @{ ActivationId = '{08e51e79-2c3f-4a5d-8f6e-9a7b0c1d2e3f}' } # audit-allow:synthetic
         @{ ActivationId = '' }
         @{ ActivationId = $null }
     ) {

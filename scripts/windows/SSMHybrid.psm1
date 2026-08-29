@@ -577,7 +577,7 @@ Tests whether a string is a well-formed UUID, as an SSM activation ID must be.
 
 .DESCRIPTION
 True iff the string matches the canonical 8-4-4-4-12 hexadecimal UUID format
-(for example 08e51e79-2c3f-4a5d-8f6e-9a7b0c1d2e3f). Upper- and lower-case
+(for example 08e51e79-2c3f-4a5d-8f6e-9a7b0c1d2e3f). Upper- and lower-case # audit-allow:synthetic
 hex digits are both accepted; braces and undashed forms are rejected.
 
 .PARAMETER ActivationId
