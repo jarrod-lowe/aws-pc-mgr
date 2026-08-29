@@ -15,7 +15,9 @@
         StartService         registration present, service stopped exit 0
         Register             install + register this machine       exit 0
         ManualIntervention   ambiguous/unhealthy; nothing changed  exit 3
-        Reregister           -ForceReregister + confirmation      exit 3
+        Reregister           -ForceReregister + confirmation:
+                             stop agent, clear registration,
+                             leave agent stopped                  exit 3
 
     Any other refusal or failure exits 1; invalid inputs exit 2.
 
@@ -40,9 +42,11 @@
     invalid.
 
 .PARAMETER ForceReregister
-    Destructive: clears the existing local registration after an explicit
-    interactive confirmation, then exits 3. Re-enrollment is a fresh run of
-    this script with a new activation.
+    Destructive: after an explicit interactive confirmation, stops the
+    AmazonSSMAgent service, clears the existing local registration, and
+    leaves the service STOPPED, then exits 3. Re-enrollment is a fresh run
+    of this script with a new activation; that Register run starts the
+    service again.
 
 .EXAMPLE
     .\setup.ps1
@@ -358,6 +362,7 @@ if ($action -eq 'ManualIntervention') {
 
 if ($action -eq 'Reregister') {
     Write-Host 'Reregistration was requested with -ForceReregister. This is DESTRUCTIVE:'
+    Write-Host '  - AmazonSSMAgent is stopped first and left STOPPED after the clear;'
     Write-Host '  - the local SSM registration will be cleared (amazon-ssm-agent -register -clear);'
     Write-Host '  - the current managed node ID stops being used by this machine;'
     Write-Host '  - the node remains registered in AWS until separately deregistered there;'
@@ -373,7 +378,39 @@ if ($action -eq 'Reregister') {
     if (-not (Test-Path -LiteralPath $agentExe -PathType Leaf)) {
         Write-Fail ("amazon-ssm-agent.exe was not found at " + $agentExe + ".")
         Write-Host 'Nothing was changed. Clear the registration manually once the agent exists:'
+        Write-Host ("  Stop-Service AmazonSSMAgent")
         Write-Host ("  & '" + $agentExe + "' -register -clear")
+        exit 3
+    }
+
+    # Stop the agent BEFORE the clear, the same sequence the README's manual
+    # reset documents: a running agent can hold or rewrite its registration
+    # data while -register -clear runs. Already-stopped and service-missing
+    # are both tolerated; the clear only proceeds once the service is verified
+    # stopped. The service is deliberately NOT started again in this run: with
+    # no registration left it has nothing to run with, and the fresh Register
+    # run (a new activation) brings it back.
+    $serviceBeforeClear = Get-SsmServiceInfo
+    if (-not $serviceBeforeClear.Exists) {
+        Write-Step 'AmazonSSMAgent service not found; nothing to stop before the clear.'
+    } elseif ($serviceBeforeClear.Status -eq 'Stopped') {
+        Write-Step 'AmazonSSMAgent is already stopped.'
+    } else {
+        Write-Step ("Stopping AmazonSSMAgent before the clear (was '" + $serviceBeforeClear.Status + "').")
+        try {
+            Stop-Service -Name 'AmazonSSMAgent'
+        } catch {
+            Write-Fail ("Stopping AmazonSSMAgent failed: " + $_.Exception.Message)
+            Write-Host 'Nothing was changed and the registration was NOT cleared. Inspect:'
+            Write-Host 'Get-Service AmazonSSMAgent and the SSM Agent log, then re-run.'
+            exit 3
+        }
+    }
+
+    $serviceAtClear = Get-SsmServiceInfo
+    if ($serviceAtClear.Exists -and ($serviceAtClear.Status -ne 'Stopped')) {
+        Write-Fail ("AmazonSSMAgent did not stop (status '" + $serviceAtClear.Status + "'); the registration was NOT cleared.")
+        Write-Host 'Inspect: Get-Service AmazonSSMAgent and the SSM Agent log, then re-run.'
         exit 3
     }
 
@@ -387,8 +424,10 @@ if ($action -eq 'Reregister') {
     }
 
     Write-Step 'Local registration cleared.'
-    Write-Host 'Re-enroll by running this script again WITHOUT -ForceReregister, providing a'
-    Write-Host 'fresh activation (the previous one is consumed).'
+    Write-Host 'AmazonSSMAgent has deliberately been left STOPPED: without a registration it'
+    Write-Host 'has nothing to run with. Re-enroll by running this script again WITHOUT'
+    Write-Host '-ForceReregister, providing a fresh activation (the previous one is consumed);'
+    Write-Host 'that Register run starts AmazonSSMAgent again with the new identity.'
     exit 3
 }
 

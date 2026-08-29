@@ -13,13 +13,17 @@ mock_provider "aws" {
   # derives it from data.aws_partition.current (SPEC 17). The mock would
   # invent a random partition string that fails ARN validation in every run
   # (including the plain-plan skeleton run), so pin the data source here for
-  # all runs in this file. Pinned to the commercial partition, the iam run
-  # asserts the attachment ARN is the standard arn:aws:... shape; the
-  # GovCloud partition flows through the same interpolation.
+  # all runs in this file. partition and dns_suffix are pinned together so
+  # every derived value in the iam run is deterministic: the commercial
+  # arn:aws:... ARN shape and the ssm.<dns_suffix> trust principal.
+  # (A commercial pin cannot by itself tell derivation from a hard-coded
+  # "ssm.amazonaws.com" literal — the two coincide — so the China-partition
+  # counterpart of these asserts lives in trust-principal-partition.tftest.hcl.)
   override_data {
     target = data.aws_partition.current
     values = {
-      partition = "aws"
+      partition  = "aws"
+      dns_suffix = "amazonaws.com"
     }
   }
 }
@@ -39,8 +43,8 @@ run "iam_role_for_hybrid_node" {
   }
 
   assert {
-    condition     = jsondecode(aws_iam_role.ssm_hybrid_node.assume_role_policy).Statement[0].Principal.Service == "ssm.amazonaws.com"
-    error_message = "trust policy must allow the SSM service principal to assume the role"
+    condition     = jsondecode(aws_iam_role.ssm_hybrid_node.assume_role_policy).Statement[0].Principal.Service == "ssm.${data.aws_partition.current.dns_suffix}"
+    error_message = "trust policy must allow the SSM service principal to assume the role, with the principal derived from data.aws_partition.current.dns_suffix"
   }
 
   assert {

@@ -50,14 +50,21 @@ $problems = New-Object -TypeName System.Collections.Generic.List[string]
 # Such lines are never printed: the agent log can echo these back, and this
 # diagnostic must not reproduce them (SPEC 24/43). The whole pattern is
 # case-insensitive, so the AKIA/ASIA key shapes also match lower-case
-# spellings; activation[-_]?code matches ActivationCode, activation-code and
-# activation_code; private[-_]?key matches PrivateKey, IdentityPrivateKey,
-# PRIVATE-KEY and private_key as substrings; security[-_]?token matches
-# SecurityToken, security_token and the signed-request header spelling
-# X-Amz-Security-Token=; and the bare token\s*= matches Token= (and
-# unavoidably PaginationToken=-style keys) - withholding too much is safe,
-# leaking is not.
-$credentialLinePattern = '(?i)activation[-_]?code|accesskeyid|secretaccesskey|sessiontoken|security[-_]?token|token\s*=|private[-_]?key|aws_secret_access_key|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}'
+# spellings. Label spellings tolerate any mix of whitespace and -/_ separators
+# INSIDE the label, so 'ActivationCode=', 'Activation Code =', 'activation_code'
+# and 'ACTIVATION-CODE' all match: a label like 'Session Token: ...' with a
+# space separator is exactly the shape a log line realistically takes.
+# activation[\s_-]*code matches ActivationCode, Activation Code, activation-code
+# and activation_code; access[\s_-]*key[\s_-]*id matches AccessKeyId,
+# 'Access Key ID' and access_key_id; secret[\s_-]*access[\s_-]*key matches
+# SecretAccessKey, aws_secret_access_key and "Secret Access Key";
+# session[\s_-]*token matches SessionToken and 'Session Token';
+# security[\s_-]*token matches SecurityToken, security_token and the
+# signed-request header spelling X-Amz-Security-Token=; private[\s_-]*key
+# matches PrivateKey, IdentityPrivateKey, PRIVATE-KEY and private_key as
+# substrings; and the bare token\s*= matches Token= (and unavoidably
+# PaginationToken=-style keys) - withholding too much is safe, leaking is not.
+$credentialLinePattern = '(?i)activation[\s_-]*code|access[\s_-]*key[\s_-]*id|secret[\s_-]*access[\s_-]*key|session[\s_-]*token|security[\s_-]*token|token\s*=|private[\s_-]*key|aws_secret_access_key|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}'
 $withheldLineCount = 0
 
 function Write-Section {

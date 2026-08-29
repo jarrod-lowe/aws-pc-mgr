@@ -157,6 +157,8 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
                 '2026-08-29 00:00:05 WARN enrollment failed ActivationCode=EXAMPLE rejected'
                 '2026-08-29 00:00:06 WARN enrollment failed X-Amz-Security-Token=EXAMPLE rejected'
                 '2026-08-29 00:00:07 WARN enrollment failed Token=EXAMPLE rejected'
+                '2026-08-29 00:00:08 WARN enrollment failed Activation Code = EXAMPLE rejected'
+                '2026-08-29 00:00:09 WARN enrollment failed Session Token: EXAMPLE rejected'
             ) | Set-Content -LiteralPath $tempLog
 
             $result = Invoke-CheckScript -ExtraArguments @('-AgentLogPath', ('"' + $tempLog + '"'))
@@ -169,15 +171,20 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
             # ...and their material never reaches the output. ActivationCode
             # covers the camelCase spelling the agent log actually uses;
             # security[-_]?token covers the X-Amz-Security-Token header
-            # spelling, and the bare token\s*= covers Token=.
+            # spelling, and the bare token\s*= covers Token=. The last two
+            # lines use whitespace-separated labels ('Activation Code =',
+            # 'Session Token:') - the label alternations tolerate separators
+            # INSIDE the label, so those spellings are withheld too.
             $result.Output | Should -Not -Match ([Regex]::Escape('AccessKeyId=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('SecretAccessKey=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('PrivateKey=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('ActivationCode=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('X-Amz-Security-Token=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('Token=EXAMPLE'))
+            $result.Output | Should -Not -Match ([Regex]::Escape('Activation Code = EXAMPLE'))
+            $result.Output | Should -Not -Match ([Regex]::Escape('Session Token: EXAMPLE'))
             # The withheld count is reported in the summary.
-            $result.Output | Should -Match '6 recent log warning/error line\(s\) withheld'
+            $result.Output | Should -Match '8 recent log warning/error line\(s\) withheld'
         } finally {
             Remove-Item -LiteralPath $tempLog -Force -ErrorAction SilentlyContinue
         }

@@ -376,7 +376,7 @@ classifies the machine into one of six states, prints
 | `RegisteredHealthy` | `NoOperation` | report ID, verify service | 0 |
 | `RegisteredStopped` | `StartService` | start existing service (no re-register) | 0 |
 | `RegisteredUnhealthy` / `Ambiguous` | `ManualIntervention` | explain, change nothing | 3 |
-| any registered state + `-ForceReregister` | `Reregister` | confirm, then clear local registration | 3 |
+| any registered state + `-ForceReregister` | `Reregister` | confirm, stop agent, clear local registration, leave agent stopped | 3 |
 
 What each path prints and does:
 
@@ -411,15 +411,20 @@ What each path prints and does:
   notes registration may be partially complete and nothing was deleted or
   deregistered; exits 3.
 * **Reregister** (`-ForceReregister`) — prints an explicit DESTRUCTIVE warning:
-  the local SSM registration will be cleared (`amazon-ssm-agent -register
-  -clear`); **the current managed-node ID stops being used by this machine
+  AmazonSSMAgent will be stopped first and left STOPPED; the local SSM
+  registration will be cleared (`amazon-ssm-agent -register -clear`);
+  **the current managed-node ID stops being used by this machine
   (the existing registration identity is destroyed)**; the node remains
   registered in AWS until separately deregistered there; and re-enrollment
   consumes a **new** activation (the previous one is consumed — the limit is 1)
   and yields a **new** managed-node ID. You must type `yes` to proceed; the
-  script then clears the local registration and exits 3. Re-enroll by running
-  the script again **without** `-ForceReregister`, providing fresh activation
-  values.
+  script then stops AmazonSSMAgent (already-stopped and service-missing are
+  both tolerated; the clear only runs once the service is verified stopped —
+  the same stop-first sequence as the manual reset below), clears the local
+  registration, leaves the service stopped — without a registration it has
+  nothing to run with — and exits 3. Re-enroll by running the script again
+  **without** `-ForceReregister`, providing fresh activation values; that
+  Register run starts AmazonSSMAgent again with the new identity.
 
 **Exit codes.** `0` success; `1` refusal or failure (not elevated, service
 query failure, registration failure, unexpected state — nothing deleted);
@@ -484,8 +489,8 @@ terraform output -raw activation_code
 Then, within the activation's lifetime (24 hours by default), on Windows:
 
 ```powershell
-.\scripts\windows\setup.ps1 -ForceReregister   # type yes; clears local registration; exits 3
-.\scripts\windows\setup.ps1                    # re-enroll with the NEW activation values
+.\scripts\windows\setup.ps1 -ForceReregister   # type yes; stops agent, clears local registration, leaves agent stopped; exits 3
+.\scripts\windows\setup.ps1                    # re-enroll with the NEW activation values (starts the agent again)
 ```
 
 ## Destruction and deregistration
@@ -516,8 +521,9 @@ run them yourself, nothing here automates cleanup:
    ```
 
    `-register -clear` removes the agent's local registration data under
-   `$env:ProgramData\Amazon\SSM\InstanceData`. This is the same clear operation
-   `-ForceReregister` performs; doing it here just leaves the machine
+   `$env:ProgramData\Amazon\SSM\InstanceData`. This is the same stop-then-clear
+   sequence `-ForceReregister` performs (that path stops the service before the
+   clear and leaves it stopped); doing it here just leaves the machine
    unregistered.
 
 3. **Optionally uninstall SSM Agent** (Windows *Apps & features* / installed
