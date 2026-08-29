@@ -579,8 +579,11 @@ scripts/audit.sh             # audit the repository; exit 1 on any finding
 scripts/audit.sh --selftest  # prove every detector still fires on synthetic fixtures
 ```
 
-The default audit scans all tracked text files and the **full history of every
-commit** (message bodies and patches) for: AWS access-key IDs (`AKIA...`,
+The default audit scans all tracked files — text directly, UTF-16 files
+(such as Windows PowerShell `>` redirection output) decoded to UTF-8 and
+scanned in decoded form — and the **full history of every commit** (message
+bodies, scanned for every commit independently of the path-filtered patches,
+plus the patches) for: AWS access-key IDs (`AKIA...`,
 `ASIA...`), secret-key assignments in any spelling (HCL
 `aws_secret_access_key`, env `AWS_SECRET_ACCESS_KEY`, camelCase
 `SecretAccessKey`, JSON `"SecretAccessKey": "..."` — `=` or `: ` separated,
@@ -611,6 +614,13 @@ line is also skipped when the byte-identical line exists in the current tree
 carrying the marker, so synthetic lines committed before the marker existed
 need no history rewrite. Never use the marker to make a runtime-discovered
 value committable; that is not what it is for.
+
+**Binary content fails closed.** A tracked file with binary content that is
+not decodable UTF-16 (or when `iconv` is unavailable), and any commit whose
+patch shows only git's `Binary files ... differ` marker, each produce an
+explicit `unscannable-binary-content` finding: the audit never passes
+silently over content it could not scan — decode the file, commit text, or
+verify that history manually.
 
 ### tf-init.sh
 

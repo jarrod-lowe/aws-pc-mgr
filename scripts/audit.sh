@@ -14,8 +14,16 @@
 #                                 detected (hard rule below)
 #
 # What the default audit scans:
-#   * tracked text files (git ls-files), and
-#   * every commit, all refs: commit message body plus patch (git show),
+#   * tracked files (git ls-files) — text files directly, UTF-16 files
+#     (BOM or NUL-interleaved bytes, e.g. Windows PowerShell `>` redirection
+#     output) decoded to UTF-8 and scanned in decoded form, and
+#   * every commit, all refs: commit message body plus patch. The message
+#     body is scanned for EVERY commit independently of the patch: the patch
+#     stream is path-filtered (audit script and fixtures excluded), and a
+#     commit whose changed paths are all excluded — including an empty
+#     commit — makes `git show --patch -- <paths>` emit nothing at all,
+#     message included. Message bodies therefore get their own unfiltered
+#     `git show -s --format=%B` pass.
 #   * the values `whoami` and `hostname` return locally (tracked files only),
 #   * the bucket_name from the local untracked terraform/bootstrap/
 #     terraform.tfvars, if that file exists (tracked files and history).
@@ -82,6 +90,15 @@
 #   annotated today, also covers its already-committed copies. Only
 #   suppressible classes receive this treatment; the hard-rule classes
 #   above never do.
+#
+# Binary content fails CLOSED — it is never silently skipped. A tracked file
+# with binary content that is not decodable UTF-16 (or when iconv is
+# unavailable), and any commit whose patch carries git's `Binary files ...
+# differ` marker (content not shown, so not content-scanned), each produce an
+# explicit `unscannable-binary-content` finding: decode the file, commit
+# text, or verify manually. The audit does not pass over content it could
+# not scan. (No binary files are tracked in this repository, so a clean
+# audit contains no such finding.)
 #
 # Limitation: file paths containing newline characters are not supported.
 
@@ -258,6 +275,59 @@ EOF
     return 0
 }
 
+# has_nul_bytes FILE — succeed when FILE contains at least one NUL byte.
+# This is grep's own C-locale test for binary input, done explicitly because
+# `grep -Iq .` cannot be used as the oracle here: -q exits at the first
+# matching line, before any NUL further into the file is seen, so a UTF-16
+# file whose BOM bytes already match `.` is reported as text — and its
+# NUL-interleaved content then matches no (ASCII-shaped) detector, a silent
+# pass. od prints exactly two lowercase hex digits per byte, space-separated
+# with a leading space per line, so ' 00' matches a NUL byte and nothing
+# else.
+has_nul_bytes() {
+    od -An -v -t x1 -- "$1" 2>/dev/null | grep -q ' 00'
+    return $?
+}
+
+# scan_binary_file PATH LABEL — PATH is non-empty and binary-looking (NUL
+# bytes, or `grep -I` calling it binary). UTF-16 files are decoded to UTF-8
+# and the decoded text scanned under LABEL; the encoding is chosen from the
+# first two bytes (BOM, or a NUL interleaved with ASCII says the byte order)
+# and the head-derived guess is tried BEFORE the BOM-less default, because
+# `iconv -f UTF-16` on BOM-less input assumes an endianness and happily
+# decodes the wrong one into garbage. Anything not decodable — including a
+# missing iconv — fails closed with an explicit finding instead of a silent
+# pass (see header).
+scan_binary_file() {
+    _sb_path=$1
+    _sb_label=$2
+    _sb_head=$(od -An -N2 -t x1 -- "$_sb_path" 2>/dev/null | tr -d ' \n')
+    _sb_encs=
+    case "$_sb_head" in
+    fffe) _sb_encs='UTF-16 UTF-16LE' ;;
+    feff) _sb_encs='UTF-16 UTF-16BE' ;;
+    00*) _sb_encs='UTF-16BE UTF-16' ;;
+    ??00) _sb_encs='UTF-16LE UTF-16' ;;
+    esac
+    if [ -n "$_sb_encs" ] && command -v iconv >/dev/null 2>&1; then
+        _sb_tmp=$(mktemp "${TMPDIR:-/tmp}/audit-utf16.XXXXXXXX") || _sb_tmp=
+        if [ -n "$_sb_tmp" ]; then
+            for _sb_enc in $_sb_encs; do
+                if iconv -f "$_sb_enc" -t UTF-8 -- "$_sb_path" \
+                    >"$_sb_tmp" 2>/dev/null; then
+                    scan_stream "$_sb_label" "$_sb_tmp"
+                    rm -f "$_sb_tmp"
+                    return 0
+                fi
+            done
+            rm -f "$_sb_tmp"
+        fi
+    fi
+    printf 'FINDING %s: unscannable-binary-content (file skipped by detectors — decode, commit text, or verify manually)\n' \
+        "$_sb_label"
+    return 0
+}
+
 # scan_file PATH [LABEL] — scan one tracked file. PATH is the file to open
 # (absolute, or relative to the caller's cwd); LABEL, defaulting to PATH, is
 # the repo-relative name reported in findings and checked against the
@@ -265,14 +335,22 @@ EOF
 # $ROOT/<path> from any cwd while findings still name repo-relative paths.
 # Skips the audit script itself and the fixtures (also excluded at the
 # git-pathspec level; kept here so direct callers cannot bypass the
-# exclusion), and skips binary/empty files.
+# exclusion), and skips empty files. Binary-looking content (NUL bytes, a
+# UTF-16 BOM, or `grep -I` reporting binary) is handled fail-closed by
+# scan_binary_file: decoded and scanned when it is UTF-16, otherwise an
+# explicit unscannable-binary-content finding.
 scan_file() {
     _sf_path=$1
     _sf_label=${2-$_sf_path}
     case "$_sf_label" in
     scripts/audit.sh | tests/fixtures/audit | tests/fixtures/audit/*) return 0 ;;
     esac
-    grep -Iq . "$_sf_path" 2>/dev/null || return 0
+    [ -s "$_sf_path" ] || return 0
+    if has_nul_bytes "$_sf_path" ||
+        ! grep -Iq . "$_sf_path" 2>/dev/null; then
+        scan_binary_file "$_sf_path" "$_sf_label"
+        return 0
+    fi
     scan_stream "$_sf_label" "$_sf_path"
     return 0
 }
@@ -305,10 +383,20 @@ annotated_current_lines() {
 }
 
 # scan_history BUCKET — scan every commit's message body and patch (all
-# refs), excluding the audit script and fixtures from the patches.
+# refs), excluding the audit script and fixtures from the patches. Message
+# bodies are scanned separately from the patches: a pathspec-filtered
+# `git show --patch` emits NOTHING — message included — for a commit
+# whose changed paths are all excluded (or an empty commit), so a credential
+# in such a message would otherwise go unscanned. Binary content in a patch
+# appears only as a `Binary files ... differ` marker and is therefore not
+# content-scanned: that fails closed with an explicit finding.
 scan_history() {
     _sh_bucket=${1-}
     _sh_tmp=$(mktemp "${TMPDIR:-/tmp}/audit-history.XXXXXXXX") || return 0
+    _sh_msg=$(mktemp "${TMPDIR:-/tmp}/audit-history-msg.XXXXXXXX") || {
+        rm -f "$_sh_tmp"
+        return 0
+    }
     # History-equivalence set: current tracked lines carrying the marker.
     ANNOTATED_LINES=$(mktemp "${TMPDIR:-/tmp}/audit-annotated.XXXXXXXX") ||
         ANNOTATED_LINES=
@@ -316,16 +404,29 @@ scan_history() {
     git -C "$ROOT" rev-list --abbrev-commit --all |
         while IFS= read -r _sh_sha; do
             [ -n "$_sh_sha" ] || continue
-            git -C "$ROOT" show --no-color --patch --format=%B "$_sh_sha" -- \
+            _sh_label="git-history $_sh_sha"
+            # Message body: fetched unfiltered, scanned for its own sake.
+            if git -C "$ROOT" show -s --no-color --format=%B "$_sh_sha" \
+                >"$_sh_msg" 2>/dev/null && [ -s "$_sh_msg" ]; then
+                scan_stream "$_sh_label" "$_sh_msg"
+                scan_literal state-bucket-name "$_sh_label" "$_sh_msg" \
+                    "$_sh_bucket"
+            fi
+            # Patch content, with the audit script and fixtures excluded.
+            git -C "$ROOT" show --no-color --patch --format= "$_sh_sha" -- \
                 ':(exclude)scripts/audit.sh' \
                 ':(exclude)tests/fixtures/audit' \
                 >"$_sh_tmp" 2>/dev/null || continue
             [ -s "$_sh_tmp" ] || continue
-            _sh_label="git-history $_sh_sha"
+            if grep -Eq '^Binary files .* differ' "$_sh_tmp" 2>/dev/null; then
+                printf 'FINDING %s: unscannable-binary-content (binary content changed in history — not content-scanned; verify manually)\n' \
+                    "$_sh_label"
+            fi
             scan_stream "$_sh_label" "$_sh_tmp"
-            scan_literal state-bucket-name "$_sh_label" "$_sh_tmp" "$_sh_bucket"
+            scan_literal state-bucket-name "$_sh_label" "$_sh_tmp" \
+                "$_sh_bucket"
         done
-    rm -f "$_sh_tmp" "$ANNOTATED_LINES"
+    rm -f "$_sh_tmp" "$_sh_msg" "$ANNOTATED_LINES"
     ANNOTATED_LINES=
     return 0
 }
