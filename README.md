@@ -331,7 +331,10 @@ From an elevated PowerShell in the repository root on the Windows machine:
 Interactive prompts ask for the AWS region, the Activation ID, and the
 Activation Code (**masked**) — but only when the machine turns out to actually
 need enrolling; a re-run on an already-registered machine asks for nothing.
-You can also pass `-Region` / `-ActivationId` up front. No AWS SSO login and
+Prefer the parameterless run: a value typed at a prompt is not recorded in
+PSReadLine history, whereas anything typed on the command line — including an
+inline `-ActivationId` value — is. `-Region` / `-ActivationId` still exist for
+scripted use. No AWS SSO login and
 no AWS CLI involvement happens on Windows. See
 [Windows enrollment: setup.ps1](#windows-enrollment-setupps1) for exactly what
 the script prints and does.
@@ -355,20 +358,24 @@ authoritative.
 `SSMHybrid.psm1` module next to it).
 
 ```text
-.\scripts\windows\setup.ps1                                   # fully interactive
-.\scripts\windows\setup.ps1 -Region ap-southeast-2 -ActivationId <activation-id>
+.\scripts\windows\setup.ps1                                   # fully interactive (preferred)
+.\scripts\windows\setup.ps1 -Region ap-southeast-2            # scripted use; see Parameters
 .\scripts\windows\setup.ps1 -ForceReregister                  # destructive; see below
 ```
 
-**Parameters.** `-Region` and `-ActivationId` are optional. When supplied they
-are validated immediately (an invalid supplied value fails fast with exit 2
-after up to three prompt attempts). When omitted they are prompted for (up to
-three attempts) **only on the `Register` path** — every other action completes
-without them, so a parameterless re-run on an already-enrolled machine asks for
-nothing at all. The **Activation Code is never a parameter and never appears on
-a command line**: it is read through a masked `Read-Host -AsSecureString`
-prompt (`Read-SsmSecret`), and only when a registration is actually about to
-run — an idempotent re-run never asks for it.
+**Parameters.** `-Region` and `-ActivationId` are optional, and exist for
+scripted use. When supplied they are validated immediately (an invalid supplied
+value fails fast with exit 2 after up to three prompt attempts). When omitted
+they are prompted for (up to three attempts) **only on the `Register` path** —
+every other action completes without them, so a parameterless re-run on an
+already-enrolled machine asks for nothing at all. **Prefer the prompts**:
+anything typed on a command line is recorded in PSReadLine history — and its
+on-disk history file — in plain text, so an inline `-ActivationId` value
+outlives the session, while the same value typed at a prompt does not. The
+**Activation Code is never a parameter and never appears on a command line**:
+it is read through a masked `Read-Host -AsSecureString` prompt
+(`Read-SsmSecret`), and only when a registration is actually about to run — an
+idempotent re-run never asks for it.
 
 **Flow.** The script first refuses to run unless elevated (exit 1, nothing
 changed), then validates any supplied `-Region` / `-ActivationId`, then

@@ -143,7 +143,7 @@ Describe 'Get-SsmNodeState' {
     It 'classifies <Name> as <Expected>' -TestCases @(
         @{
             Name              = 'no service and no registration file'
-            RegistrationJson  = ''
+            RegistrationJson  = $null
             ServiceExists     = $false
             ServiceStatus     = ''
             ServiceStartType  = ''
@@ -151,11 +151,35 @@ Describe 'Get-SsmNodeState' {
         }
         @{
             Name              = 'service present but no registration file'
-            RegistrationJson  = ''
+            RegistrationJson  = $null
             ServiceExists     = $true
             ServiceStatus     = 'Running'
             ServiceStartType  = 'Automatic'
             Expected          = 'InstalledUnregistered'
+        }
+        @{
+            Name              = 'registration file present but empty, service absent'
+            RegistrationJson  = ''
+            ServiceExists     = $false
+            ServiceStatus     = ''
+            ServiceStartType  = ''
+            Expected          = 'Ambiguous'
+        }
+        @{
+            Name              = 'registration file present but empty, service healthy'
+            RegistrationJson  = ''
+            ServiceExists     = $true
+            ServiceStatus     = 'Running'
+            ServiceStartType  = 'Automatic'
+            Expected          = 'Ambiguous'
+        }
+        @{
+            Name              = 'registration file present but whitespace-only'
+            RegistrationJson  = '   '
+            ServiceExists     = $true
+            ServiceStatus     = 'Running'
+            ServiceStartType  = 'Automatic'
+            Expected          = 'Ambiguous'
         }
         @{
             Name              = 'registration parseable, service running and automatic'

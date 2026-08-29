@@ -9,3 +9,5 @@ override.tf
 override.tf.json
 crash.log
 *.exe
+# PowerShell non-interactive startup cache dropped by container pwsh runs
+StartupProfileData-NonInteractive

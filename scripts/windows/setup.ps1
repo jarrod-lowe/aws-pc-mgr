@@ -49,7 +49,9 @@
     SSM hybrid activation ID (UUID), from
     'terraform output -raw activation_id'. Validated immediately when
     supplied. Prompted for only when the Register action is about to run and
-    no valid activation ID is known yet.
+    no valid activation ID is known yet. A value typed on the command line is
+    recorded in PSReadLine history in plain text, so the parameterless
+    interactive run is preferred (SPEC 20).
 
 .PARAMETER ForceReregister
     Destructive: after an explicit interactive confirmation, stops the
@@ -61,8 +63,15 @@
 .EXAMPLE
     .\setup.ps1
 
+    Preferred: fully interactive. Region and activation ID are prompted for,
+    the activation code is prompted for masked, and nothing entered at a
+    prompt reaches the command line or PSReadLine history (SPEC 20).
+
 .EXAMPLE
-    .\setup.ps1 -Region ap-southeast-2 -ActivationId <uuid-from-terraform-output>
+    .\setup.ps1 -Region ap-southeast-2
+
+    Scripted use. -ActivationId exists for scripting too, but a value typed
+    on the command line is recorded in PSReadLine history; prefer the prompts.
 #>
 param(
     [string]$Region,

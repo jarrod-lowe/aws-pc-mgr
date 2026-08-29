@@ -442,7 +442,9 @@ Classification never destroys registration state; Ambiguous is reported
 rather than repaired so an operator can decide (SPEC 22/23).
 
 .PARAMETER RegistrationJson
-Raw registration file JSON, or an empty string when no file exists.
+Raw registration file JSON, $null when no file exists (adapter contract).
+An empty or whitespace-only string means the file exists but is empty,
+which classifies as Ambiguous.
 
 .PARAMETER ServiceExists
 Whether the AmazonSSMAgent service exists.
@@ -463,7 +465,7 @@ function Get-SsmNodeState {
         [Parameter(Mandatory = $true)]
         [AllowEmptyString()]
         [AllowNull()]
-        [string]$RegistrationJson,
+        $RegistrationJson,
 
         [bool]$ServiceExists = $false,
 
@@ -474,13 +476,18 @@ function Get-SsmNodeState {
         [string]$ServiceStartType = ''
     )
 
-    $hasRegistrationJson = -not [string]::IsNullOrEmpty($RegistrationJson)
-
-    if (-not $hasRegistrationJson) {
+    # $null means no registration file (adapter contract); an empty or
+    # whitespace-only string means the file exists but holds nothing, which
+    # is ambiguous partial state and must not be auto-repaired (SPEC 23).
+    if ($null -eq $RegistrationJson) {
         if ($ServiceExists) {
             return 'InstalledUnregistered'
         }
         return 'Absent'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($RegistrationJson)) {
+        return 'Ambiguous'
     }
 
     # A registration file exists: it must parse cleanly, otherwise the
