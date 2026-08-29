@@ -29,7 +29,12 @@
 #   * the values `whoami` and `hostname` return locally (tracked files and
 #     history — both the message-body and the patch stream),
 #   * the bucket_name from the local untracked terraform/bootstrap/
-#     terraform.tfvars, if that file exists (tracked files and history).
+#     terraform.tfvars, if that file exists (tracked files and history),
+#   * the value of AWS_PROFILE, when it is set to a specific-enough profile
+#     name (tracked files and history, both streams): the SSO/IAM Identity
+#     Center profile this machine selects is a committed-content item of
+#     SPEC §27 exactly like the username and hostname, and is scanned the
+#     same way.
 #
 # Exclusions (deliberate, see SPEC §27's synthetic-fixture design):
 #   * tests/fixtures/audit/ — synthetic fixtures that trip every detector by
@@ -60,6 +65,44 @@
 # start URLs always have one, while the plan text in SPEC.md that merely
 # describes this pattern (`https://…awsapps.com/start`, Unicode ellipsis)
 # does not, so the specification's self-reference is not a finding.
+#
+# The SSO-profile label detector (aws-sso-profile) is prose-safe through its
+# VALUE anchor rather than its label: profile names are short arbitrary
+# strings, so the value run must contain a dash, underscore or digit — every
+# real SSO profile name carries one (`corp-admin-prod`), while `default`,
+# `EXAMPLE`, the `<profile>` placeholder and ordinary prose never do. The
+# bare `profile` label is deliberately NOT matched: Terraform/HCL
+# documentation writes `profile = "…"` as an ordinary key, so only the
+# aws-prefixed label (AWS_PROFILE, aws_profile, AwsProfile, spaced
+# `AWS PROFILE = …`) is a finding.
+#
+# The machine-serial-number detector anchors the same way: the value is ONE
+# unbroken run carrying both a letter and a digit, so `serial number: see
+# the underside of the device` (spaces break the run, and no mixed run
+# exists) never trips, and neither does a pure-digit run (a Terraform state
+# file's `"serial": 57` growth counter) or a pure-letter word. Serials
+# whose letters all precede their digits with the first digit fewer than
+# five characters from the end (`ABC12345`) are a known miss of that
+# interleaved anchor; widening the anchor to catch them would re-open the
+# prose and state-file matches above, and the label still narrows review.
+#
+# The user-home-path shape detector (Windows drive-letter form, macOS
+# /Users form, Linux /home form) anchors on the ORIGINAL line: the username
+# segment is the identity and its case is part of it. `Users` is matched
+# case-insensitively letter-by-letter, like the SSO start URL's host,
+# because Windows and default-macOS filesystems are case-insensitive —
+# `c:\users\` names the same directory as `C:\Users\` and the identity
+# lives in the username segment, not the directory's spelling — while
+# `/home` stays literal lowercase: Linux filesystems are case-sensitive and
+# that is its only spelling. A left boundary (line start, or any character
+# that is not a letter, digit or slash) keeps `https://example.com/home/
+# page` — a URL path, not a filesystem path — from tripping. The username
+# segment carries no generic-word exclusion: this repository's placeholders
+# are angle-bracket (`C:\Users\<username>\.aws\config`), which the segment
+# class already cannot match, while excluding the remaining generic words
+# in ERE means excluding whole length classes of REAL usernames (`john`,
+# `bob`, six-letter given names); over-detection stays the safe direction
+# and the suppression marker covers a genuinely synthetic doc path.
 #
 # SUPPRESSION MARKER `# audit-allow:synthetic`:
 #   A line carrying the marker comment `# audit-allow:synthetic` — normally
@@ -98,8 +141,9 @@
 #   so no marker exemption is needed for one. These detector classes
 #   (aws-access-key-id, aws-session-key-id, aws-secret-access-key,
 #   aws-session-token) cannot be silenced by any marker. The runtime
-#   per-machine value checks (state-bucket-name, username, hostname) are
-#   likewise never suppressible: those values are real by definition, never
+#   per-machine value checks (state-bucket-name, username, hostname,
+#   aws-profile-name) are likewise never suppressible: those values are
+#   real by definition, never
 #   synthetic. The aws-activation-code class is deliberately OUTSIDE that
 #   hard rule: synthetic activation-code literals occur in tests and
 #   documentation, and the marker exists precisely to exempt them, while a
@@ -230,18 +274,48 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 # inside an ARN stays the account-id-arn SHAPE detector's job (any service,
 # region field empty as in iam:: or populated as in ssm:us-east-1:), and a
 # bare 12-digit number with no account label stays unflagged (too generic).
+#
+# The SSO-profile and machine-serial detectors are the same label machinery
+# with value anchors chosen for values that are SHORT arbitrary strings —
+# there, prose safety cannot come from value length alone, so it comes from
+# what the value must CONTAIN: a profile name must carry a dash, underscore
+# or digit (`corp-admin-prod`; `default`, `<profile>` and prose never do),
+# and a serial must be one unbroken run holding both a letter and a digit
+# (see the header notes for what each keeps out). The profile label is
+# aws-prefixed only — bare `profile` is a documented HCL key — while the
+# serial label needs no `machine` prefix of its own: the label matches a
+# span, so `MachineSerialNumber` is covered by `serial…number` inside it.
+#
+# The user-home-path detector is a SHAPE detector because what it anchors
+# on — a username inside a filesystem path — is case-bearing free text with
+# no grammar of its own; the path AROUND it supplies the shape (drive
+# letter + Users, /Users, /home), and the case of `Users` itself carries no
+# identity (case-insensitive filesystems), so only that span is
+# letter-bracketed, the same treatment the SSO start URL's scheme and host
+# get. `/home` stays literal: on the case-sensitive Linux filesystems that
+# use it, that is its only spelling.
+# PATH_SEP_CLASS is a backslash or a slash: the two separators a Windows
+# path may be written with and the one a Unix path uses. It is
+# single-quoted so grep receives TWO backslashes — a lone `\/` inside a
+# bracket expression is read as an escaped slash (not a backslash) by some
+# grep implementations (BSD grep on macOS), while `\\` is a literal
+# backslash under every regcomp.
+PATH_SEP_CLASS='[\\/]'
 QUOTE_CLASS="[\"']?"
 LABEL_DETECTORS="aws-secret-access-key:(aws[[:space:]_-]*)?secret[[:space:]_-]*access[[:space:]_-]*key[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
 aws-activation-code:activation[[:space:]_-]*code[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
 aws-session-token:(aws[[:space:]_-]*)?(session|security)[[:space:]_-]*token[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}
-account-id-context:account([[:space:]_-]*id)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[[:space:]]*[0-9]{12}"
+account-id-context:account([[:space:]_-]*id)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[[:space:]]*[0-9]{12}
+aws-sso-profile:aws[[:space:]_-]*profile[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9]+[-_0-9][A-Za-z0-9._-]{2,}
+machine-serial-number:serial([[:space:]_-]*number)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}([A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]*[0-9][A-Za-z0-9-]{5,}|[A-Za-z0-9-]*[0-9][A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]{5,})"
 SHAPE_DETECTORS="aws-access-key-id:AKIA[0-9A-Z]{16}
 aws-session-key-id:ASIA[0-9A-Z]{16}
 managed-node-id:mi-[a-f0-9]{8,}
 uuid-literal:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}
 sso-start-url:[hH][tT][tT][pP][sS]://[A-Za-z0-9-][A-Za-z0-9.-]*[aA][wW][sS][aA][pP][pP][sS][.][cC][oO][mM]/start
 email-address:[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]{2,}
-account-id-arn:[aA][rR][nN]:[aA][wW][sS][A-Za-z-]*:[A-Za-z0-9-]*(:[A-Za-z0-9-]*)?:[0-9]{12}"
+account-id-arn:[aA][rR][nN]:[aA][wW][sS][A-Za-z-]*:[A-Za-z0-9-]*(:[A-Za-z0-9-]*)?:[0-9]{12}
+user-home-path:(^|[^A-Za-z0-9/])([A-Za-z]:${PATH_SEP_CLASS}{1,2}|/)[Uu][sS][eE][rR][sS]${PATH_SEP_CLASS}{1,2}[A-Za-z0-9._-]{2,}|(^|[^A-Za-z0-9/])/home/[A-Za-z0-9._-]{2,}"
 
 # Suppression marker (see header): a raw line containing this string is
 # skipped by every suppressible detector, in file mode and in history mode.
@@ -250,7 +324,7 @@ MARKER='# audit-allow:synthetic'
 # Detector classes the marker can NEVER silence (see header):
 #   * the four AWS key-material classes — hard rule, no exception;
 #   * the runtime per-machine value classes — real values, never synthetic.
-NEVER_SUPPRESSED=' aws-access-key-id aws-session-key-id aws-secret-access-key aws-session-token state-bucket-name username hostname '
+NEVER_SUPPRESSED=' aws-access-key-id aws-session-key-id aws-secret-access-key aws-session-token state-bucket-name username hostname aws-profile-name '
 
 # ANNOTATED_LINES, when non-empty, names a file holding the content of every
 # current tracked line that carries the marker (marker and trailing
@@ -541,29 +615,30 @@ annotated_current_lines() {
     return 0
 }
 
-# scan_history BUCKET USER HOST HOST_SHORT — scan every commit's message
-# body and patch (all refs), excluding the audit script and fixtures from
-# the patches. Message bodies are scanned separately from the patches: a
-# pathspec-filtered `git show --patch` emits NOTHING — message included —
-# for a commit whose changed paths are all excluded (or an empty commit),
-# so a credential in such a message would otherwise go unscanned. Binary
-# content in a patch appears only as a `Binary files ... differ` marker and
-# is therefore not content-scanned: that fails closed with an explicit
-# finding, and so does any per-commit `git show` that exits nonzero —
-# empty output is a legitimate skip, a failed read never is (see the loop).
-# The runtime values (bucket name, username, hostname including
-# its short form) are scanned against BOTH streams, with the same
-# scan_literal calls the tracked-file loop makes — same needles, hostname
-# case-insensitive as there — so a value that only ever reached history
-# (a file later removed, a commit message naming the machine) is still a
-# finding. The values arrive already carrying default_audit's guards
-# (generic-user skip, short-hostname minimum), the same guarded forms the
-# tracked-file loop scans.
+# scan_history BUCKET USER HOST HOST_SHORT PROFILE — scan every commit's
+# message body and patch (all refs), excluding the audit script and
+# fixtures from the patches. Message bodies are scanned separately from the
+# patches: a pathspec-filtered `git show --patch` emits NOTHING — message
+# included — for a commit whose changed paths are all excluded (or an empty
+# commit), so a credential in such a message would otherwise go unscanned.
+# Binary content in a patch appears only as a `Binary files ... differ`
+# marker and is therefore not content-scanned: that fails closed with an
+# explicit finding, and so does any per-commit `git show` that exits
+# nonzero — empty output is a legitimate skip, a failed read never is (see
+# the loop). The runtime values (bucket name, username, hostname including
+# its short form, AWS profile name) are scanned against BOTH streams, with
+# the same scan_literal calls the tracked-file loop makes — same needles,
+# hostname case-insensitive as there — so a value that only ever reached
+# history (a file later removed, a commit message naming the machine) is
+# still a finding. The values arrive already carrying default_audit's
+# guards (generic-user skip, short-hostname minimum, generic-profile skip),
+# the same guarded forms the tracked-file loop scans.
 scan_history() {
     _sh_bucket=${1-}
     _sh_user=${2-}
     _sh_host=${3-}
     _sh_host_short=${4-}
+    _sh_profile=${5-}
     # Temp allocation failures fail CLOSED: returning success here would let
     # default_audit report "clean (tracked files and full history scanned)"
     # without having scanned any history (unwritable TMPDIR, full disk).
@@ -630,6 +705,8 @@ scan_history() {
             scan_literal hostname "$_sh_label" "$_sh_msg" "$_sh_host" ic
             scan_literal hostname "$_sh_label" "$_sh_msg" \
                 "$_sh_host_short" ic
+            scan_literal aws-profile-name "$_sh_label" "$_sh_msg" \
+                "$_sh_profile"
         fi
         # Patch content, with the audit script and fixtures excluded. Same
         # rule: a failing read is a finding, not a skip. The message form is
@@ -656,6 +733,8 @@ scan_history() {
         scan_literal username "$_sh_label" "$_sh_tmp" "$_sh_user"
         scan_literal hostname "$_sh_label" "$_sh_tmp" "$_sh_host" ic
         scan_literal hostname "$_sh_label" "$_sh_tmp" "$_sh_host_short" ic
+        scan_literal aws-profile-name "$_sh_label" "$_sh_tmp" \
+            "$_sh_profile"
     done <"$_sh_revs"
     rm -f "$_sh_tmp" "$_sh_msg" "$_sh_revs" "$ANNOTATED_LINES"
     ANNOTATED_LINES=
@@ -689,6 +768,7 @@ default_audit() {
     _user=$(whoami 2>/dev/null) || _user=
     _host=$(hostname 2>/dev/null) || _host=
     _host_short=${_host%%.*}
+    _profile=${AWS_PROFILE-}
 
     case "$GENERIC_USERS" in
     *" $_user "*)
@@ -699,6 +779,22 @@ default_audit() {
     # Hostname: also checked case-insensitively; very short values are noise.
     [ ${#_host} -ge 4 ] 2>/dev/null || _host=
     [ ${#_host_short} -ge 4 ] 2>/dev/null || _host_short=
+    # AWS_PROFILE: the SSO profile this machine selects. Guarded like the
+    # hostname: a value with no dash, underscore or digit (`default`, `dev`,
+    # single words) is a generic word that appears in this repository's own
+    # prose and would substring-match ordinary text, so only a
+    # specific-enough name is scanned — the same discipline the
+    # aws-sso-profile label detector's value anchor applies.
+    if [ -n "$_profile" ]; then
+        case "$_profile" in
+        *[-_0-9]*) ;;
+        *)
+            printf 'audit: note: skipping AWS_PROFILE check for generic profile name "%s"\n' "$_profile"
+            _profile=
+            ;;
+        esac
+        [ ${#_profile} -ge 4 ] 2>/dev/null || _profile=
+    fi
 
     # 1. Tracked files. The list is captured BEFORE the loop and its failure
     # is fatal, in the same style as `git rev-list` inside scan_history:
@@ -738,6 +834,7 @@ default_audit() {
         scan_literal username "$_f" "$_scan" "$_user"
         scan_literal hostname "$_f" "$_scan" "$_host" ic
         scan_literal hostname "$_f" "$_scan" "$_host_short" ic
+        scan_literal aws-profile-name "$_f" "$_scan" "$_profile"
         drop_scan_temp "$_scan" "$ROOT/$_f"
     done <"$_files" >"$_results"
     rm -f "$_files"
@@ -745,7 +842,8 @@ default_audit() {
     # 2. Full history (message bodies and patches). The guarded runtime
     # values pass through so history gets the same literal scans the
     # tracked-file loop above applies.
-    scan_history "$_bucket" "$_user" "$_host" "$_host_short" >>"$_results"
+    scan_history "$_bucket" "$_user" "$_host" "$_host_short" "$_profile" \
+        >>"$_results"
 
     if [ -s "$_results" ]; then
         printf 'audit: FAIL - %s finding(s)\n' "$(grep -c . "$_results")"

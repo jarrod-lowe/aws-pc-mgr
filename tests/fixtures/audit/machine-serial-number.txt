@@ -1,0 +1,17 @@
+# Synthetic audit fixture: machine serial numbers (SPEC §27) in the serial
+# label spellings; a `machine` prefix word before the matched span needs no
+# handling of its own, because the label matches a span inside the
+# lowercased line. The value anchor keeps prose safe: a serial is ONE
+# unbroken run carrying both a letter and a digit, so free text
+# (`see the underside of the device`) never trips, and neither do pure-digit
+# runs (a Terraform state file's `"serial": 57` growth counter) nor
+# pure-letter words. Synthetic values.
+Machine Serial Number: C02ZQ0ABC123
+serial_number = "C02ZQ0ABC123"
+"SerialNumber": "1A2B3C4D5E"
+SERIAL-NUMBER: pf-2x9k1q
+serial:CND1234567
+# Prose and reference forms that must stay silent.
+serial number: see the underside of the device
+Serial Number: unknown
+serial_number = each.value.serial

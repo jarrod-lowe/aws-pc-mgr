@@ -1,0 +1,19 @@
+# Synthetic audit fixture: SSO/IAM Identity Center profile names (SPEC §27)
+# in the aws-prefixed label spellings. Profile names are short arbitrary
+# strings, so prose safety lives in the VALUE anchor, not the label: the
+# value must carry a dash, underscore or digit plus a minimum run — every
+# real SSO profile name has one (`corp-admin-prod`,
+# `PowerUserAccess-123456789012`), while `default`, `EXAMPLE`, the
+# `<profile>` placeholder and prose never do. The bare `profile` label is
+# deliberately NOT matched: Terraform/HCL documentation writes
+# `profile = "some-profile"` as an ordinary key. Synthetic values.
+export AWS_PROFILE=corp-admin-prod
+aws_profile = "corp-admin-prod"
+"AwsProfile": "PowerUserAccess-123456789012"
+$env:AWS_PROFILE = 'corp_admin_prod'
+AWS PROFILE = CorpAdmin-Prod2
+awsProfile=dev_profile
+# Generic, placeholder and prose forms that must stay silent.
+AWS_PROFILE=default
+export AWS_PROFILE=<profile>
+# The AWS profile is selected externally after SSO login.

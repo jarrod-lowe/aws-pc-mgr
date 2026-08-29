@@ -618,8 +618,8 @@ The default audit scans all tracked files — text directly, UTF-16 files
 scanned in decoded form — and the **full history of every commit** (message
 bodies, scanned for every commit independently of the path-filtered patches,
 plus the patches) for: AWS access-key IDs (`AKIA...`,
-`ASIA...`), secret-key, activation-code, session-token and account-ID label
-assignments
+`ASIA...`), secret-key, activation-code, session-token, account-ID,
+SSO-profile and machine-serial-number label assignments
 — the label
 detectors match a **lowercased copy of each line** with
 separator-wildcarded label words, so every case variant (lowercase HCL
@@ -639,18 +639,36 @@ so a bare `Account:` label holding an account name or free text never
 trips), so short synthetic literals like
 `SecretAccessKey=EXAMPLE` or `Session Token: EXAMPLE` in the Windows-tier
 tests cannot trip it —
+the SSO-profile label is aws-prefixed only (`AWS_PROFILE`, `aws_profile`,
+`AwsProfile`, spaced `AWS PROFILE = …`; the bare `profile` key of HCL
+documentation is deliberately not matched) and its value anchor requires a
+dash/underscore/digit plus a minimum run, so `AWS_PROFILE=<profile>`
+placeholders, `default` and prose never trip, and the serial label
+(`serial number`, `SerialNumber`, `serial_number`, `Machine Serial
+Number: …` — a `machine` prefix word needs no handling of its own)
+requires one unbroken run holding both a letter and a digit, so free text
+and a Terraform state file's pure-digit `"serial": 57` counter never trip —
 managed-node IDs (`mi-...`), UUID
-literals, SSO start URLs (any scheme/host capitalization), email addresses, and 12-digit account IDs in ARNs
+literals, SSO start URLs (any scheme/host capitalization), email addresses, 12-digit account IDs in ARNs
 of any service (empty-region `arn:aws:iam::…` style or regional
 `arn:aws:ssm:us-east-1:…` style, any capitalization of the `arn:aws`
-prefix and namespace spans); these
+prefix and namespace spans), and user-specific absolute paths
+(`C:\Users\<username>\…`, `c:\users\…`, `C:/Users/<username>/…`,
+`/Users/<username>/…`, `/home/<username>/…` — the username segment is the
+identity; `Users` matches any capitalization because the filesystems
+behind it are case-insensitive, `/home` stays lowercase because Linux
+filesystems are case-sensitive, and a leading boundary keeps URL paths
+such as `https://example.com/home/<page>` from tripping; `<username>`-style
+placeholders cannot match because the segment class excludes `<`); these
 value-shape detectors match the original
 line unchanged, because their grammar is case-bearing. It also treats
 runtime values as findings if they
 appear in tracked files or in history (commit message bodies and patches
 alike): the bucket name from your local untracked
 `terraform/bootstrap/terraform.tfvars`, plus your local `whoami` and `hostname`
-values. `--selftest` runs the same engine over the synthetic fixtures in
+values, and — when set to a specific-enough name — your `AWS_PROFILE`
+value, the SSO profile this machine selects (generic values such as
+`default` are skipped, like generic CI usernames). `--selftest` runs the same engine over the synthetic fixtures in
 `tests/fixtures/audit/` (each constructed to trip a detector) and exits 0 only
 if every detector fires — it proves the audit itself still works. The fixture
 directory is excluded from the default audit by path (that is its purpose), as
@@ -670,7 +688,8 @@ for exactly that reason. Two
 hard rules, enforced in code: the marker can **never** silence AWS key
 material (`AKIA`/`ASIA` key IDs, secret-key or session-token assignments in
 any spelling or case) or the
-runtime per-machine value checks (bucket name, username, hostname) — those are
+runtime per-machine value checks (bucket name, username, hostname, AWS
+profile name) — those are
 real by definition. And history equivalence: a finding in an already-committed
 line is also skipped when the byte-identical line exists in the current tree
 carrying the marker, so synthetic lines committed before the marker existed
