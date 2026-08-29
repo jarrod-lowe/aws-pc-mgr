@@ -153,6 +153,7 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
                 '2026-08-29 00:00:01 WARN enrollment failed AccessKeyId=EXAMPLE rejected'
                 '2026-08-29 00:00:02 WARN enrollment failed SecretAccessKey=EXAMPLE rejected'
                 '2026-08-29 00:00:03 WARN agent heartbeat still fine'
+                '2026-08-29 00:00:04 WARN enrollment failed PrivateKey=EXAMPLE rejected'
             ) | Set-Content -LiteralPath $tempLog
 
             $result = Invoke-CheckScript -ExtraArguments @('-AgentLogPath', ('"' + $tempLog + '"'))
@@ -165,8 +166,9 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
             # ...and their material never reaches the output.
             $result.Output | Should -Not -Match ([Regex]::Escape('AccessKeyId=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('SecretAccessKey=EXAMPLE'))
+            $result.Output | Should -Not -Match ([Regex]::Escape('PrivateKey=EXAMPLE'))
             # The withheld count is reported in the summary.
-            $result.Output | Should -Match '2 recent log warning/error line\(s\) withheld'
+            $result.Output | Should -Match '3 recent log warning/error line\(s\) withheld'
         } finally {
             Remove-Item -LiteralPath $tempLog -Force -ErrorAction SilentlyContinue
         }

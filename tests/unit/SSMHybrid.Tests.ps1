@@ -271,6 +271,16 @@ Describe 'Get-SsmSetupCliUrl' {
         Get-SsmSetupCliUrl -Region 'us-gov-west-1' | Should -Be 'https://amazon-ssm-us-gov-west-1.s3.us-gov-west-1.amazonaws.com/latest/windows_amd64/ssm-setup-cli.exe'
     }
 
+    It 'builds the China-partition URL for cn regions' {
+        Get-SsmSetupCliUrl -Region 'cn-north-1' | Should -Be 'https://amazon-ssm-cn-north-1.s3.cn-north-1.amazonaws.com.cn/latest/windows_amd64/ssm-setup-cli.exe'
+    }
+
+    It 'keeps the standard amazonaws.com suffix for a gov-cloud region (not the China .com.cn one)' {
+        $url = Get-SsmSetupCliUrl -Region 'us-gov-west-1'
+        $url | Should -Be 'https://amazon-ssm-us-gov-west-1.s3.us-gov-west-1.amazonaws.com/latest/windows_amd64/ssm-setup-cli.exe'
+        $url | Should -Not -Match 'amazonaws\.com\.cn'
+    }
+
     It 'rejects an invalid region' {
         { Get-SsmSetupCliUrl -Region 'nope' } | Should -Throw
     }

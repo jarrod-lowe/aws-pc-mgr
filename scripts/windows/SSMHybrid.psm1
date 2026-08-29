@@ -590,8 +590,11 @@ executable (Windows amd64).
 
 .DESCRIPTION
 Returns https://amazon-ssm-<region>.s3.<region>.amazonaws.com/latest/windows_amd64/ssm-setup-cli.exe
-for a validated region. Throws for any region that does not pass
-Test-SsmRegion, so an unusable URL can never be constructed.
+for a validated region. China-partition regions (cn-...) use the China DNS
+suffix instead: https://amazon-ssm-<region>.s3.<region>.amazonaws.com.cn/...
+GovCloud and every other valid region keep the standard amazonaws.com
+suffix. Throws for any region that does not pass Test-SsmRegion, so an
+unusable URL can never be constructed.
 
 .PARAMETER Region
 AWS region code, for example ap-southeast-2.
@@ -613,7 +616,14 @@ function Get-SsmSetupCliUrl {
     if (-not (Test-SsmRegion -Region $Region)) {
         throw "Get-SsmSetupCliUrl: '$Region' is not a valid AWS region code (expected the form 'us-east-1')."
     }
-    return ('https://amazon-ssm-{0}.s3.{0}.amazonaws.com/latest/windows_amd64/ssm-setup-cli.exe' -f $Region)
+
+    # China-partition regions serve the bucket under the China DNS suffix
+    # (amazonaws.com.cn); GovCloud and all other regions use amazonaws.com.
+    $dnsSuffix = 'amazonaws.com'
+    if ($Region -like 'cn-*') {
+        $dnsSuffix = 'amazonaws.com.cn'
+    }
+    return ('https://amazon-ssm-{0}.s3.{0}.{1}/latest/windows_amd64/ssm-setup-cli.exe' -f $Region, $dnsSuffix)
 }
 
 <#

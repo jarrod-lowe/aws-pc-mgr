@@ -15,7 +15,13 @@ resource "aws_iam_role" "ssm_hybrid_node" {
   # hybrid-activation role guidance uses the plain service principal.
 }
 
+# SPEC 17 asks for dynamic discovery of AWS values: the managed-policy ARN
+# is partition-relative (arn:aws vs arn:aws-us-gov for GovCloud regions the
+# region validator accepts), so derive the partition instead of hard-coding
+# the commercial one.
+data "aws_partition" "current" {}
+
 resource "aws_iam_role_policy_attachment" "ssm_core" {
   role       = aws_iam_role.ssm_hybrid_node.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+  policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }

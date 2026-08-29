@@ -19,8 +19,8 @@
     is never dumped, because it may contain key material (SPEC 24/43).
     Warning/error lines excerpted from the agent log are tested against
     credential patterns first (activation code, access key IDs, secret
-    access keys, session tokens); matching lines are withheld behind a
-    placeholder and only counted, never printed.
+    access keys, session tokens, private keys); matching lines are withheld
+    behind a placeholder and only counted, never printed.
 
     Exit codes: 0 = healthy, 1 = problems found. Recent log warnings are
     reported for context but do not by themselves count as problems, because
@@ -46,12 +46,14 @@ $ProgressPreference = 'SilentlyContinue'
 $problems = New-Object -TypeName System.Collections.Generic.List[string]
 
 # A log line matching this pattern may carry credential material (activation
-# code, access key IDs, secret access keys, session tokens). Such lines are
-# never printed: the agent log can echo these back, and this diagnostic must
-# not reproduce them (SPEC 24/43). The whole pattern is case-insensitive, so
-# the AKIA/ASIA key shapes also match lower-case spellings - withholding too
-# much is safe, leaking is not.
-$credentialLinePattern = '(?i)activation[-_]code|accesskeyid|secretaccesskey|sessiontoken|aws_secret_access_key|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}'
+# code, access key IDs, secret access keys, session tokens, private keys).
+# Such lines are never printed: the agent log can echo these back, and this
+# diagnostic must not reproduce them (SPEC 24/43). The whole pattern is
+# case-insensitive, so the AKIA/ASIA key shapes also match lower-case
+# spellings, and private[-_]?key matches PrivateKey, IdentityPrivateKey,
+# PRIVATE-KEY and private_key as substrings - withholding too much is safe,
+# leaking is not.
+$credentialLinePattern = '(?i)activation[-_]code|accesskeyid|secretaccesskey|sessiontoken|private[-_]?key|aws_secret_access_key|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}'
 $withheldLineCount = 0
 
 function Write-Section {

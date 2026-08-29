@@ -8,6 +8,20 @@ mock_provider "aws" {
       expiration_date = null
     }
   }
+
+  # The AmazonSSMManagedInstanceCore ARN is partition-relative and iam.tf
+  # derives it from data.aws_partition.current (SPEC 17). The mock would
+  # invent a random partition string that fails ARN validation in every run
+  # (including the plain-plan skeleton run), so pin the data source here for
+  # all runs in this file. Pinned to the commercial partition, the iam run
+  # asserts the attachment ARN is the standard arn:aws:... shape; the
+  # GovCloud partition flows through the same interpolation.
+  override_data {
+    target = data.aws_partition.current
+    values = {
+      partition = "aws"
+    }
+  }
 }
 
 # Placeholder until the first real resources land (T2.2): asserts the
@@ -36,7 +50,7 @@ run "iam_role_for_hybrid_node" {
 
   assert {
     condition     = aws_iam_role_policy_attachment.ssm_core.policy_arn == "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-    error_message = "role must carry exactly the AmazonSSMManagedInstanceCore managed policy"
+    error_message = "role must carry exactly the AmazonSSMManagedInstanceCore managed policy, with the ARN partition derived from data.aws_partition.current"
   }
 
   assert {
