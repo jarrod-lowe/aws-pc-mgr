@@ -641,13 +641,19 @@ trips), so short synthetic literals like
 tests cannot trip it —
 the SSO-profile label is aws-prefixed only (`AWS_PROFILE`, `aws_profile`,
 `AwsProfile`, spaced `AWS PROFILE = …`; the bare `profile` key of HCL
-documentation is deliberately not matched) and its value anchor requires a
-dash/underscore/digit plus a minimum run, so `AWS_PROFILE=<profile>`
-placeholders, `default` and prose never trip, and the serial label
+documentation is deliberately not matched) and its value anchor is a single
+unbroken 4-plus run in any mix — letter-only profile names are real, so no
+shape is required — with an explicit generic-value
+exclusion (default, example, examples, placeholder, value, name, profile,
+none, test: words that name the slot, not a profile anyone selected), so
+`AWS_PROFILE=<profile>` placeholders (angle brackets cannot match),
+`AWS_PROFILE=default` boilerplate and prose never trip, and the serial label
 (`serial number`, `SerialNumber`, `serial_number`, `Machine Serial
 Number: …` — a `machine` prefix word needs no handling of its own)
-requires one unbroken run holding both a letter and a digit, so free text
-and a Terraform state file's pure-digit `"serial": 57` counter never trip —
+requires one unbroken run holding both a letter and a digit — including
+letters-then-digits serials such as `ABC12345` through a dedicated third
+alternative — so free text and a Terraform state file's pure-digit
+`"serial": 57` counter never trip —
 managed-node IDs (`mi-...`), UUID
 literals, SSO start URLs (any scheme/host capitalization), email addresses, 12-digit account IDs in ARNs
 of any service (empty-region `arn:aws:iam::…` style or regional

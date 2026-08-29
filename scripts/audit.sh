@@ -68,23 +68,35 @@
 #
 # The SSO-profile label detector (aws-sso-profile) is prose-safe through its
 # VALUE anchor rather than its label: profile names are short arbitrary
-# strings, so the value run must contain a dash, underscore or digit — every
-# real SSO profile name carries one (`corp-admin-prod`), while `default`,
-# `EXAMPLE`, the `<profile>` placeholder and ordinary prose never do. The
-# bare `profile` label is deliberately NOT matched: Terraform/HCL
-# documentation writes `profile = "…"` as an ordinary key, so only the
-# aws-prefixed label (AWS_PROFILE, aws_profile, AwsProfile, spaced
-# `AWS PROFILE = …`) is a finding.
+# strings, and letter-only ones are real (`AWS_PROFILE=production`), so no
+# character-class shape can separate a name from an ordinary word. The value
+# run is therefore only length-floored — one unbroken 4-plus run, whose class
+# the `<profile>` placeholder's angle bracket cannot enter — and the
+# documentation boilerplate a shape restriction used to keep out is excluded
+# by an explicit GENERIC_PROFILES set instead: a hit whose every captured
+# value (lowercased) is exactly `default`, `example`, `examples`,
+# `placeholder`, `value`, `name`, `profile`, `none` or `test` — words that
+# name the SLOT, not a profile anyone selected — is skipped by a
+# generic-value gate in emit_hits. The bare `profile` label is deliberately
+# NOT matched: Terraform/HCL documentation writes `profile = "…"` as an
+# ordinary key, so only the aws-prefixed label (AWS_PROFILE, aws_profile,
+# AwsProfile, spaced `AWS PROFILE = …`) is a finding. The runtime
+# $AWS_PROFILE guard in default_audit applies the same rule and the same
+# set.
 #
 # The machine-serial-number detector anchors the same way: the value is ONE
 # unbroken run carrying both a letter and a digit, so `serial number: see
 # the underside of the device` (spaces break the run, and no mixed run
 # exists) never trips, and neither does a pure-digit run (a Terraform state
-# file's `"serial": 57` growth counter) or a pure-letter word. Serials
-# whose letters all precede their digits with the first digit fewer than
-# five characters from the end (`ABC12345`) are a known miss of that
-# interleaved anchor; widening the anchor to catch them would re-open the
-# prose and state-file matches above, and the label still narrows review.
+# file's `"serial": 57` growth counter) or a pure-letter word. Serials whose
+# letters all precede their digits (`ABC12345`, a standard hardware-serial
+# shape) are covered by a third alternative of their own,
+# `[A-Za-z]{3,}[0-9]{5,}` — at least eight characters by construction, with
+# a 3-plus letter run and a 5-plus digit run inside ONE token. That
+# alternative is prose-safe because it fires only after the serial label
+# anchor: an ordinary prose word following `serial:` never holds both a
+# three-letter run and a five-digit run in one unbroken token, and
+# over-detection remains the safe direction.
 #
 # The user-home-path shape detector (Windows drive-letter form, macOS
 # /Users form, Linux /home form) anchors on the ORIGINAL line: the username
@@ -198,6 +210,21 @@ FIXTURE_DIR=tests/fixtures/audit
 # hard-rule credential shapes must survive the marker (see header).
 SILENT_FIXTURES='tests/fixtures/audit/synthetic-suppressed.txt'
 GENERIC_USERS=' root admin administrator user users runner ubuntu ci build builder jenkins github actions deploy deployer test tests vagrant ec2-user staff daemon nobody operator '
+# Generic AWS_PROFILE VALUES (lowercased, space-delimited, matched whole-word
+# by the `*" word "*` case idiom GENERIC_USERS uses): documentation
+# boilerplate that names the SLOT a profile fills, never a profile anyone
+# selected on a machine. Each is justified:
+#   default     the AWS CLI's built-in profile; the standard doc line
+#   example(s) documentation filler value
+#   placeholder self-describing documentation filler
+#   value, name generic doc nouns (`aws_profile = name` in a description)
+#   profile     self-referential filler (`AWS_PROFILE=profile`)
+#   none        documentation/CI "leave unset" spelling
+#   test        CI example value
+# The aws-sso-profile value anchor is a shape-free 4-plus run (letter-only
+# names are real), so emit_hits's generic-value gate excludes these AFTER the
+# match, and default_audit's runtime AWS_PROFILE guard skips the same set.
+GENERIC_PROFILES=' default example examples placeholder value name profile none test '
 
 # ---------------------------------------------------------------------------
 # Detection engine (used by both the default audit and --selftest)
@@ -277,14 +304,16 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 #
 # The SSO-profile and machine-serial detectors are the same label machinery
 # with value anchors chosen for values that are SHORT arbitrary strings —
-# there, prose safety cannot come from value length alone, so it comes from
-# what the value must CONTAIN: a profile name must carry a dash, underscore
-# or digit (`corp-admin-prod`; `default`, `<profile>` and prose never do),
-# and a serial must be one unbroken run holding both a letter and a digit
-# (see the header notes for what each keeps out). The profile label is
-# aws-prefixed only — bare `profile` is a documented HCL key — while the
-# serial label needs no `machine` prefix of its own: the label matches a
-# span, so `MachineSerialNumber` is covered by `serial…number` inside it.
+# there, prose safety cannot come from value length alone: a serial value
+# must be one unbroken run holding both a letter and a digit (see the header
+# notes for what that keeps out), while a profile value cannot be shaped at
+# all (letter-only names are real), so it is only length-floored
+# (AWS_PROFILE_VALUE) and the prose safety lives in the generic-value gate
+# emit_hits applies to that detector (GENERIC_PROFILES; see header). The
+# profile label is aws-prefixed only — bare `profile` is a documented HCL
+# key — while the serial label needs no `machine` prefix of its own: the
+# label matches a span, so `MachineSerialNumber` is covered by
+# `serial…number` inside it.
 #
 # The user-home-path detector is a SHAPE detector because what it anchors
 # on — a username inside a filesystem path — is case-bearing free text with
@@ -302,12 +331,22 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 # backslash under every regcomp.
 PATH_SEP_CLASS='[\\/]'
 QUOTE_CLASS="[\"']?"
+# AWS_PROFILE_LABEL is the label+separator+quote anchor of the aws-sso-profile
+# detector, AWS_PROFILE_VALUE its value anchor. Both are shared between the
+# detector ERE in LABEL_DETECTORS and the generic-value gate in emit_hits
+# (GENERIC_PROFILES), so the gate always re-anchors EXACTLY the value tokens
+# the detector matched and the two can never drift apart. The value anchor is
+# deliberately shape-free — one unbroken 4-plus run in any mix, because
+# letter-only profile names (`production`) are real — so the prose/placeholder
+# safety lives in the gate, not here.
+AWS_PROFILE_LABEL="aws[[:space:]_-]*profile[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}"
+AWS_PROFILE_VALUE='[A-Za-z0-9][A-Za-z0-9._-]{3,}'
 LABEL_DETECTORS="aws-secret-access-key:(aws[[:space:]_-]*)?secret[[:space:]_-]*access[[:space:]_-]*key[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
 aws-activation-code:activation[[:space:]_-]*code[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
 aws-session-token:(aws[[:space:]_-]*)?(session|security)[[:space:]_-]*token[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}
 account-id-context:account([[:space:]_-]*id)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[[:space:]]*[0-9]{12}
-aws-sso-profile:aws[[:space:]_-]*profile[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9]+[-_0-9][A-Za-z0-9._-]{2,}
-machine-serial-number:serial([[:space:]_-]*number)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}([A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]*[0-9][A-Za-z0-9-]{5,}|[A-Za-z0-9-]*[0-9][A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]{5,})"
+aws-sso-profile:${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}
+machine-serial-number:serial([[:space:]_-]*number)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}([A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]*[0-9][A-Za-z0-9-]{5,}|[A-Za-z0-9-]*[0-9][A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]{5,}|[A-Za-z]{3,}[0-9]{5,})"
 SHAPE_DETECTORS="aws-access-key-id:AKIA[0-9A-Z]{16}
 aws-session-key-id:ASIA[0-9A-Z]{16}
 managed-node-id:mi-[a-f0-9]{8,}
@@ -375,6 +414,39 @@ emit_hits() {
                         grep -qxF -f "$ANNOTATED_LINES"; then
                         continue
                     fi
+                fi
+            fi
+            # Generic-value gate (aws-sso-profile only): the detector's
+            # value anchor is shape-free — letter-only profile names
+            # (`production`) are real — so the documentation boilerplate a
+            # shape restriction used to keep out is excluded HERE instead.
+            # The gate re-anchors the original line with the very ERE the
+            # detector matched (AWS_PROFILE_LABEL + AWS_PROFILE_VALUE), then
+            # skips the hit only when EVERY captured value, lowercased, is
+            # one of GENERIC_PROFILES. Any other value stands, an empty
+            # extraction (the re-anchor found nothing) also stands —
+            # over-detection stays the safe direction — and the marker and
+            # history rules above are untouched. Leading quotes and trailing
+            # dot/underscore/dash are trimmed from each value first, so
+            # `aws_profile = "default."` is boilerplate, not a finding.
+            if [ "$_eh_name" = 'aws-sso-profile' ]; then
+                _eh_vals=$(printf '%s\n' "${_eh_hit#*:}" |
+                    tr '[:upper:]' '[:lower:]' |
+                    grep -oE -- "${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}" |
+                    sed -e 's/^[^=:]*[=:][[:space:]]*//' \
+                        -e "s/^[\"']*//" -e 's/[._-]*$//')
+                _eh_generic=no
+                if [ -n "$_eh_vals" ]; then
+                    _eh_generic=yes
+                    for _eh_val in $_eh_vals; do
+                        case "$GENERIC_PROFILES" in
+                        *" $_eh_val "*) ;;
+                        *) _eh_generic=no ;;
+                        esac
+                    done
+                fi
+                if [ "$_eh_generic" = yes ]; then
+                    continue
                 fi
             fi
             printf 'FINDING %s:%s: %s\n' "$_eh_label" "${_eh_hit%%:*}" "$_eh_name"
@@ -780,15 +852,16 @@ default_audit() {
     [ ${#_host} -ge 4 ] 2>/dev/null || _host=
     [ ${#_host_short} -ge 4 ] 2>/dev/null || _host_short=
     # AWS_PROFILE: the SSO profile this machine selects. Guarded like the
-    # hostname: a value with no dash, underscore or digit (`default`, `dev`,
-    # single words) is a generic word that appears in this repository's own
-    # prose and would substring-match ordinary text, so only a
-    # specific-enough name is scanned — the same discipline the
-    # aws-sso-profile label detector's value anchor applies.
+    # username: the literal scan substring-matches, so a value that is
+    # exactly one of GENERIC_PROFILES (`default`, `test` — words naming the
+    # slot, not a profile, and appearing in this repository's own prose) is
+    # skipped, while every other 4-plus name is scanned, letter-only or not
+    # — the same rule and set the aws-sso-profile label detector's
+    # generic-value gate applies.
     if [ -n "$_profile" ]; then
-        case "$_profile" in
-        *[-_0-9]*) ;;
-        *)
+        _profile_lc=$(printf '%s' "$_profile" | tr '[:upper:]' '[:lower:]')
+        case "$GENERIC_PROFILES" in
+        *" $_profile_lc "*)
             printf 'audit: note: skipping AWS_PROFILE check for generic profile name "%s"\n' "$_profile"
             _profile=
             ;;
