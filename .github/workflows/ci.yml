@@ -36,6 +36,7 @@ jobs:
       - name: Install tflint
         run: |
           curl -sSfL "https://github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_amd64.zip" -o /tmp/tflint.zip
+          mkdir -p "$HOME/.local/bin"
           unzip -o /tmp/tflint.zip -d "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
