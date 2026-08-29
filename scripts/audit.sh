@@ -83,6 +83,10 @@
 #   be silenced by any marker. The runtime per-machine value checks
 #   (state-bucket-name, username, hostname) are likewise never
 #   suppressible: those values are real by definition, never synthetic.
+#   The aws-activation-code class is deliberately OUTSIDE that hard rule:
+#   synthetic activation-code literals occur in tests and documentation,
+#   and the marker exists precisely to exempt them, while a real
+#   activation code in a labeled assignment (no marker) is a finding.
 #
 #   History equivalence: commits made before the marker existed cannot
 #   carry it, and this repository does not rewrite history. A history
@@ -141,11 +145,19 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 # `:` with optional surrounding whitespace, and anchoring on the value
 # length (35-45 base64-ish chars), so short synthetic literals such as
 # `SecretAccessKey=EXAMPLE` in the Windows-tier tests can never
-# false-positive.
+# false-positive. The activation-code detector takes the same
+# labeled-assignment shape for the enrollment secret an SSM activation
+# carries: lowercase keyword (HCL `activation_code`, CLI-flag
+# `activation-code`), separator = or : with optional quotes on either side,
+# and a value anchored at 8-plus base64-ish characters, so the repository's
+# legitimate mentions — the `terraform output -raw activation_code` command
+# line, an output block's `"activation_code"` key, prose like "the
+# activation code" (space inside the label, no assignment) — never match.
 QUOTE_CLASS="[\"']?"
 DETECTORS="aws-access-key-id:AKIA[0-9A-Z]{16}
 aws-session-key-id:ASIA[0-9A-Z]{16}
 aws-secret-access-key:(aws_secret_access_key|AWS_SECRET_ACCESS_KEY|SecretAccessKey)[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
+aws-activation-code:activation[-_]?code[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
 managed-node-id:mi-[a-f0-9]{8,}
 uuid-literal:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}
 sso-start-url:https://[A-Za-z0-9-][A-Za-z0-9.-]*[.]awsapps[.]com/start

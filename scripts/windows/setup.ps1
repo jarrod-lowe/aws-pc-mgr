@@ -415,7 +415,22 @@ if ($action -eq 'Reregister') {
     }
 
     Write-Step 'Clearing the local registration (amazon-ssm-agent -register -clear).'
-    & $agentExe -register -clear | Out-Null
+    # Native-call discipline, mirroring Invoke-SsmEnrollment in
+    # SSMHybrid.psm1: under this script's $ErrorActionPreference = 'Stop',
+    # redirected stderr from a native command can surface on Windows
+    # PowerShell 5.1 as a terminating NativeCommandError, which would bypass
+    # the $LASTEXITCODE branch below entirely - and a clear that succeeded
+    # while merely writing a warning to stderr would be misreported as a
+    # failure. So: relax ErrorActionPreference around the call, discard BOTH
+    # streams (the agent's text never reaches the console), restore the
+    # preference in finally, and judge the outcome by $LASTEXITCODE alone.
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $agentExe -register -clear 2>&1 | Out-Null
+    } finally {
+        $ErrorActionPreference = $previousEap
+    }
     if ($LASTEXITCODE -ne 0) {
         Write-Fail ("Clearing the local registration failed with exit code " + $LASTEXITCODE + ".")
         Write-Host 'The registration may be partially cleared. Inspect the registration file and'

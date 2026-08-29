@@ -143,8 +143,10 @@ Describe 'check.ps1 output on this machine (SPEC 24)' {
 Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
     # Points check.ps1 at a synthetic fixture log via its -AgentLogPath seam
     # and asserts credential-bearing warning lines are withheld while plain
-    # warning lines still appear. The synthetic literals (EXAMPLE values,
-    # no real key material) do not trip the repo audit's detectors.
+    # warning lines still appear. The synthetic literals (EXAMPLE values, no
+    # real key material) do not trip the repo audit's detectors; the one
+    # UUID-shaped literal does trip the audit's uuid-literal detector, so
+    # that fixture line carries the documented synthetic marker.
     It 'withholds warning lines that look like credential material and prints a placeholder instead' -Skip:(-not $script:IsWindowsOs) {
         $tempLog = Join-Path ([System.IO.Path]::GetTempPath()) ('ssm-check-redact-' + [System.IO.Path]::GetRandomFileName() + '.log')
         try {
@@ -159,6 +161,7 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
                 '2026-08-29 00:00:07 WARN enrollment failed Token=EXAMPLE rejected'
                 '2026-08-29 00:00:08 WARN enrollment failed Activation Code = EXAMPLE rejected'
                 '2026-08-29 00:00:09 WARN enrollment failed Session Token: EXAMPLE rejected'
+                '2026-08-29 00:00:10 WARN enrollment failed ActivationId = 00000000-0000-0000-0000-000000000000 rejected' # audit-allow:synthetic
             ) | Set-Content -LiteralPath $tempLog
 
             $result = Invoke-CheckScript -ExtraArguments @('-AgentLogPath', ('"' + $tempLog + '"'))
@@ -170,11 +173,15 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
             $result.Output | Should -Match ([Regex]::Escape('[line withheld: possible credential material]'))
             # ...and their material never reaches the output. ActivationCode
             # covers the camelCase spelling the agent log actually uses;
+            # activation[-_]?id covers ActivationId / 'Activation ID' /
+            # activation_id - the ID is not a secret, but a log echoing it
+            # identifies the enrollment, so it is withheld too;
             # security[-_]?token covers the X-Amz-Security-Token header
-            # spelling, and the bare token\s*= covers Token=. The last two
+            # spelling, and the bare token\s*= covers Token=. The last three
             # lines use whitespace-separated labels ('Activation Code =',
-            # 'Session Token:') - the label alternations tolerate separators
-            # INSIDE the label, so those spellings are withheld too.
+            # 'Session Token:', 'ActivationId =') - the label alternations
+            # tolerate separators INSIDE the label, so those spellings are
+            # withheld too.
             $result.Output | Should -Not -Match ([Regex]::Escape('AccessKeyId=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('SecretAccessKey=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('PrivateKey=EXAMPLE'))
@@ -183,8 +190,9 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
             $result.Output | Should -Not -Match ([Regex]::Escape('Token=EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('Activation Code = EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('Session Token: EXAMPLE'))
+            $result.Output | Should -Not -Match ([Regex]::Escape('ActivationId = 00000000-0000-0000-0000-000000000000')) # audit-allow:synthetic
             # The withheld count is reported in the summary.
-            $result.Output | Should -Match '8 recent log warning/error line\(s\) withheld'
+            $result.Output | Should -Match '9 recent log warning/error line\(s\) withheld'
         } finally {
             Remove-Item -LiteralPath $tempLog -Force -ErrorAction SilentlyContinue
         }

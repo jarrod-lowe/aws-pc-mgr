@@ -18,9 +18,9 @@
     registration file is parsed for the managed node ID and region only and
     is never dumped, because it may contain key material (SPEC 24/43).
     Warning/error lines excerpted from the agent log are tested against
-    credential patterns first (activation code, access key IDs, secret
-    access keys, session tokens, private keys); matching lines are withheld
-    behind a placeholder and only counted, never printed.
+    credential patterns first (activation code, activation IDs, access key
+    IDs, secret access keys, session tokens, private keys); matching lines
+    are withheld behind a placeholder and only counted, never printed.
 
     Exit codes: 0 = healthy, 1 = problems found. Recent log warnings are
     reported for context but do not by themselves count as problems, because
@@ -46,7 +46,8 @@ $ProgressPreference = 'SilentlyContinue'
 $problems = New-Object -TypeName System.Collections.Generic.List[string]
 
 # A log line matching this pattern may carry credential material (activation
-# code, access key IDs, secret access keys, session tokens, private keys).
+# code, activation IDs, access key IDs, secret access keys, session tokens,
+# private keys).
 # Such lines are never printed: the agent log can echo these back, and this
 # diagnostic must not reproduce them (SPEC 24/43). The whole pattern is
 # case-insensitive, so the AKIA/ASIA key shapes also match lower-case
@@ -55,7 +56,10 @@ $problems = New-Object -TypeName System.Collections.Generic.List[string]
 # and 'ACTIVATION-CODE' all match: a label like 'Session Token: ...' with a
 # space separator is exactly the shape a log line realistically takes.
 # activation[\s_-]*code matches ActivationCode, Activation Code, activation-code
-# and activation_code; access[\s_-]*key[\s_-]*id matches AccessKeyId,
+# and activation_code; activation[\s_-]*id matches ActivationId, 'Activation
+# ID' and activation_id - an activation ID is not itself a secret, but a log
+# echoing it identifies the enrollment (and its pairing code line), so it is
+# withheld too; access[\s_-]*key[\s_-]*id matches AccessKeyId,
 # 'Access Key ID' and access_key_id; secret[\s_-]*access[\s_-]*key matches
 # SecretAccessKey, aws_secret_access_key and "Secret Access Key";
 # session[\s_-]*token matches SessionToken and 'Session Token';
@@ -64,7 +68,7 @@ $problems = New-Object -TypeName System.Collections.Generic.List[string]
 # matches PrivateKey, IdentityPrivateKey, PRIVATE-KEY and private_key as
 # substrings; and the bare token\s*= matches Token= (and unavoidably
 # PaginationToken=-style keys) - withholding too much is safe, leaking is not.
-$credentialLinePattern = '(?i)activation[\s_-]*code|access[\s_-]*key[\s_-]*id|secret[\s_-]*access[\s_-]*key|session[\s_-]*token|security[\s_-]*token|token\s*=|private[\s_-]*key|aws_secret_access_key|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}'
+$credentialLinePattern = '(?i)activation[\s_-]*code|activation[\s_-]*id|access[\s_-]*key[\s_-]*id|secret[\s_-]*access[\s_-]*key|session[\s_-]*token|security[\s_-]*token|token\s*=|private[\s_-]*key|aws_secret_access_key|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}'
 $withheldLineCount = 0
 
 function Write-Section {
