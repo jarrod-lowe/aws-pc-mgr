@@ -12,10 +12,16 @@
 #
 # No activation code or other secret is ever passed to, or expected from,
 # anything in this file.
+#
+# Pester 5 scoping: the file-load block below runs during discovery and is
+# visible ONLY to the -Skip conditions (bound at that time). It bodies run
+# later in a scope of Pester's own, where file-load variables and functions
+# are not visible - so everything the run phase touches is re-derived in the
+# BeforeAll block (and inline in the always-runnable parse check) from
+# $PSScriptRoot, which does resolve there.
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $script:ModulePath = Join-Path $repoRoot 'scripts/windows/SSMHybrid.psm1'
-$script:SetupPath = Join-Path $repoRoot 'scripts/windows/setup.ps1'
 
 # Evaluated at file load, before discovery, so -Skip conditions can use them.
 $script:IsWindowsOs = ($env:OS -eq 'Windows_NT')
@@ -52,44 +58,71 @@ if ($script:IsWindowsOs) {
     }
 }
 
-# Run an entry script in a child PowerShell with stdin closed, so any
-# interactive prompt sees EOF instead of blocking, and capture its exit
-# code. Windows-only (uses the current host executable path).
-function Invoke-EntryScript {
-    param(
-        [string]$ScriptPath,
-        [string[]]$ScriptArguments = @()
-    )
+# Run-phase setup (see the scoping note in the header). Everything the It
+# bodies below touch is re-derived here: paths from $PSScriptRoot,
+# registration facts from the module (imported at file load, so its command
+# surface is visible), and the child-process helper defined here, where It
+# bodies can call it.
+BeforeAll {
+    $SetupPath = Join-Path $PSScriptRoot '../../scripts/windows/setup.ps1'
 
-    $allArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $ScriptPath + '"'))
-    $allArguments += $ScriptArguments
+    $ManagedInstanceId = $null
+    if ($env:OS -eq 'Windows_NT') {
+        try {
+            $registrationJson = Get-SsmRegistrationFileJson
+            if (-not [string]::IsNullOrEmpty($registrationJson)) {
+                $ManagedInstanceId = (ConvertFrom-SsmRegistrationJson -Json $registrationJson).ManagedInstanceId
+            }
+        } catch {
+            $ManagedInstanceId = $null
+        }
+    }
 
-    $startInfo = New-Object -TypeName System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = (Get-Process -Id $PID).Path
-    $startInfo.Arguments = ($allArguments -join ' ')
-    $startInfo.UseShellExecute = $false
-    $startInfo.RedirectStandardInput = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $startInfo.CreateNoWindow = $true
+    # Run an entry script in a child PowerShell with stdin closed, so any
+    # interactive prompt sees EOF instead of blocking, and capture its exit
+    # code. Windows-only (uses the current host executable path).
+    function Invoke-EntryScript {
+        param(
+            [string]$ScriptPath,
+            [string[]]$ScriptArguments = @()
+        )
 
-    $process = [System.Diagnostics.Process]::Start($startInfo)
-    $process.StandardInput.Close()
-    $errorReader = $process.StandardError.ReadToEndAsync()
-    $outputText = $process.StandardOutput.ReadToEnd()
-    $process.WaitForExit()
+        $allArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $ScriptPath + '"'))
+        $allArguments += $ScriptArguments
 
-    return [PSCustomObject]@{
-        Output   = ($outputText + [Environment]::NewLine + $errorReader.Result)
-        ExitCode = $process.ExitCode
+        $startInfo = New-Object -TypeName System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = (Get-Process -Id $PID).Path
+        $startInfo.Arguments = ($allArguments -join ' ')
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardInput = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.CreateNoWindow = $true
+
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+        $process.StandardInput.Close()
+        $errorReader = $process.StandardError.ReadToEndAsync()
+        $outputText = $process.StandardOutput.ReadToEnd()
+        $process.WaitForExit()
+
+        return [PSCustomObject]@{
+            Output   = ($outputText + [Environment]::NewLine + $errorReader.Result)
+            ExitCode = $process.ExitCode
+        }
     }
 }
 
 Describe 'setup.ps1 entry script runnability' {
     It 'parses without syntax errors (parser check)' {
+        # The path is derived here rather than read from the file-load
+        # $script:SetupPath: Pester 5 runs It bodies in a scope of its own
+        # where that variable resolves empty (this check's original failure).
+        # $PSScriptRoot does resolve inside It, and the forward-slash form
+        # matches the unit suite and is valid on Windows PowerShell 5.1 too.
+        $setupPath = Join-Path $PSScriptRoot '../../scripts/windows/setup.ps1'
         $tokens = $null
         $errors = $null
-        [void][System.Management.Automation.Language.Parser]::ParseFile($script:SetupPath, [ref]$tokens, [ref]$errors)
+        [void][System.Management.Automation.Language.Parser]::ParseFile($setupPath, [ref]$tokens, [ref]$errors)
         $messages = @($errors | ForEach-Object { $_.Message })
         $messages | Should -Be @()
     }
@@ -117,7 +150,7 @@ Describe 'setup.ps1 input handling' {
     # Invalid parameters make the script prompt; with stdin at EOF the prompt
     # yields nothing, so the script must give up with exit code 2 (SPEC 42).
     It 'exits 2 when region and activation ID are invalid and no input is available' -Skip:(-not ($script:IsWindowsOs -and $script:IsElevated)) {
-        $result = Invoke-EntryScript -ScriptPath $script:SetupPath -ScriptArguments @('-Region', 'not-a-region', '-ActivationId', 'not-an-id')
+        $result = Invoke-EntryScript -ScriptPath $SetupPath -ScriptArguments @('-Region', 'not-a-region', '-ActivationId', 'not-an-id')
         $result.ExitCode | Should -Be 2
     }
 }
@@ -130,19 +163,19 @@ Describe 'setup.ps1 idempotence (SPEC 36)' {
     # evidence; "no new activation consumed" is additionally confirmed in AWS
     # during validation phase V5.
     It 'second run reports NoOperation with the same managed node ID and exits 0' -Skip:(-not ($script:IsWindowsOs -and $script:IsElevated -and $script:RegisteredHealthy)) {
-        $result = Invoke-EntryScript -ScriptPath $script:SetupPath -ScriptArguments @(
+        $result = Invoke-EntryScript -ScriptPath $SetupPath -ScriptArguments @(
             '-Region', 'ap-southeast-2',
             '-ActivationId', ([Guid]::NewGuid().ToString())
         )
 
         $result.ExitCode | Should -Be 0
         $result.Output | Should -Match 'NoOperation'
-        $result.Output | Should -Match ([Regex]::Escape($script:ManagedInstanceId))
+        $result.Output | Should -Match ([Regex]::Escape($ManagedInstanceId))
         $result.Output | Should -Not -Match 'action: Register'
     }
 
     It 'second run does not prompt for the activation code' -Skip:(-not ($script:IsWindowsOs -and $script:IsElevated -and $script:RegisteredHealthy)) {
-        $result = Invoke-EntryScript -ScriptPath $script:SetupPath -ScriptArguments @(
+        $result = Invoke-EntryScript -ScriptPath $SetupPath -ScriptArguments @(
             '-Region', 'ap-southeast-2',
             '-ActivationId', ([Guid]::NewGuid().ToString())
         )

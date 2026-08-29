@@ -11,65 +11,101 @@
 #
 # The tests assert that check.ps1 is read-only in effect: it is only ever
 # invoked in a child process, never dot-sourced.
+#
+# Pester 5 scoping: the file-load block below runs during discovery and is
+# visible ONLY to the -Skip conditions (bound at that time). It bodies run
+# later in a scope of Pester's own, where file-load variables and functions
+# are not visible - so everything the run phase touches is re-derived in the
+# BeforeAll block (and inline in the always-runnable parse check) from
+# $PSScriptRoot, which does resolve there.
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $script:ModulePath = Join-Path $repoRoot 'scripts/windows/SSMHybrid.psm1'
-$script:CheckPath = Join-Path $repoRoot 'scripts/windows/check.ps1'
 
 # Evaluated at file load, before discovery, so -Skip conditions can use them.
 $script:IsWindowsOs = ($env:OS -eq 'Windows_NT')
 
 Import-Module -Name $script:ModulePath -Force
 
-# Registration facts for skip guards and expectations.
+# Registration facts for skip guards. Any failure here simply leaves the
+# guard at $false.
 $script:ManagedInstanceId = $null
-$script:RegistrationJson = $null
 if ($script:IsWindowsOs) {
     try {
-        $script:RegistrationJson = Get-SsmRegistrationFileJson
-        if (-not [string]::IsNullOrEmpty($script:RegistrationJson)) {
-            $script:ManagedInstanceId = (ConvertFrom-SsmRegistrationJson -Json $script:RegistrationJson).ManagedInstanceId
+        $registrationJson = Get-SsmRegistrationFileJson
+        if (-not [string]::IsNullOrEmpty($registrationJson)) {
+            $script:ManagedInstanceId = (ConvertFrom-SsmRegistrationJson -Json $registrationJson).ManagedInstanceId
         }
     } catch {
         $script:ManagedInstanceId = $null
     }
 }
 
-# Run check.ps1 in a child PowerShell with stdin closed (it prompts for
-# nothing, but this keeps it non-interactive in all cases) and capture its
-# exit code. Windows-only (uses the current host executable path).
-# ExtraArguments are appended after -File (used to pass -AgentLogPath).
-function Invoke-CheckScript {
-    param([string[]]$ExtraArguments = @())
+# Run-phase setup (see the scoping note in the header). Everything the It
+# bodies below touch is re-derived here: paths from $PSScriptRoot,
+# registration facts from the module (imported at file load, so its command
+# surface is visible), and the child-process helper defined here, where It
+# bodies can call it.
+BeforeAll {
+    $ManagedInstanceId = $null
+    $RegistrationJson = $null
+    if ($env:OS -eq 'Windows_NT') {
+        try {
+            $RegistrationJson = Get-SsmRegistrationFileJson
+            if (-not [string]::IsNullOrEmpty($RegistrationJson)) {
+                $ManagedInstanceId = (ConvertFrom-SsmRegistrationJson -Json $RegistrationJson).ManagedInstanceId
+            }
+        } catch {
+            $ManagedInstanceId = $null
+        }
+    }
 
-    $allArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $script:CheckPath + '"')) + $ExtraArguments
+    # Run check.ps1 in a child PowerShell with stdin closed (it prompts for
+    # nothing, but this keeps it non-interactive in all cases) and capture its
+    # exit code. Windows-only (uses the current host executable path).
+    # ExtraArguments are appended after -File (used to pass -AgentLogPath).
+    function Invoke-CheckScript {
+        param([string[]]$ExtraArguments = @())
 
-    $startInfo = New-Object -TypeName System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = (Get-Process -Id $PID).Path
-    $startInfo.Arguments = ($allArguments -join ' ')
-    $startInfo.UseShellExecute = $false
-    $startInfo.RedirectStandardInput = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $startInfo.CreateNoWindow = $true
+        # Derived here from $PSScriptRoot (this function is defined by the
+        # test file, so its $PSScriptRoot is tests/windows) rather than from
+        # a file-load $script: variable, which Pester 5 It bodies cannot see.
+        $checkPath = Join-Path $PSScriptRoot '../../scripts/windows/check.ps1'
+        $allArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $checkPath + '"')) + $ExtraArguments
 
-    $process = [System.Diagnostics.Process]::Start($startInfo)
-    $process.StandardInput.Close()
-    $errorReader = $process.StandardError.ReadToEndAsync()
-    $outputText = $process.StandardOutput.ReadToEnd()
-    $process.WaitForExit()
+        $startInfo = New-Object -TypeName System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = (Get-Process -Id $PID).Path
+        $startInfo.Arguments = ($allArguments -join ' ')
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardInput = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.CreateNoWindow = $true
 
-    return [PSCustomObject]@{
-        Output   = ($outputText + [Environment]::NewLine + $errorReader.Result)
-        ExitCode = $process.ExitCode
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+        $process.StandardInput.Close()
+        $errorReader = $process.StandardError.ReadToEndAsync()
+        $outputText = $process.StandardOutput.ReadToEnd()
+        $process.WaitForExit()
+
+        return [PSCustomObject]@{
+            Output   = ($outputText + [Environment]::NewLine + $errorReader.Result)
+            ExitCode = $process.ExitCode
+        }
     }
 }
 
 Describe 'check.ps1 entry script runnability' {
     It 'parses without syntax errors (parser check)' {
+        # The path is derived here rather than read from the file-load
+        # $script:CheckPath: Pester 5 runs It bodies in a scope of its own
+        # where that variable resolves empty (this check's original failure).
+        # $PSScriptRoot does resolve inside It, and the forward-slash form
+        # matches the unit suite and is valid on Windows PowerShell 5.1 too.
+        $checkPath = Join-Path $PSScriptRoot '../../scripts/windows/check.ps1'
         $tokens = $null
         $errors = $null
-        [void][System.Management.Automation.Language.Parser]::ParseFile($script:CheckPath, [ref]$tokens, [ref]$errors)
+        [void][System.Management.Automation.Language.Parser]::ParseFile($checkPath, [ref]$tokens, [ref]$errors)
         $messages = @($errors | ForEach-Object { $_.Message })
         $messages | Should -Be @()
     }
@@ -78,7 +114,7 @@ Describe 'check.ps1 entry script runnability' {
 Describe 'check.ps1 output on this machine (SPEC 24)' {
     It 'reports the managed node ID that matches the local registration file' -Skip:(-not ($script:IsWindowsOs -and $script:ManagedInstanceId)) {
         $result = Invoke-CheckScript
-        $result.Output | Should -Match ([Regex]::Escape($script:ManagedInstanceId))
+        $result.Output | Should -Match ([Regex]::Escape($ManagedInstanceId))
     }
 
     It 'never prints the activation code or any credential material' -Skip:(-not $script:IsWindowsOs) {
@@ -91,8 +127,8 @@ Describe 'check.ps1 output on this machine (SPEC 24)' {
         # Stronger, machine-specific check: every value in the local
         # registration file except the node ID and region must be absent from
         # the output. Whatever key material the file holds, none of it leaks.
-        if (-not [string]::IsNullOrEmpty($script:RegistrationJson)) {
-            $registrationObject = $script:RegistrationJson | ConvertFrom-Json
+        if (-not [string]::IsNullOrEmpty($RegistrationJson)) {
+            $registrationObject = $RegistrationJson | ConvertFrom-Json
             foreach ($property in $registrationObject.PSObject.Properties) {
                 if (@('managedinstanceid', 'region') -contains $property.Name.ToLowerInvariant()) {
                     continue
@@ -110,7 +146,7 @@ Describe 'check.ps1 output on this machine (SPEC 24)' {
         # Expected outcome from raw facts, independent of check.ps1 itself.
         $expectedHealthy = $false
         $agentExe = Join-Path -Path $env:ProgramFiles -ChildPath 'Amazon\SSM\amazon-ssm-agent.exe'
-        if ($script:ManagedInstanceId -and (Test-Path -LiteralPath $agentExe -PathType Leaf)) {
+        if ($ManagedInstanceId -and (Test-Path -LiteralPath $agentExe -PathType Leaf)) {
             $service = Get-Service -Name 'AmazonSSMAgent' -ErrorAction SilentlyContinue
             $serviceCim = Get-CimInstance -ClassName Win32_Service -Filter "Name='AmazonSSMAgent'"
             if (($null -ne $service) -and
