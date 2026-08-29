@@ -68,3 +68,23 @@ run "single_registration_activation" {
     error_message = "expiration_date must be unset (AWS default 24h) to avoid ForceNew churn"
   }
 }
+
+run "outputs" {
+  command = apply
+
+  assert {
+    condition     = output.managed_node_role_name == "win11-ssm-hybrid-node"
+    error_message = "managed_node_role_name output must expose the role name"
+  }
+
+  assert {
+    # The provider exposes the activation ID as the resource id.
+    condition     = output.activation_id == aws_ssm_activation.node.id
+    error_message = "activation_id output must mirror the activation resource"
+  }
+
+  assert {
+    condition     = output.activation_code == aws_ssm_activation.node.activation_code
+    error_message = "activation_code output must mirror the activation resource"
+  }
+}
