@@ -30,3 +30,16 @@ run "bucket_from_variable" {
     error_message = "state_bucket_name output must expose the bucket"
   }
 }
+
+run "versioning_enabled" {
+  command = apply
+
+  variables {
+    bucket_name = "win11-ssm-tfstate-replaceme"
+  }
+
+  assert {
+    condition     = aws_s3_bucket_versioning.state.versioning_configuration[0].status == "Enabled"
+    error_message = "state bucket versioning must be Enabled so state history is recoverable"
+  }
+}
