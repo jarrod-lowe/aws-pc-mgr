@@ -269,8 +269,15 @@ Valid is true only when both hold:
 
   - Status is 'Valid' (the value Get-AuthenticodeSignature reports for a
     trusted, intact signature; comparison is case-insensitive);
-  - SignerSubject contains 'Amazon.com Services LLC' anywhere (the signer
-    AWS ships ssm-setup-cli under; -like wildcards, case-insensitive).
+  - the signer subject names 'Amazon.com Services LLC' as an EXACT RDN
+    component value: one of the subject's comma-separated RDN components is
+    CN=<signer> or O=<signer> whose VALUE equals 'Amazon.com Services LLC'
+    (surrounding whitespace trimmed; comparison case-insensitive). A subject
+    that merely contains the phrase inside a larger value - for example
+    'CN=Not Amazon.com Services LLC, O=Evil Corp' - is rejected, so a
+    forged certificate cannot smuggle the signer name mid-value. AWS's
+    ssm-setup-cli signer subject is 'CN=Amazon.com Services LLC,
+    O=Amazon.com Services LLC, L=Seattle, S=Washington, C=US'.
 
 Reason always explains the first failed check (or states why the signature
 was accepted) so callers can log it. Neither parameter is secret.
@@ -309,16 +316,39 @@ function Test-SsmSignature {
         }
     }
 
-    if ($SignerSubject -notlike ('*' + $expectedSigner + '*')) {
+    # Exact RDN match: the subject is split into its comma-separated RDN
+    # components and accepted only when the VALUE of a CN or O component
+    # equals the expected signer exactly (whitespace trimmed; PowerShell
+    # string comparison is case-insensitive). A subject that merely contains
+    # the phrase inside a larger value ('CN=Not Amazon.com Services LLC,
+    # O=Evil Corp') is NOT accepted.
+    $signerAccepted = $false
+    foreach ($rdn in @($SignerSubject -split ',')) {
+        $component = $rdn.Trim()
+        $separator = $component.IndexOf('=')
+        if ($separator -lt 1) {
+            continue
+        }
+        $componentName = $component.Substring(0, $separator).Trim()
+        if (($componentName -ne 'CN') -and ($componentName -ne 'O')) {
+            continue
+        }
+        $componentValue = $component.Substring($separator + 1).Trim()
+        if ($componentValue -eq $expectedSigner) {
+            $signerAccepted = $true
+        }
+    }
+
+    if (-not $signerAccepted) {
         return [PSCustomObject]@{
             Valid  = $false
-            Reason = "Signer subject '$SignerSubject' does not match the expected signer '$expectedSigner'."
+            Reason = "Signer subject '$SignerSubject' does not name '$expectedSigner' as an exact CN or O RDN value."
         }
     }
 
     return [PSCustomObject]@{
         Valid  = $true
-        Reason = "Signature status is Valid and signer subject matches '$expectedSigner'."
+        Reason = "Signature status is Valid and signer subject names '$expectedSigner' as an exact CN or O RDN value."
     }
 }
 

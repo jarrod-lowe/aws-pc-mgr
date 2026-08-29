@@ -73,8 +73,26 @@ Describe 'Test-SsmSignature' {
         $result.Reason | Should -Match 'Amazon'
     }
 
-    It 'accepts the Amazon signer with extra surrounding subject text' {
+    It 'rejects the signer name smuggled inside a larger RDN value' {
+        $result = Test-SsmSignature -Status 'Valid' -SignerSubject 'CN=Not Amazon.com Services LLC, O=Evil Corp'
+        $result.Valid | Should -BeFalse
+        $result.Reason | Should -Match 'Amazon'
+        $result.Reason | Should -Match 'Evil Corp'
+    }
+
+    It 'rejects the signer phrase merely embedded mid-value in the subject' {
         $result = Test-SsmSignature -Status 'Valid' -SignerSubject 'Microsoft Code Signing PCA 2011 - signer Amazon.com Services LLC intermediate'
+        $result.Valid | Should -BeFalse
+        $result.Reason | Should -Match 'Amazon'
+    }
+
+    It 'accepts an exact CN match even without a matching O component' {
+        $result = Test-SsmSignature -Status 'Valid' -SignerSubject 'CN=Amazon.com Services LLC'
+        $result.Valid | Should -BeTrue
+    }
+
+    It 'accepts an exact O match even without a matching CN component' {
+        $result = Test-SsmSignature -Status 'Valid' -SignerSubject 'CN=Something Else Entirely, O=Amazon.com Services LLC'
         $result.Valid | Should -BeTrue
     }
 

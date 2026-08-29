@@ -17,19 +17,42 @@
     It never prints the activation code or any credential material. The raw
     registration file is parsed for the managed node ID and region only and
     is never dumped, because it may contain key material (SPEC 24/43).
+    Warning/error lines excerpted from the agent log are tested against
+    credential patterns first (activation code, access key IDs, secret
+    access keys, session tokens); matching lines are withheld behind a
+    placeholder and only counted, never printed.
 
     Exit codes: 0 = healthy, 1 = problems found. Recent log warnings are
     reported for context but do not by themselves count as problems, because
     a healthy agent can log transient warnings.
 
+.PARAMETER AgentLogPath
+    Agent log to excerpt warning/error lines from. Defaults to the
+    conventional hybrid-agent location under ProgramData; overridable so
+    Windows-tier tests can point the script at a fixture log (the same
+    seam pattern as Get-SsmRegistrationFileJson's -Path).
+
 .EXAMPLE
     .\check.ps1
 #>
+
+param(
+    [string]$AgentLogPath
+)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $problems = New-Object -TypeName System.Collections.Generic.List[string]
+
+# A log line matching this pattern may carry credential material (activation
+# code, access key IDs, secret access keys, session tokens). Such lines are
+# never printed: the agent log can echo these back, and this diagnostic must
+# not reproduce them (SPEC 24/43). The whole pattern is case-insensitive, so
+# the AKIA/ASIA key shapes also match lower-case spellings - withholding too
+# much is safe, leaking is not.
+$credentialLinePattern = '(?i)activation[-_]code|accesskeyid|secretaccesskey|sessiontoken|aws_secret_access_key|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}'
+$withheldLineCount = 0
 
 function Write-Section {
     param([string]$Name)
@@ -53,7 +76,9 @@ if (Test-Path -LiteralPath $modulePath -PathType Leaf) {
 }
 
 $agentExePath = Join-Path -Path $env:ProgramFiles -ChildPath 'Amazon\SSM\amazon-ssm-agent.exe'
-$agentLogPath = Join-Path -Path $env:ProgramData -ChildPath 'Amazon\SSM\Logs\amazon-ssm-agent.log'
+if ([string]::IsNullOrEmpty($AgentLogPath)) {
+    $AgentLogPath = Join-Path -Path $env:ProgramData -ChildPath 'Amazon\SSM\Logs\amazon-ssm-agent.log'
+}
 
 # --- Windows -----------------------------------------------------------------
 
@@ -162,9 +187,9 @@ if ($moduleLoaded) {
 # --- recent agent log warnings/errors ----------------------------------------
 
 Write-Section 'Recent SSM Agent warnings/errors'
-if (Test-Path -LiteralPath $agentLogPath -PathType Leaf) {
+if (Test-Path -LiteralPath $AgentLogPath -PathType Leaf) {
     try {
-        $matchingLines = Get-Content -LiteralPath $agentLogPath -Tail 500 -ErrorAction Stop |
+        $matchingLines = Get-Content -LiteralPath $AgentLogPath -Tail 500 -ErrorAction Stop |
             Where-Object { $_ -match '(?i)warn|error' } |
             Select-Object -Last 50
         if ($matchingLines) {
@@ -172,25 +197,36 @@ if (Test-Path -LiteralPath $agentLogPath -PathType Leaf) {
                 $matchingLines = @($matchingLines)
             }
             Write-Host ('  Last ' + $matchingLines.Count + ' warning/error line(s) from:')
-            Write-Host ('  ' + $agentLogPath)
+            Write-Host ('  ' + $AgentLogPath)
             foreach ($line in $matchingLines) {
+                if ($line -match $credentialLinePattern) {
+                    # Never print a line that may carry credential material;
+                    # withhold it behind a placeholder and count it for the
+                    # summary (SPEC 24/43).
+                    $withheldLineCount = $withheldLineCount + 1
+                    Write-Host '  [line withheld: possible credential material]'
+                    continue
+                }
                 Write-Host ('  ' + $line)
             }
         } else {
             Write-Host ('  No warning/error lines in the last 500 lines of:')
-            Write-Host ('  ' + $agentLogPath)
+            Write-Host ('  ' + $AgentLogPath)
         }
     } catch {
         Write-Host ('  The log exists but could not be read (try an elevated session):')
-        Write-Host ('  ' + $agentLogPath)
+        Write-Host ('  ' + $AgentLogPath)
     }
 } else {
-    Write-Host ('  Log file not found: ' + $agentLogPath)
+    Write-Host ('  Log file not found: ' + $AgentLogPath)
 }
 
 # --- summary -----------------------------------------------------------------
 
 Write-Section 'Summary'
+if ($withheldLineCount -gt 0) {
+    Write-Host ('  ' + $withheldLineCount + ' recent log warning/error line(s) withheld as possible credential material.')
+}
 if ($problems.Count -eq 0) {
     Write-Host '  All checks passed; this machine looks like a healthy SSM hybrid managed node.'
     exit 0

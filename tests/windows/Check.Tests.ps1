@@ -38,8 +38,11 @@ if ($script:IsWindowsOs) {
 # Run check.ps1 in a child PowerShell with stdin closed (it prompts for
 # nothing, but this keeps it non-interactive in all cases) and capture its
 # exit code. Windows-only (uses the current host executable path).
+# ExtraArguments are appended after -File (used to pass -AgentLogPath).
 function Invoke-CheckScript {
-    $allArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $script:CheckPath + '"'))
+    param([string[]]$ExtraArguments = @())
+
+    $allArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $script:CheckPath + '"')) + $ExtraArguments
 
     $startInfo = New-Object -TypeName System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = (Get-Process -Id $PID).Path
@@ -134,5 +137,38 @@ Describe 'check.ps1 output on this machine (SPEC 24)' {
         $result.Output | Should -Match 'SSM Agent installation'
         $result.Output | Should -Match 'AmazonSSMAgent service'
         $result.Output | Should -Match 'SSM registration'
+    }
+}
+
+Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
+    # Points check.ps1 at a synthetic fixture log via its -AgentLogPath seam
+    # and asserts credential-bearing warning lines are withheld while plain
+    # warning lines still appear. The synthetic literals (EXAMPLE values,
+    # no real key material) do not trip the repo audit's detectors.
+    It 'withholds warning lines that look like credential material and prints a placeholder instead' -Skip:(-not $script:IsWindowsOs) {
+        $tempLog = Join-Path ([System.IO.Path]::GetTempPath()) ('ssm-check-redact-' + [System.IO.Path]::GetRandomFileName() + '.log')
+        try {
+            @(
+                '2026-08-29 00:00:00 WARN agent heartbeat ok'
+                '2026-08-29 00:00:01 WARN enrollment failed AccessKeyId=EXAMPLE rejected'
+                '2026-08-29 00:00:02 WARN enrollment failed SecretAccessKey=EXAMPLE rejected'
+                '2026-08-29 00:00:03 WARN agent heartbeat still fine'
+            ) | Set-Content -LiteralPath $tempLog
+
+            $result = Invoke-CheckScript -ExtraArguments @('-AgentLogPath', ('"' + $tempLog + '"'))
+
+            # Plain warning lines are still printed verbatim.
+            $result.Output | Should -Match ([Regex]::Escape('agent heartbeat ok'))
+            $result.Output | Should -Match ([Regex]::Escape('agent heartbeat still fine'))
+            # Credential-bearing lines are withheld behind the placeholder...
+            $result.Output | Should -Match ([Regex]::Escape('[line withheld: possible credential material]'))
+            # ...and their material never reaches the output.
+            $result.Output | Should -Not -Match ([Regex]::Escape('AccessKeyId=EXAMPLE'))
+            $result.Output | Should -Not -Match ([Regex]::Escape('SecretAccessKey=EXAMPLE'))
+            # The withheld count is reported in the summary.
+            $result.Output | Should -Match '2 recent log warning/error line\(s\) withheld'
+        } finally {
+            Remove-Item -LiteralPath $tempLog -Force -ErrorAction SilentlyContinue
+        }
     }
 }

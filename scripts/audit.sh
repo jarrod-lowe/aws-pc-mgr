@@ -245,17 +245,22 @@ EOF
     return 0
 }
 
-# scan_file PATH — scan one tracked file (label = path). Skips the audit
-# script itself and the fixtures (also excluded at the git-pathspec level;
-# kept here so direct callers cannot bypass the exclusion), and skips
-# binary/empty files.
+# scan_file PATH [LABEL] — scan one tracked file. PATH is the file to open
+# (absolute, or relative to the caller's cwd); LABEL, defaulting to PATH, is
+# the repo-relative name reported in findings and checked against the
+# exclusions below. Keeping them apart lets the default audit open files via
+# $ROOT/<path> from any cwd while findings still name repo-relative paths.
+# Skips the audit script itself and the fixtures (also excluded at the
+# git-pathspec level; kept here so direct callers cannot bypass the
+# exclusion), and skips binary/empty files.
 scan_file() {
     _sf_path=$1
-    case "$_sf_path" in
+    _sf_label=${2-$_sf_path}
+    case "$_sf_label" in
     scripts/audit.sh | tests/fixtures/audit | tests/fixtures/audit/*) return 0 ;;
     esac
     grep -Iq . "$_sf_path" 2>/dev/null || return 0
-    scan_stream "$_sf_path" "$_sf_path"
+    scan_stream "$_sf_label" "$_sf_path"
     return 0
 }
 
@@ -350,16 +355,17 @@ default_audit() {
     [ ${#_host} -ge 4 ] 2>/dev/null || _host=
     [ ${#_host_short} -ge 4 ] 2>/dev/null || _host_short=
 
-    # 1. Tracked text files.
+    # 1. Tracked text files. Opened via $ROOT/<path> so the audit works from
+    # any cwd; findings keep the repo-relative name as their label.
     tracked_files |
         while IFS= read -r _f; do
             [ -n "$_f" ] || continue
             [ -f "$ROOT/$_f" ] || continue
-            scan_file "$_f"
-            scan_literal state-bucket-name "$_f" "$_f" "$_bucket"
-            scan_literal username "$_f" "$_f" "$_user"
-            scan_literal hostname "$_f" "$_f" "$_host" ic
-            scan_literal hostname "$_f" "$_f" "$_host_short" ic
+            scan_file "$ROOT/$_f" "$_f"
+            scan_literal state-bucket-name "$_f" "$ROOT/$_f" "$_bucket"
+            scan_literal username "$_f" "$ROOT/$_f" "$_user"
+            scan_literal hostname "$_f" "$ROOT/$_f" "$_host" ic
+            scan_literal hostname "$_f" "$ROOT/$_f" "$_host_short" ic
         done >"$_results"
 
     # 2. Full history (message bodies and patches).
