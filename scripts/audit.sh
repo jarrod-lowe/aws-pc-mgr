@@ -414,15 +414,25 @@ annotated_current_lines() {
 # content-scanned: that fails closed with an explicit finding.
 scan_history() {
     _sh_bucket=${1-}
-    _sh_tmp=$(mktemp "${TMPDIR:-/tmp}/audit-history.XXXXXXXX") || return 0
+    # Temp allocation failures fail CLOSED: returning success here would let
+    # default_audit report "clean (tracked files and full history scanned)"
+    # without having scanned any history (unwritable TMPDIR, full disk).
+    _sh_tmp=$(mktemp "${TMPDIR:-/tmp}/audit-history.XXXXXXXX") || {
+        printf '%s: error: cannot create history temp file (TMPDIR writable? disk full?) - failing closed\n' "$SCRIPT_NAME" >&2
+        exit 1
+    }
     _sh_msg=$(mktemp "${TMPDIR:-/tmp}/audit-history-msg.XXXXXXXX") || {
         rm -f "$_sh_tmp"
-        return 0
+        printf '%s: error: cannot create history message temp file - failing closed\n' "$SCRIPT_NAME" >&2
+        exit 1
     }
     # History-equivalence set: current tracked lines carrying the marker.
-    ANNOTATED_LINES=$(mktemp "${TMPDIR:-/tmp}/audit-annotated.XXXXXXXX") ||
-        ANNOTATED_LINES=
-    [ -n "$ANNOTATED_LINES" ] && annotated_current_lines "$ANNOTATED_LINES"
+    ANNOTATED_LINES=$(mktemp "${TMPDIR:-/tmp}/audit-annotated.XXXXXXXX") || {
+        rm -f "$_sh_tmp" "$_sh_msg"
+        printf '%s: error: cannot create annotated-lines temp file - failing closed\n' "$SCRIPT_NAME" >&2
+        exit 1
+    }
+    annotated_current_lines "$ANNOTATED_LINES"
     git -C "$ROOT" rev-list --abbrev-commit --all |
         while IFS= read -r _sh_sha; do
             [ -n "$_sh_sha" ] || continue

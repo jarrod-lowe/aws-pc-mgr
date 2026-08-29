@@ -8,4 +8,9 @@ resource "aws_ssm_activation" "node" {
   description        = "Windows hybrid managed node"
   iam_role           = aws_iam_role.ssm_hybrid_node.name
   registration_limit = 1
+
+  # The iam_role reference only orders creation after the role itself;
+  # CreateActivation must also wait for the policy attachment so the role
+  # already carries AmazonSSMManagedInstanceCore when it becomes usable.
+  depends_on = [aws_iam_role_policy_attachment.ssm_core]
 }
