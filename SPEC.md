@@ -1633,17 +1633,17 @@ Every §7 bullet → enforcement:
 
 Execution order; tick as completed.
 
-* [ ] T0 — scaffold `.gitignore`, first commit
-* [ ] T1.1–T1.6 — bootstrap stack, red→green per cycle, committed
-* [ ] T2.1–T2.4 — infrastructure stack, red→green per cycle, committed
-* [ ] T3 — `SSMHybrid.psm1`, one function per red→green cycle (8 cycles)
-* [ ] T4 — `setup.ps1` + `tests/windows/Setup.Tests.ps1`
-* [ ] T5 — `check.ps1` + `tests/windows/Check.Tests.ps1`
-* [ ] T6 — `tf-init.sh` + dry-run test (red first)
-* [ ] T7 — `audit.sh` + fixtures + self-test (red first)
-* [ ] T8 — CI workflow + `.PSScriptAnalyzerSettings.psd1`
-* [ ] T9 — README (all sections listed in T9)
-* [ ] T10 — audit gate pass, all work committed
+* [x] T0 — scaffold `.gitignore`, first commit
+* [x] T1.1–T1.6 — bootstrap stack, red→green per cycle, committed
+* [x] T2.1–T2.4 — infrastructure stack, red→green per cycle, committed
+* [x] T3 — `SSMHybrid.psm1`, one function per red→green cycle (8 cycles)
+* [x] T4 — `setup.ps1` + `tests/windows/Setup.Tests.ps1`
+* [x] T5 — `check.ps1` + `tests/windows/Check.Tests.ps1`
+* [x] T6 — `tf-init.sh` + dry-run test (red first)
+* [x] T7 — `audit.sh` + fixtures + self-test (red first)
+* [x] T8 — CI workflow + `.PSScriptAnalyzerSettings.psd1`
+* [x] T9 — README (all sections listed in T9)
+* [x] T10 — audit gate pass, all work committed
 * [ ] V0 — user approves push; CI green on GitHub
 * [ ] V1 — bootstrap apply + state migration + prevent_destroy check (user, SSO)
 * [ ] V2 — infrastructure apply; sensitive outputs verified (user)
