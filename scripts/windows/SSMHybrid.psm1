@@ -16,6 +16,74 @@ $ErrorActionPreference = 'Stop'
 
 <#
 .SYNOPSIS
+Decides what the enrollment runner should do for a given node state.
+
+.DESCRIPTION
+Maps a Get-SsmNodeState result to the setup action:
+
+  Absent                -> Register
+  InstalledUnregistered -> Register
+  RegisteredHealthy     -> NoOperation
+  RegisteredStopped     -> StartService (non-destructive repair, SPEC 23)
+  RegisteredUnhealthy   -> ManualIntervention
+  Ambiguous             -> ManualIntervention
+
+With -ForceReregister, any state that implies an existing registration
+(RegisteredHealthy, RegisteredStopped, RegisteredUnhealthy, Ambiguous) maps
+to Reregister instead. The flag never turns a registration-less state
+destructive: Absent and InstalledUnregistered still map to Register.
+Reregister is the only destructive action and callers must confirm it
+interactively (SPEC 22).
+
+.PARAMETER State
+One of the six Get-SsmNodeState values.
+
+.PARAMETER ForceReregister
+Explicitly requests replacing an existing registration.
+
+.OUTPUTS
+[System.String] Register, StartService, NoOperation, ManualIntervention,
+or Reregister.
+#>
+function Get-SsmSetupAction {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Absent', 'InstalledUnregistered', 'RegisteredHealthy', 'RegisteredStopped', 'RegisteredUnhealthy', 'Ambiguous')]
+        [string]$State,
+
+        [switch]$ForceReregister
+    )
+
+    $existingRegistrationStates = @(
+        'RegisteredHealthy',
+        'RegisteredStopped',
+        'RegisteredUnhealthy',
+        'Ambiguous'
+    )
+
+    if ($ForceReregister) {
+        if ($existingRegistrationStates -contains $State) {
+            return 'Reregister'
+        }
+    }
+
+    switch ($State) {
+        'Absent' { return 'Register' }
+        'InstalledUnregistered' { return 'Register' }
+        'RegisteredHealthy' { return 'NoOperation' }
+        'RegisteredStopped' { return 'StartService' }
+        'RegisteredUnhealthy' { return 'ManualIntervention' }
+        'Ambiguous' { return 'ManualIntervention' }
+    }
+
+    # Unreachable: ValidateSet restricts $State to the values above.
+    throw "Get-SsmSetupAction: unhandled state '$State'."
+}
+
+<#
+.SYNOPSIS
 Classifies the local SSM hybrid enrollment state of this machine.
 
 .DESCRIPTION
@@ -277,5 +345,6 @@ Export-ModuleMember -Function @(
     'Test-SsmActivationId',
     'Get-SsmSetupCliUrl',
     'ConvertFrom-SsmRegistrationJson',
-    'Get-SsmNodeState'
+    'Get-SsmNodeState',
+    'Get-SsmSetupAction'
 )

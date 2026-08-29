@@ -2,6 +2,42 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '../../scripts/windows/SSMHybrid.psm1') -Force
 }
 
+Describe 'Get-SsmSetupAction' {
+    It 'maps <State> without -ForceReregister to <Expected>' -TestCases @(
+        @{ State = 'Absent';                Expected = 'Register' }
+        @{ State = 'InstalledUnregistered'; Expected = 'Register' }
+        @{ State = 'RegisteredHealthy';     Expected = 'NoOperation' }
+        @{ State = 'RegisteredStopped';     Expected = 'StartService' }
+        @{ State = 'RegisteredUnhealthy';   Expected = 'ManualIntervention' }
+        @{ State = 'Ambiguous';             Expected = 'ManualIntervention' }
+    ) {
+        param($State, $Expected)
+        Get-SsmSetupAction -State $State | Should -Be $Expected
+    }
+
+    It 'maps <State> with -ForceReregister to Reregister' -TestCases @(
+        @{ State = 'RegisteredHealthy' }
+        @{ State = 'RegisteredStopped' }
+        @{ State = 'RegisteredUnhealthy' }
+        @{ State = 'Ambiguous' }
+    ) {
+        param($State)
+        Get-SsmSetupAction -State $State -ForceReregister | Should -Be 'Reregister'
+    }
+
+    It 'maps <State> with -ForceReregister to Register when no registration exists' -TestCases @(
+        @{ State = 'Absent' }
+        @{ State = 'InstalledUnregistered' }
+    ) {
+        param($State)
+        Get-SsmSetupAction -State $State -ForceReregister | Should -Be 'Register'
+    }
+
+    It 'rejects an unknown state' {
+        { Get-SsmSetupAction -State 'Bogus' } | Should -Throw
+    }
+}
+
 Describe 'Get-SsmNodeState' {
     It 'classifies <Name> as <Expected>' -TestCases @(
         @{
