@@ -192,17 +192,36 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 # safe: the label must be split from its value by `=` or `:` (with optional
 # quotes and whitespace on either side) and the value is length-anchored —
 # 35-45 base64-ish chars for a secret key, 8-plus for an activation code,
-# 16-plus for a session token — so a sentence, comment, or output-block key
+# 16-plus for a session token, a 12-digit run for an account ID — so a
+# sentence, comment, or output-block key
 # merely CONTAINING the label words never matches, while short synthetic
 # literals such as `SecretAccessKey=EXAMPLE` or `Session Token: EXAMPLE`
 # in the Windows-tier tests cannot false-positive. The aws- prefix on the
 # secret-key and session-token labels stays optional, so a bare
 # `SecretAccessKey:` (the SSM agent log spelling) and a bare
 # `SessionToken:` match too.
+#
+# The account-id-context detector is the same machinery with a one-word
+# label — `account`, its `id` suffix optional — so snake_case `account_id`,
+# camelCase `accountId`, UPPER `ACCOUNT`, the `aws_account` prefix (the
+# label matches inside the longer name) and the JSON `"Account"` key an STS
+# GetCallerIdentity dump prints are all the one pattern, in every case and
+# separator spelling. Its 12-digit value anchor is what keeps prose safe:
+# a bare `Account:` label whose value is an account NAME or free text never
+# fires — only a label separated (`=`/`:`, optional quotes) from a 12-digit
+# run does. It replaces a hand-enumerated, case-sensitive context-word list
+# (`account_id|aws_account|AccountId|AWS_ACCOUNT`) matched anywhere on the
+# original line — exactly the spelling-enumeration approach this engine
+# exists to avoid — and tightens it: the label and the 12-digit value must
+# be adjacent on the line, not merely co-occur. A 12-digit account ID
+# inside an ARN stays the account-id-arn SHAPE detector's job (any service,
+# region field empty as in iam:: or populated as in ssm:us-east-1:), and a
+# bare 12-digit number with no account label stays unflagged (too generic).
 QUOTE_CLASS="[\"']?"
 LABEL_DETECTORS="aws-secret-access-key:(aws[[:space:]_-]*)?secret[[:space:]_-]*access[[:space:]_-]*key[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
 aws-activation-code:activation[[:space:]_-]*code[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
-aws-session-token:(aws[[:space:]_-]*)?session[[:space:]_-]*token[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}"
+aws-session-token:(aws[[:space:]_-]*)?session[[:space:]_-]*token[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}
+account-id-context:account([[:space:]_-]*id)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[[:space:]]*[0-9]{12}"
 SHAPE_DETECTORS="aws-access-key-id:AKIA[0-9A-Z]{16}
 aws-session-key-id:ASIA[0-9A-Z]{16}
 managed-node-id:mi-[a-f0-9]{8,}
@@ -226,14 +245,6 @@ NEVER_SUPPRESSED=' aws-access-key-id aws-session-key-id aws-secret-access-key st
 # suppressed against it (history equivalence, see header). It is filled by
 # scan_history and removed when the history scan completes.
 ANNOTATED_LINES=
-
-# Compound detector: a 12-digit AWS account ID on a line that also names an
-# account variable (a bare 12-digit number alone is too generic to flag;
-# an account ID inside an ARN is the account-id-arn SHAPE detector's job —
-# any service, region field empty as in iam:: or populated as in
-# ssm:us-east-1: — not this one's).
-ACCOUNT_ID_ERE='[0-9]{12}'
-ACCOUNT_CONTEXT_ERE='account_id|aws_account|AccountId|AWS_ACCOUNT'
 
 # Allowlisted address stripped from all input before email detection.
 ALLOWLIST_SED='s/noreply@anthropic[.]com//g'
@@ -344,11 +355,10 @@ scan_literal() {
     return 0
 }
 
-# scan_stream LABEL FILE — run every detector (including the compound
-# account-id one) over FILE: the label detectors against a lowercased copy
-# of FILE's lines (case-insensitive by construction, with the original line
-# text restored onto every finding — see scan_matches), the shape detectors
-# and the compound account-id detector against FILE unchanged.
+# scan_stream LABEL FILE — run every detector over FILE: the label
+# detectors against a lowercased copy of FILE's lines (case-insensitive by
+# construction, with the original line text restored onto every finding —
+# see scan_matches), the shape detectors against FILE unchanged.
 scan_stream() {
     _ss_label=$1
     _ss_file=$2
@@ -365,8 +375,6 @@ EOF
     done <<EOF
 $SHAPE_DETECTORS
 EOF
-    scan_matches account-id-context "$_ss_label" \
-        "$ACCOUNT_ID_ERE" "$_ss_file" "$ACCOUNT_CONTEXT_ERE"
     return 0
 }
 
@@ -760,7 +768,7 @@ selftest() {
     # Every detector — both classes — must fire somewhere in the fixture
     # corpus.
     for _name in $(printf '%s\n%s\n' "$LABEL_DETECTORS" "$SHAPE_DETECTORS" |
-        sed 's/:.*//') account-id-context; do
+        sed 's/:.*//'); do
         case "$_nl$_detected$_nl" in
         *"$_nl$_name$_nl"*)
             printf 'selftest: PASS  %-22s detected\n' "$_name"

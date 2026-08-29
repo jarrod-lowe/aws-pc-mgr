@@ -611,7 +611,8 @@ The default audit scans all tracked files — text directly, UTF-16 files
 scanned in decoded form — and the **full history of every commit** (message
 bodies, scanned for every commit independently of the path-filtered patches,
 plus the patches) for: AWS access-key IDs (`AKIA...`,
-`ASIA...`), secret-key, activation-code and session-token label assignments
+`ASIA...`), secret-key, activation-code, session-token and account-ID label
+assignments
 — the label
 detectors match a **lowercased copy of each line** with
 separator-wildcarded label words, so every case variant (lowercase HCL
@@ -619,14 +620,19 @@ separator-wildcarded label words, so every case variant (lowercase HCL
 `SecretAccessKey`, JSON `"SecretAccessKey": "..."`, spaced
 `Secret Access Key = ...`, env `AWS_SESSION_TOKEN`, `SessionToken`) and
 every separator spelling inside the label
-is the same pattern — with the assignment `=` or `:` separated and
-value-length-anchored, so short synthetic literals like
+is the same pattern — the account label likewise matches with or without
+its `id` suffix in any case (`account_id`, `accountId`, UPPER
+`AWS_ACCOUNT_ID`, JSON `"Account": "…"`, the GetCallerIdentity dump
+shape) — with the assignment `=` or `:` separated and
+value-anchored (by length, or by the 12-digit run for the account label,
+so a bare `Account:` label holding an account name or free text never
+trips), so short synthetic literals like
 `SecretAccessKey=EXAMPLE` or `Session Token: EXAMPLE` in the Windows-tier
 tests cannot trip it —
 managed-node IDs (`mi-...`), UUID
-literals, SSO start URLs, email addresses, and 12-digit account IDs (in ARNs
-of any service — empty-region `arn:aws:iam::…` style or regional
-`arn:aws:ssm:us-east-1:…` style — or account-keyed contexts); these
+literals, SSO start URLs, email addresses, and 12-digit account IDs in ARNs
+of any service (empty-region `arn:aws:iam::…` style or regional
+`arn:aws:ssm:us-east-1:…` style); these
 value-shape detectors match the original
 line unchanged, because their grammar is case-bearing. It also treats
 runtime values as findings if they
