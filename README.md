@@ -214,13 +214,26 @@ choose the bucket name.
 
 ### 4. Create the state bucket (temporary local state)
 
+The S3 backend cannot hold this stack's state before the bucket exists, so the
+backend block is set aside while the bucket is created:
+
 ```sh
 cd terraform/bootstrap
-terraform init -backend=false     # provider download only; no backend yet
+mv backend.tf backend.tf.off   # temporarily remove the backend block
+terraform init                 # provider download only; local state
 terraform plan
-terraform apply                   # creates the bucket, local state for now
+terraform apply                # creates the bucket; writes local terraform.tfstate
 terraform output -raw state_bucket_name
+mv backend.tf.off backend.tf   # restore the backend block
 ```
+
+Why the `mv` step exists: `terraform init -backend=false` disables backend
+initialization but does not select a local backend — `terraform plan` and
+`terraform apply` then refuse with `Error: Backend initialization required`
+until the backend block is initialized, so the block must be absent while the
+bucket is created. (`init -backend=false` remains the correct invocation for
+`terraform validate` and `terraform test`, whose mocked providers and
+in-memory state never touch a backend — that is exactly how CI uses it.)
 
 ### 5. Migrate the bootstrap state into S3
 
@@ -568,7 +581,11 @@ scripts/audit.sh --selftest  # prove every detector still fires on synthetic fix
 
 The default audit scans all tracked text files and the **full history of every
 commit** (message bodies and patches) for: AWS access-key IDs (`AKIA...`,
-`ASIA...`), secret-key assignments, managed-node IDs (`mi-...`), UUID
+`ASIA...`), secret-key assignments in any spelling (HCL
+`aws_secret_access_key`, env `AWS_SECRET_ACCESS_KEY`, camelCase
+`SecretAccessKey` — value-length-anchored, so short synthetic literals like
+`SecretAccessKey=EXAMPLE` in the Windows-tier tests cannot trip it),
+managed-node IDs (`mi-...`), UUID
 literals, SSO start URLs, email addresses, and 12-digit account IDs (in ARNs
 or account-keyed contexts). It also treats runtime values as findings if they
 appear in tracked files or history: the bucket name from your local untracked
@@ -586,7 +603,7 @@ every *suppressible* detector, in both file mode and history mode (history
 checks the raw patch line). It exists only for **synthetic** test/doc values
 (example UUIDs in module help, invented `mi-` literals in unit tests). Two
 hard rules, enforced in code: the marker can **never** silence AWS key
-material (`AKIA`/`ASIA` key IDs, `aws_secret_access_key` assignments) or the
+material (`AKIA`/`ASIA` key IDs, secret-key assignments in any spelling) or the
 runtime per-machine value checks (bucket name, username, hostname) — those are
 real by definition. And history equivalence: a finding in an already-committed
 line is also skipped when the byte-identical line exists in the current tree

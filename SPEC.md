@@ -1603,7 +1603,7 @@ Run `scripts/audit.sh` (clean pass required), `git log -p | grep` spot-check, wa
 ## Validation phase V (user-executed; I coordinate and record)
 
 * **V0** — push (after approval); CI green.
-* **V1** — SSO login, `export AWS_PROFILE=… AWS_REGION=ap-southeast-2`; `cp` tfvars; bootstrap `init -backend=false` + `apply`; `scripts/tf-init.sh bootstrap` (migration); `terraform plan` clean; destroy-mode plan refuses (`prevent_destroy`); then delete local state files.
+* **V1** — SSO login, `export AWS_PROFILE=… AWS_REGION=ap-southeast-2`; `cp` tfvars; bootstrap: `mv backend.tf backend.tf.off` → `init` → `apply` (writes local state; `-backend=false` does not select a local backend, so the block must be absent) → `mv backend.tf.off backend.tf`; `scripts/tf-init.sh bootstrap` (migration); `terraform plan` clean; destroy-mode plan refuses (`prevent_destroy`); then delete local state files.
 * **V2** — `scripts/tf-init.sh infrastructure`; `apply`; `terraform output -json` shows sensitive flags; record activation outputs for enrollment.
 * **V3** — fresh clone to `/tmp`, init via script, `plan` reads state (§14).
 * **V4** — clone repo on Windows; elevated `setup.ps1`; run `tests/windows` Pester (red-then-green for entry scripts happens here).

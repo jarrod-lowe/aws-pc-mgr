@@ -65,7 +65,9 @@
 #
 #   HARD RULE (no exception, by construction): the marker NEVER suppresses
 #   real AWS key material. A line matching an AKIA…/ASIA… access or session
-#   key ID, or an aws_secret_access_key assignment, is ALWAYS a finding,
+#   key ID, or a secret-key assignment in any spelling (HCL
+#   `aws_secret_access_key = …`, env `AWS_SECRET_ACCESS_KEY=…`, camelCase
+#   `SecretAccessKey=…`), is ALWAYS a finding,
 #   even when the marker is present on that line. These detector classes
 #   (aws-access-key-id, aws-session-key-id, aws-secret-access-key) cannot
 #   be silenced by any marker. The runtime per-machine value checks
@@ -110,10 +112,16 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 # Detectors: one per line, `name:ERE`, split on the first colon (names never
 # contain a colon). A line is a finding when it matches the ERE.
 # Optional quote character before a value (secret keys are quoted in HCL).
+# The secret-key detector accepts the three spellings a leak realistically
+# takes — lowercase HCL `aws_secret_access_key = …`, uppercase env
+# `AWS_SECRET_ACCESS_KEY=…`, camelCase `SecretAccessKey=…` (the SSM agent
+# log spelling) — and anchors on the value length (35-45 base64-ish chars),
+# so short synthetic literals such as `SecretAccessKey=EXAMPLE` in the
+# Windows-tier tests can never false-positive.
 QUOTE_CLASS="[\"']?"
 DETECTORS="aws-access-key-id:AKIA[0-9A-Z]{16}
 aws-session-key-id:ASIA[0-9A-Z]{16}
-aws-secret-access-key:aws_secret_access_key[[:space:]]*=[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
+aws-secret-access-key:(aws_secret_access_key|AWS_SECRET_ACCESS_KEY|SecretAccessKey)[[:space:]]*=[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
 managed-node-id:mi-[a-f0-9]{8,}
 uuid-literal:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}
 sso-start-url:https://[A-Za-z0-9-][A-Za-z0-9.-]*[.]awsapps[.]com/start
