@@ -1,0 +1,15 @@
+tests/audit-history-equivalence.txt
+#
+# Registry of synthetic example lines that exist in git history (quoted in
+# commit message bodies) and trip a suppressible audit detector there. The
+# repository does not rewrite history, so each line is recorded here
+# byte-identically with the suppression marker defined in scripts/audit.sh
+# appended; the audit's history-equivalence rule then covers the committed
+# copy. This file is tracked and scanned like any other: the marker keeps
+# each listed line silent here too, and adding a real value to this list is
+# as detectable as committing it anywhere else (the never-suppressible
+# classes cannot be silenced by the marker at all).
+#
+# ed90ee9 (aws-sso-profile): commit message quoted the review finding's
+# synthetic example of a letter-only profile name.
+letter-only profile like AWS_PROFILE=production audited clean; the # audit-allow:synthetic
