@@ -147,10 +147,19 @@ Describe 'setup.ps1 entry script runnability' {
 }
 
 Describe 'setup.ps1 input handling' {
-    # Invalid parameters make the script prompt; with stdin at EOF the prompt
-    # yields nothing, so the script must give up with exit code 2 (SPEC 42).
-    It 'exits 2 when region and activation ID are invalid and no input is available' -Skip:(-not ($script:IsWindowsOs -and $script:IsElevated)) {
+    # Invalid values SUPPLIED as parameters are validated before any local
+    # state is inspected: the follow-up prompt sees EOF (stdin closed by
+    # Invoke-EntryScript), so the script must give up with exit code 2 (SPEC
+    # 42) without ever classifying or acting. Omitted (empty) values are no
+    # longer prompted for at input time - only the Register action asks, see
+    # the idempotence tests below.
+    It 'exits 2 when region and activation ID are supplied invalid and no input is available' -Skip:(-not ($script:IsWindowsOs -and $script:IsElevated)) {
         $result = Invoke-EntryScript -ScriptPath $SetupPath -ScriptArguments @('-Region', 'not-a-region', '-ActivationId', 'not-an-id')
+        $result.ExitCode | Should -Be 2
+    }
+
+    It 'exits 2 when only the region is supplied invalid, even with no activation ID given' -Skip:(-not ($script:IsWindowsOs -and $script:IsElevated)) {
+        $result = Invoke-EntryScript -ScriptPath $SetupPath -ScriptArguments @('-Region', 'not-a-region')
         $result.ExitCode | Should -Be 2
     }
 }
@@ -181,6 +190,20 @@ Describe 'setup.ps1 idempotence (SPEC 36)' {
         )
         # The masked prompt text appears only when a registration would run.
         $result.Output | Should -Not -Match 'input is masked'
+    }
+
+    # The documented safe re-run is the BARE command with no parameters at
+    # all (SPEC 22/36). The script must classify local state first and reach
+    # NoOperation without prompting: stdin is closed, so any prompt would
+    # read EOF, exhaust its retries, and drive the exit code to 2 instead.
+    It 'parameterless re-run reaches NoOperation and exits 0 without prompting' -Skip:(-not ($script:IsWindowsOs -and $script:IsElevated -and $script:RegisteredHealthy)) {
+        $result = Invoke-EntryScript -ScriptPath $SetupPath
+
+        $result.ExitCode | Should -Be 0
+        $result.Output | Should -Match 'NoOperation'
+        $result.Output | Should -Match ([Regex]::Escape($ManagedInstanceId))
+        $result.Output | Should -Not -Match 'input is masked'
+        $result.Output | Should -Not -Match 'Enter the (AWS region|SSM activation ID)'
     }
 }
 

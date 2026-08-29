@@ -7,8 +7,9 @@
     Elevated entry script. All decision logic lives in SSMHybrid.psm1; this
     script gathers local facts, asks the module what to do, then does it.
 
-    Flow: elevation check -> resolve inputs (region, activation ID) ->
-    classify local state -> execute the mapped action.
+    Flow: elevation check -> validate any supplied parameters (fast exit 2
+    on invalid supplied values) -> classify local state -> execute the
+    mapped action.
 
     Actions and exit codes:
         NoOperation          already registered and healthy         exit 0
@@ -20,6 +21,13 @@
                              leave agent stopped                  exit 3
 
     Any other refusal or failure exits 1; invalid inputs exit 2.
+
+    Interactive prompts happen only when enrollment is actually required:
+    region and activation ID supplied as parameters are validated up front,
+    but when omitted they are asked for ONLY inside the Register branch.
+    NoOperation, StartService, ManualIntervention, and Reregister never need
+    an activation, so a parameterless re-run on an already-enrolled machine
+    asks for nothing at all and simply reports health (SPEC 20/22/36).
 
     The activation code is never a parameter and never appears on a command
     line (SPEC 20): it is read with a masked prompt via Read-SsmSecret, and
@@ -34,12 +42,14 @@
 
 .PARAMETER Region
     AWS region of the hybrid activation, for example ap-southeast-2.
-    Prompted for when omitted or invalid.
+    Validated immediately when supplied. Prompted for only when the Register
+    action is about to run and no valid region is known yet.
 
 .PARAMETER ActivationId
     SSM hybrid activation ID (UUID), from
-    'terraform output -raw activation_id'. Prompted for when omitted or
-    invalid.
+    'terraform output -raw activation_id'. Validated immediately when
+    supplied. Prompted for only when the Register action is about to run and
+    no valid activation ID is known yet.
 
 .PARAMETER ForceReregister
     Destructive: after an explicit interactive confirmation, stops the
@@ -149,18 +159,30 @@ if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
 }
 Import-Module -Name $modulePath -Force
 
-# --- 3. inputs (SPEC 20) ----------------------------------------------------
+# --- 3. supplied inputs (SPEC 20) -------------------------------------------
+# A parameter actually supplied on the command line is validated NOW, so a bad
+# supplied value fails fast with exit 2 before anything is inspected or
+# classified. Values NOT supplied are deliberately NOT prompted for here:
+# region and activation ID are only consumed by the Register action, so they
+# are resolved inside that branch below. NoOperation, StartService,
+# ManualIntervention, and Reregister therefore run to completion on a
+# parameterless invocation without ever asking for activation values (SPEC
+# 20/22/36).
 
-$Region = Resolve-SsmInput -Value $Region -Label 'AWS region' -Example 'ap-southeast-2' -IsValid { param($Value) Test-SsmRegion -Region $Value }
-if ([string]::IsNullOrEmpty($Region)) {
-    Write-Fail 'No valid AWS region was provided.'
-    exit 2
+if (-not [string]::IsNullOrEmpty($Region)) {
+    $Region = Resolve-SsmInput -Value $Region -Label 'AWS region' -Example 'ap-southeast-2' -IsValid { param($Value) Test-SsmRegion -Region $Value }
+    if ([string]::IsNullOrEmpty($Region)) {
+        Write-Fail 'No valid AWS region was provided.'
+        exit 2
+    }
 }
 
-$ActivationId = Resolve-SsmInput -Value $ActivationId -Label 'SSM activation ID' -Example 'a UUID, from: terraform output -raw activation_id' -IsValid { param($Value) Test-SsmActivationId -ActivationId $Value }
-if ([string]::IsNullOrEmpty($ActivationId)) {
-    Write-Fail 'No valid SSM activation ID was provided.'
-    exit 2
+if (-not [string]::IsNullOrEmpty($ActivationId)) {
+    $ActivationId = Resolve-SsmInput -Value $ActivationId -Label 'SSM activation ID' -Example 'a UUID, from: terraform output -raw activation_id' -IsValid { param($Value) Test-SsmActivationId -ActivationId $Value }
+    if ([string]::IsNullOrEmpty($ActivationId)) {
+        Write-Fail 'No valid SSM activation ID was provided.'
+        exit 2
+    }
 }
 
 # --- 4. local state (SPEC 21 steps 3-5, SPEC 23) ----------------------------
@@ -209,7 +231,12 @@ if ($action -eq 'NoOperation') {
 
     Write-Host ''
     Write-Host ('Managed node ID : ' + $registration.ManagedInstanceId)
-    Write-Host ('Region          : ' + $registration.Region)
+    # The region shown here comes from the local registration record, not from
+    # an operator-supplied value: this path never asks for one, so the line is
+    # simply omitted when the record carries no Region.
+    if (-not [string]::IsNullOrEmpty($registration.Region)) {
+        Write-Host ('Region          : ' + $registration.Region)
+    }
     Write-Host ('Service         : AmazonSSMAgent ' + $currentService.Status + ' / startup ' + $currentService.StartType)
     Write-Step 'Already registered and healthy. No changes made; no activation consumed (SPEC 22/36).'
     exit 0
@@ -255,7 +282,30 @@ if ($action -eq 'Register') {
     Write-Host 'The AWS ssm-setup-cli will be downloaded over HTTPS, its Authenticode'
     Write-Host 'signature verified (Amazon.com Services LLC), and only then executed.'
 
-    $activationCode = Read-ActivationCode
+    # Activation values are resolved HERE, only once a registration is actually
+    # about to run (SPEC 20): values already supplied as parameters were
+    # validated up front and pass straight through; missing ones are prompted
+    # for now, and the code is always read masked. Every other action above
+    # completed without asking for any of these.
+    $Region = Resolve-SsmInput -Value $Region -Label 'AWS region' -Example 'ap-southeast-2' -IsValid { param($Value) Test-SsmRegion -Region $Value }
+    if ([string]::IsNullOrEmpty($Region)) {
+        Write-Fail 'No valid AWS region was provided.'
+        exit 2
+    }
+
+    $ActivationId = Resolve-SsmInput -Value $ActivationId -Label 'SSM activation ID' -Example 'a UUID, from: terraform output -raw activation_id' -IsValid { param($Value) Test-SsmActivationId -ActivationId $Value }
+    if ([string]::IsNullOrEmpty($ActivationId)) {
+        Write-Fail 'No valid SSM activation ID was provided.'
+        exit 2
+    }
+
+    # The trailing marker is the audit's documented exemption for a
+    # label-shape collision (see the audit.sh header): the lowercased,
+    # separator-wildcarded activation-code detector correctly cannot tell
+    # this assignment from a leak, and must not be narrowed to miss one, so
+    # this known-safe line - the value is a function invocation, not a
+    # credential - carries the marker instead.
+    $activationCode = Read-ActivationCode # audit-allow:synthetic
     if ([string]::IsNullOrEmpty($activationCode)) {
         Write-Fail 'No activation code was provided.'
         exit 2

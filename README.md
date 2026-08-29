@@ -328,11 +328,13 @@ From an elevated PowerShell in the repository root on the Windows machine:
 .\scripts\windows\setup.ps1
 ```
 
-Interactive prompts ask for the AWS region and the Activation ID (or pass them
-as `-Region` / `-ActivationId`), and the Activation Code is entered at a
-**masked** prompt. No AWS SSO login and no AWS CLI involvement happens on
-Windows. See [Windows enrollment: setup.ps1](#windows-enrollment-setupps1) for
-exactly what the script prints and does.
+Interactive prompts ask for the AWS region, the Activation ID, and the
+Activation Code (**masked**) — but only when the machine turns out to actually
+need enrolling; a re-run on an already-registered machine asks for nothing.
+You can also pass `-Region` / `-ActivationId` up front. No AWS SSO login and
+no AWS CLI involvement happens on Windows. See
+[Windows enrollment: setup.ps1](#windows-enrollment-setupps1) for exactly what
+the script prints and does.
 
 ### 12. Validate
 
@@ -358,14 +360,19 @@ authoritative.
 .\scripts\windows\setup.ps1 -ForceReregister                  # destructive; see below
 ```
 
-**Parameters.** `-Region` and `-ActivationId` are optional; when omitted or
-invalid you are prompted (up to three attempts). The **Activation Code is never
-a parameter and never appears on a command line**: it is read through a masked
-`Read-Host -AsSecureString` prompt (`Read-SsmSecret`), and only when a
-registration is actually about to run — an idempotent re-run never asks for it.
+**Parameters.** `-Region` and `-ActivationId` are optional. When supplied they
+are validated immediately (an invalid supplied value fails fast with exit 2
+after up to three prompt attempts). When omitted they are prompted for (up to
+three attempts) **only on the `Register` path** — every other action completes
+without them, so a parameterless re-run on an already-enrolled machine asks for
+nothing at all. The **Activation Code is never a parameter and never appears on
+a command line**: it is read through a masked `Read-Host -AsSecureString`
+prompt (`Read-SsmSecret`), and only when a registration is actually about to
+run — an idempotent re-run never asks for it.
 
 **Flow.** The script first refuses to run unless elevated (exit 1, nothing
-changed), then inspects the local `AmazonSSMAgent` service and the local
+changed), then validates any supplied `-Region` / `-ActivationId`, then
+inspects the local `AmazonSSMAgent` service and the local
 registration file (`$env:ProgramData\Amazon\SSM\InstanceData\registration`),
 classifies the machine into one of six states, prints
 `State: <state>. Planned action: <action>.`, and executes the mapped action:
@@ -381,14 +388,18 @@ classifies the machine into one of six states, prints
 What each path prints and does:
 
 * **NoOperation** — re-verifies the service (starting it if it stopped since
-  the first check), then prints the managed node ID (`mi-...`), region, and
-  service status, and states that no changes were made and **no activation was
-  consumed**. This is what a healthy re-run looks like.
+  the first check), then prints the managed node ID (`mi-...`), the region from
+  the local registration record (the line is omitted when the record carries
+  none), and service status, and states that no changes were made and **no
+  activation was consumed**. This is what a healthy re-run looks like: the bare
+  command, no prompts, no inputs required.
 * **StartService** — non-destructive repair: starts the existing
   `AmazonSSMAgent` service and reports the same summary, preserving the
-  existing registration.
+  existing registration. Like `NoOperation`, it never prompts for activation
+  values.
 * **Register** — announces that the AWS setup CLI will be downloaded over HTTPS
-  and its signature verified, prompts for the (masked) activation code, then:
+  and its signature verified, prompts for any missing region / Activation ID
+  and then the (masked) activation code, then:
   forces TLS 1.2 where needed, downloads `ssm-setup-cli.exe` from
   `https://amazon-ssm-<region>.s3.<region>.amazonaws.com/latest/windows_amd64/ssm-setup-cli.exe`
   into a temp directory, **refuses to execute** unless its Authenticode
@@ -490,7 +501,7 @@ Then, within the activation's lifetime (24 hours by default), on Windows:
 
 ```powershell
 .\scripts\windows\setup.ps1 -ForceReregister   # type yes; stops agent, clears local registration, leaves agent stopped; exits 3
-.\scripts\windows\setup.ps1                    # re-enroll with the NEW activation values (starts the agent again)
+.\scripts\windows\setup.ps1                    # now unregistered -> Register path prompts for the NEW activation values (starts the agent again)
 ```
 
 ## Destruction and deregistration
