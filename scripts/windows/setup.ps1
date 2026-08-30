@@ -149,6 +149,41 @@ function Get-SsmRegistration {
     return ConvertFrom-SsmRegistrationJson -Json $json
 }
 
+# Registration RE-read for an action that already relies on one, or the
+# ambiguous exit. Classification read and parsed this file moments ago, so
+# when Get-SsmRegistration now returns $null (file deleted or emptied under
+# us) or throws (file rewritten into something unreadable or unparseable,
+# or its read now fails), the script's decision no longer matches the
+# machine: another actor changed it between the classification and this
+# read. That is exactly the ambiguity an unparseable registration earns at
+# classification, so the same verdict is given here (exit 3, nothing
+# modified, a human decides - SPEC 23) instead of acting on stale facts.
+# Returns the parsed registration, or never returns.
+function Get-SsmRegistrationOrAmbiguousExit {
+    $registration = $null
+    try {
+        $registration = Get-SsmRegistration
+    } catch {
+        # Thrown means the file exists NOW but cannot be read or parsed NOW.
+        $registration = $null
+    }
+
+    if ($null -ne $registration) {
+        return $registration
+    }
+
+    Write-Fail 'The local registration vanished or changed since the state was classified above.'
+    Write-Host 'It was readable and parseable moments ago, and now it is gone, empty, unreadable,'
+    Write-Host 'or unparseable. Nothing was modified and nothing was deleted. The machine is in'
+    Write-Host 'the same ambiguous state an unparseable registration earns at classification'
+    Write-Host '(SPEC 23): no automatic action is taken from here.'
+    Write-Host ('Inspect: the registration file under ' + $env:ProgramData + '\Amazon\SSM\InstanceData;')
+    Write-Host 'Get-Service AmazonSSMAgent; the SSM Agent log. Repair the cause manually, or'
+    Write-Host 're-run with -ForceReregister to discard the local registration and enroll'
+    Write-Host 'afresh (destructive; consumes a new activation).'
+    exit 3
+}
+
 # Service facts, or fail closed. Get-SsmServiceInfo never throws for a
 # MISSING service (it reports Exists = $false) but DOES throw for a FAILED
 # query, because a failed query must never be readable as the service being
@@ -240,20 +275,37 @@ Write-Step ("State: " + $nodeState + ". Planned action: " + $action + ".")
 # --- 5. actions -------------------------------------------------------------
 
 if ($action -eq 'NoOperation') {
-    $registration = Get-SsmRegistration
+    $registration = Get-SsmRegistrationOrAmbiguousExit
 
-    # Re-verify the service before declaring health (SPEC 22).
+    # Re-verify the service before declaring health (SPEC 22). The health
+    # verdict requires AmazonSSMAgent to be BOTH Running AND Automatic at
+    # re-query time - not merely as classified above. Drift that appeared in
+    # between, for example the service stopping or Group Policy flipping the
+    # startup type to Manual/Disabled, is repaired the same way the
+    # StartService path repairs it (start the service, restore Automatic),
+    # and the invariant is then re-queried and must hold, or the run fails
+    # closed.
+    $serviceStarted = $false
+    $startupRestored = $false
     $currentService = Get-ServiceInfoOrFail
     if ($currentService.Status -ne 'Running') {
         Write-Step 'AmazonSSMAgent stopped since the check above; starting it (registration untouched).'
         Start-Service -Name 'AmazonSSMAgent'
+        $serviceStarted = $true
         $currentService = Get-ServiceInfoOrFail
-        if ($currentService.Status -ne 'Running') {
-            Write-Fail 'AmazonSSMAgent did not reach the Running state after Start-Service.'
-            Write-Host 'Inspect: Get-Service AmazonSSMAgent and the SSM Agent log under'
-            Write-Host ($env:ProgramData + '\Amazon\SSM\Logs. The existing registration was NOT modified.')
-            exit 1
-        }
+    }
+    if ($currentService.StartType -ne 'Automatic') {
+        Write-Step ("Restoring AmazonSSMAgent startup type to Automatic (was '" + $currentService.StartType + "').")
+        Set-Service -Name 'AmazonSSMAgent' -StartupType Automatic
+        $startupRestored = $true
+        $currentService = Get-ServiceInfoOrFail
+    }
+    if (($currentService.Status -ne 'Running') -or ($currentService.StartType -ne 'Automatic')) {
+        Write-Fail ("AmazonSSMAgent is not Running/Automatic at the re-check (status '" + $currentService.Status + "', startup '" + $currentService.StartType + "').")
+        Write-Host 'Another actor may be re-applying a service configuration, for example Group'
+        Write-Host 'Policy. Inspect: Get-Service AmazonSSMAgent and the SSM Agent log under'
+        Write-Host ($env:ProgramData + '\Amazon\SSM\Logs. The existing registration was NOT modified.')
+        exit 1
     }
 
     Write-Host ''
@@ -265,12 +317,16 @@ if ($action -eq 'NoOperation') {
         Write-Host ('Region          : ' + $registration.Region)
     }
     Write-Host ('Service         : AmazonSSMAgent ' + $currentService.Status + ' / startup ' + $currentService.StartType)
-    Write-Step 'Already registered and healthy. No changes made; no activation consumed (SPEC 22/36).'
+    if ($serviceStarted -or $startupRestored) {
+        Write-Step 'Drift found at the re-check was repaired; the existing registration was untouched and no activation was consumed (SPEC 22/36).'
+    } else {
+        Write-Step 'Already registered and healthy. No changes made; no activation consumed (SPEC 22/36).'
+    }
     exit 0
 }
 
 if ($action -eq 'StartService') {
-    $registration = Get-SsmRegistration
+    $registration = Get-SsmRegistrationOrAmbiguousExit
     Write-Step 'Registration exists and AmazonSSMAgent is stopped; starting the existing service (SPEC 23).'
 
     # Restore Automatic startup before starting, like the Register path: a
@@ -286,9 +342,22 @@ if ($action -eq 'StartService') {
 
     Start-Service -Name 'AmazonSSMAgent'
     $currentService = Get-ServiceInfoOrFail
-    if ($currentService.Status -ne 'Running') {
-        Write-Fail 'AmazonSSMAgent did not reach the Running state after Start-Service.'
-        Write-Host 'Inspect: Get-Service AmazonSSMAgent and the SSM Agent log. The existing'
+
+    # The verdict needs BOTH facts, so BOTH are re-verified after the start:
+    # the restore above can itself be undone between the Set-Service and
+    # this re-query (Group Policy re-applying a Manual/Disabled start type),
+    # and a service that is Running but not Automatic is the same
+    # offline-after-next-reboot state the restore exists to prevent.
+    if ($currentService.StartType -ne 'Automatic') {
+        Write-Step ("Restoring AmazonSSMAgent startup type to Automatic (was '" + $currentService.StartType + "').")
+        Set-Service -Name 'AmazonSSMAgent' -StartupType Automatic
+        $startupRestored = $true
+        $currentService = Get-ServiceInfoOrFail
+    }
+    if (($currentService.Status -ne 'Running') -or ($currentService.StartType -ne 'Automatic')) {
+        Write-Fail ("AmazonSSMAgent is not Running/Automatic after starting it (status '" + $currentService.Status + "', startup '" + $currentService.StartType + "').")
+        Write-Host 'Another actor may be re-applying a service configuration, for example Group'
+        Write-Host 'Policy. Inspect: Get-Service AmazonSSMAgent and the SSM Agent log. The existing'
         Write-Host 'registration was NOT modified and no activation was consumed.'
         exit 1
     }

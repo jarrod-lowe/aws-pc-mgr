@@ -207,6 +207,65 @@ Describe 'setup.ps1 idempotence (SPEC 36)' {
     }
 }
 
+Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
+    # CLASS-LEVEL DISCIPLINE, not one instance: every place setup.ps1
+    # re-reads state it classified moments earlier must fail closed when the
+    # re-read no longer matches the classification, and must repair (not
+    # merely re-observe) the drift that is safely repairable. The states
+    # this discipline exists for - the registration file deleted, emptied,
+    # or rewritten, or the service start type flipped to Manual/Disabled,
+    # all BETWEEN the classification reads and the re-reads inside one run -
+    # CANNOT be driven from outside a child process: setup.ps1 has no path
+    # seams (unlike check.ps1's -RegistrationPath/-AgentLogPath), and no
+    # external input decides what a read taken mid-run returns. Revalidation
+    # call-site inventory and its disposition:
+    #   classification reads (service, registration) - own try/catch,
+    #       exit 1 (service query) / exit 3 (registration read)
+    #   NoOperation registration re-read - fail-closed guard: $null (gone or
+    #       emptied) or throw (unreadable/unparseable) exits 3, the same
+    #       ambiguous verdict classification gives an unparseable file
+    #   NoOperation service re-check - fail-closed on query failure (exit
+    #       1); a stopped service is started and a non-Automatic start type
+    #       restored, then BOTH Running AND Automatic are re-queried and
+    #       must hold or the run exits 1
+    #   StartService registration re-read - the same fail-closed guard
+    #   StartService service checks - fail-closed wrapper; the start type is
+    #       re-verified after the start (it can be flipped back between the
+    #       pre-start Set-Service and the post-start query), and both facts
+    #       are required for success
+    #   Register post-enrollment registration read + service checks -
+    #       fail-closed (exit 1) on unparseable/absent registration and on
+    #       not Running/Automatic after the repairs, both re-verified
+    #   Reregister pre-clear service reads - fail-closed wrapper plus a
+    #       verified-stopped gate before anything destructive
+    # This file has no static source-text assertions (its always-runnable
+    # tier is the parser and contract checks only), so the committed
+    # coverage is what IS drivable: the parse check above runs over the
+    # edited script on every OS, and on a real enrolled Windows machine the
+    # test below asserts the observable surface of the invariant. The
+    # state-specific proof was a red/green demonstration against a scratch
+    # copy of setup.ps1 with the module readers stubbed stateful (the same
+    # scratch-copy approach Check.Tests documents for its non-drivable
+    # states), run with the fix and not committed.
+    It 'health report of the parameterless re-run states both re-verified facts: Running and Automatic' -Skip:(-not ($script:IsWindowsOs -and $script:IsElevated -and $script:RegisteredHealthy)) {
+        $result = Invoke-EntryScript -ScriptPath $SetupPath
+
+        $result.ExitCode | Should -Be 0
+        $result.Output | Should -Match 'NoOperation'
+        # SPEC 22's health verdict requires BOTH facts at re-query time, and
+        # the verdict line reports the re-queried service state: anything
+        # other than Running/Automatic here would mean health was declared
+        # over a start type that was not verified after classification.
+        $result.Output | Should -Match 'AmazonSSMAgent Running / startup Automatic'
+        $result.Output | Should -Not -Match 'startup Manual'
+        $result.Output | Should -Not -Match 'startup Disabled'
+        # The verdict line must also never carry a blank managed-node ID:
+        # the ID is read again under the fail-closed guard, so a vanished
+        # registration can no longer be printed as an empty value.
+        $result.Output | Should -Not -Match '(?m)^Managed node ID : \s*$'
+    }
+}
+
 Describe 'ssm-setup-cli signature verification (SPEC 21 steps 7-8)' {
     It 'accepts the Authenticode signature of the AWS-downloaded ssm-setup-cli' -Skip:(-not $script:IsWindowsOs) {
         $url = Get-SsmSetupCliUrl -Region 'ap-southeast-2'
