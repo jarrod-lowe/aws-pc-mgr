@@ -25,3 +25,4 @@ export AWS_PROFILE=<profile>
 # accepts (found by the selftest spelling matrix). Synthetic value.
 aws.profile = "corp-admin-prod"
 AWS_PROFILE := corp-admin-prod
+aws_profile = _dev

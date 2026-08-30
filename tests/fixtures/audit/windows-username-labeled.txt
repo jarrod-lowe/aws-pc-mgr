@@ -36,3 +36,5 @@ user: bob
 account: bob
 login name: alice
 computer account: PC1
+Windows username: _svc
+Windows account: -svc

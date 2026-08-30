@@ -518,7 +518,9 @@ LABEL_ASSIGN='([=:]|:=)'
 # letter-only profile names (`production`) are real — so the prose/placeholder
 # safety lives in the gate, not here.
 AWS_PROFILE_LABEL="aws${LABEL_WORD_SEP}profile[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
-AWS_PROFILE_VALUE='[A-Za-z0-9][A-Za-z0-9._-]*'
+# First position accepts the same characters the rest of the run does:
+# the AWS CLI accepts profile names beginning with `_` (`[profile _dev]`).
+AWS_PROFILE_VALUE='[A-Za-z0-9._-]+'
 # SERIAL_LABEL/SERIAL_VALUE are the machine-serial-number detector's label
 # and value anchors, shared between the detector ERE and the serial-property
 # gate in emit_hits for the same reason AWS_PROFILE_LABEL/AWS_PROFILE_VALUE
@@ -543,9 +545,20 @@ SERIAL_VALUE='[A-Za-z0-9][A-Za-z0-9-]{7,}'
 # over-detection being the safe direction and the length rule the only
 # prose brake that survives lowercasing. Single tokens (`Smith`), and
 # placeholders (`<your name>` — the angle bracket is outside the class)
-# cannot match at all.
+# cannot match at all. NAME_RUN widens the run class to NON-ASCII name
+# characters: the engine runs under LC_ALL=C for determinism, so Unicode
+# letters are covered at the BYTE level — any raw byte 0x80-0xFF counts as
+# a name character, which accepts every UTF-8 letter (and, deliberately
+# over-broadly, any other multibyte character — the safe direction). The
+# run-length floors are then in BYTES: a multibyte name clears them sooner
+# than its character count suggests (`Élodie Durand` is ~14 bytes for 13
+# characters), which only loosens an already approximate prose brake.
+# Bracket order matters: the high-byte RANGE sits before the literal `.` and
+# `-` so no unintended range forms (`.-<0x80>` would swallow half of ASCII).
+_highrange=$(printf '\200-\377')
+NAME_RUN="[A-Za-z'${_highrange}.-]"
 PERSONAL_NAME_LABEL="(personal|full|real)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
-PERSONAL_NAME_VALUE="([A-Za-z][A-Za-z'.-]{4,}[[:space:]]+[A-Za-z][A-Za-z'.-]{2,}|[A-Za-z][A-Za-z'.-]{3,}[[:space:]]+[A-Za-z][A-Za-z'.-]{3,}|[A-Za-z][A-Za-z'.-]{2,}[[:space:]]+[A-Za-z][A-Za-z'.-]{4,})"
+PERSONAL_NAME_VALUE="(${NAME_RUN}{5,}[[:space:]]+${NAME_RUN}{3,}|${NAME_RUN}{4,}[[:space:]]+${NAME_RUN}{4,}|${NAME_RUN}{3,}[[:space:]]+${NAME_RUN}{5,})"
 # WINUSER/HOSTNAME labels are the labeled-identifier detectors for SPEC §27's
 # "Windows username" and "hostname" bullets (review thread 3888208297: a
 # LABELED identifier on the Windows machine is committed content —
@@ -600,7 +613,12 @@ PERSONAL_NAME_VALUE="([A-Za-z][A-Za-z'.-]{4,}[[:space:]]+[A-Za-z][A-Za-z'.-]{2,}
 #   machine…name         INCLUDE  round 30: `Machine Name: ALICE-PC`
 #                                  sysinfo-style output
 WINUSER_LABEL="((user|logon)${LABEL_WORD_SEP}name|(windows|win|local)${LABEL_WORD_SEP}(user|account)|sam${LABEL_WORD_SEP}account(${LABEL_WORD_SEP}name)?)[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
-WINUSER_VALUE='[A-Za-z0-9][A-Za-z0-9._-]*'
+# First position accepts the same punctuation the rest of the token does:
+# Windows local account names may begin with `_` or `-` (service accounts
+# like _svc are the common shape). HOSTNAME_VALUE below deliberately keeps
+# its alnum first character - DNS labels and Windows computer names both
+# forbid leading punctuation there, so that floor is correctness, not a gap.
+WINUSER_VALUE='[A-Za-z0-9._-]+'
 HOSTNAME_LABEL="(host|computer|machine)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 HOSTNAME_VALUE='[A-Za-z0-9][A-Za-z0-9.-]*'
 LABEL_DETECTORS="aws-secret-access-key:(aws${LABEL_WORD_SEP})?secret${LABEL_WORD_SEP}access${LABEL_WORD_SEP}key[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
