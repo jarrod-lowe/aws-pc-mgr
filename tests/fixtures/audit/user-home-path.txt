@@ -17,3 +17,4 @@ C:\Users\<username>\.aws\config
 copy "%USERPROFILE%\.aws\config" D:\backup\
 ~/.aws/config and $HOME/.aws/config identify nobody
 C:\Users\$svc\.aws\config
+C:\Users\Élodie\.aws\config

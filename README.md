@@ -703,7 +703,7 @@ literals, SSO start URLs (any scheme/host capitalization), email addresses, 12-d
 of any service (empty-region `arn:aws:iam::…` style or regional
 `arn:aws:ssm:us-east-1:…` style, any capitalization of the `arn:aws`
 prefix and namespace spans), and user-specific absolute paths
-(`C:\Users\<username>\…`, `c:\users\…`, `C:/Users/<username>/…`,
+(`C:\Users\<username>\…`, `c:\users\…`, `C:/Users/<username>/…`, # audit-allow:synthetic
 `/Users/<username>/…`, `/home/<username>/…` — the username segment is the
 identity; `Users` matches any capitalization because the filesystems
 behind it are case-insensitive, `/home` stays lowercase because Linux

@@ -25,3 +25,4 @@ personal_name: …
 Personal Name: the name of the person
 real_name = var.instance_name
 Personal Name: Élodie Durand
+Personal Name: Smith, Alice

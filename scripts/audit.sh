@@ -377,7 +377,7 @@ GENERIC_NAMES=' not applicable not provided unknown anonymous test user sample u
 #   the, your, this, name, value  ordinary doc words after a colon
 #   none, unknown                 self-describing absent data
 #   example, placeholder          documentation filler
-GENERIC_LABELED_USERS=' the your this name value none unknown example placeholder '
+GENERIC_LABELED_USERS=' the your this name value none unknown example placeholder … '
 # Generic LABELED-hostname values: doc filler a `hostname:`/`computer
 # name:` label can carry without naming a machine: localhost and the
 # self-referential hostname/computer/name words, the RFC-2606 example
@@ -559,7 +559,7 @@ SERIAL_VALUE='[A-Za-z0-9][A-Za-z0-9-]{7,}'
 _highrange=$(printf '\200-\377')
 NAME_RUN="[A-Za-z'${_highrange}.-]"
 PERSONAL_NAME_LABEL="(personal|full|real)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
-PERSONAL_NAME_VALUE="(${NAME_RUN}{5,}[[:space:]]+${NAME_RUN}{3,}|${NAME_RUN}{4,}[[:space:]]+${NAME_RUN}{4,}|${NAME_RUN}{3,}[[:space:]]+${NAME_RUN}{5,})"
+PERSONAL_NAME_VALUE="(${NAME_RUN}{5,}([[:space:]]+|,[[:space:]]*)${NAME_RUN}{3,}|${NAME_RUN}{4,}([[:space:]]+|,[[:space:]]*)${NAME_RUN}{4,}|${NAME_RUN}{3,}([[:space:]]+|,[[:space:]]*)${NAME_RUN}{5,})"
 # WINUSER/HOSTNAME labels are the labeled-identifier detectors for SPEC §27's
 # "Windows username" and "hostname" bullets (review thread 3888208297: a
 # LABELED identifier on the Windows machine is committed content —
@@ -627,13 +627,20 @@ WINUSER_LABEL="((user|logon)${LABEL_WORD_SEP}name|(windows|win|local)${LABEL_WOR
 # _svc. HOSTNAME_VALUE below deliberately keeps its alnum first character
 # - DNS labels and Windows computer names both forbid leading punctuation
 # there, so that floor is correctness, not a gap.
-WINUSER_VALUE="[!#\$%&'().@^_{}~A-Za-z0-9-]+"
+# ${_highrange} (the raw 0x80-0xFF byte range, defined beside NAME_RUN)
+# widens the alphabet to non-ASCII account names - Windows allows Unicode
+# account names, and profile directories inherit them, so a path under
+# such an account is detectable too (the home-path segment shares this
+# variable). Bracket order: the byte range sits between `9` and the
+# trailing literal hyphen, so `0-9` and `\200-\377` are both ranges and
+# the trailing `-` stays literal.
+WINUSER_VALUE="[!#\$%&'().@^_{}~A-Za-z0-9${_highrange}-]+"
 HOSTNAME_LABEL="(host|computer|machine)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 HOSTNAME_VALUE='[A-Za-z0-9][A-Za-z0-9.-]*'
 LABEL_DETECTORS="aws-secret-access-key:(aws${LABEL_WORD_SEP})?secret${LABEL_WORD_SEP}access${LABEL_WORD_SEP}key[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
 aws-activation-code:activation${LABEL_WORD_SEP}code[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
 aws-session-token:(aws${LABEL_WORD_SEP})?(session|security)${LABEL_WORD_SEP}token[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}
-account-id-context:account(${LABEL_WORD_SEP}id)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[[:space:]]*[0-9]{12}
+account-id-context:account(${LABEL_WORD_SEP}(id|number))?[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[[:space:]]*[0-9]{12}
 aws-sso-profile:${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}
 machine-serial-number:${SERIAL_LABEL}${SERIAL_VALUE}
 personal-name:${PERSONAL_NAME_LABEL}${PERSONAL_NAME_VALUE}
