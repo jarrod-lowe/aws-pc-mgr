@@ -567,10 +567,18 @@ Describe 'check.ps1 read-failure reporting (SPEC 24)' {
         #                       Add-Problem ('not installed') in check.ps1
         #   OS query          : Get-CimInstance Win32_OperatingSystem - NOT
         #                       breakable from outside; its catch records an
-        #                       Add-Problem in check.ps1
+        #                       Add-Problem in check.ps1, and so does a query
+        #                       that succeeds but returns no result (a null
+        #                       result would otherwise print blank values
+        #                       silently - the same empty-result variant the
+        #                       service query below was fixed for)
         #   service query     : Get-Service / Win32_Service - NOT breakable
-        #                       from outside; failure and absence are each an
-        #                       Add-Problem in check.ps1
+        #                       from outside; failure, absence, and the
+        #                       empty-result state (Get-Service finds the
+        #                       service but the Win32_Service query returns
+        #                       no row) are each an Add-Problem in check.ps1;
+        #                       the standing It below asserts the
+        #                       section-level property from a normal run
         # Only the two param seams can be driven from outside a child
         # process, so they carry the invariant here; each non-seam
         # diagnostic already routes every failure path through Add-Problem.
@@ -716,6 +724,52 @@ Describe 'check.ps1 read-failure reporting (SPEC 24)' {
             } finally {
                 Remove-Item -LiteralPath $fixture -Force -ErrorAction SilentlyContinue
             }
+        }
+
+        It 'the AmazonSSMAgent service section always reports the startup type, a problem naming it, or the service state - never a silent skip' {
+            # Standing coverage for the empty-result variant of the service
+            # diagnostic (review thread 3888326193): Get-Service finds the
+            # service but the Win32_Service query succeeds and returns no
+            # row, and the pre-fix script printed only Name/Status, recorded
+            # nothing, and let an otherwise healthy run exit 0 with 'All
+            # checks passed'. That exact state cannot be driven from outside
+            # a child process - no external input decides whether the
+            # provider returns a row, the same reason the service query is
+            # listed as NOT breakable in the inventory above - so, like the
+            # other unreachable diagnostics there, this standing test
+            # asserts the SECTION-level property from a normal run instead:
+            # whatever the provider does, the section must end in a visible
+            # terminal state. If the service was found, the startup-type
+            # diagnostic owes a result - its report line, or a Summary
+            # bullet naming the startup type (the empty-result fix); if it
+            # was not found, the query failure or the service's absence must
+            # itself be a recorded problem. The state-specific proof is the
+            # red/green demo against a scratch copy with the query results
+            # stubbed to the finding's state, documented with the fix.
+            $missingRegistration = Join-Path ([System.IO.Path]::GetTempPath()) ('ssm-check-invariant-svc-reg-' + [System.IO.Path]::GetRandomFileName())
+            $missingLog = Join-Path ([System.IO.Path]::GetTempPath()) ('ssm-check-invariant-svc-log-' + [System.IO.Path]::GetRandomFileName() + '.log')
+
+            $result = Invoke-CheckScriptViaLauncher -RegistrationPath $missingRegistration -AgentLogPath $missingLog
+
+            $normalized = $result.Output -replace "`r", ''
+            if ($normalized -match '(?m)^  Status      : ') {
+                # The service exists, so the startup-type diagnostic ran or
+                # failed to run; either way its outcome must be visible -
+                # never just Name/Status over an undetermined startup type.
+                $startupTypeDetermined = $normalized -match '(?m)^  StartupType : '
+                $startupTypeProblem = $normalized -match '(?m)^  - .*startup type'
+                ($startupTypeDetermined -or $startupTypeProblem) | Should -BeTrue
+            } else {
+                # The service was not found by name: that outcome must be
+                # recorded too - the query failure (this container: the
+                # service cmdlets do not exist on non-Windows PowerShell) or
+                # the service's absence - never silence.
+                $queryFailed = $normalized -match 'Could not query the AmazonSSMAgent service'
+                $serviceAbsent = $normalized -match '(?m)^  - .*AmazonSSMAgent service does not exist'
+                ($queryFailed -or $serviceAbsent) | Should -BeTrue
+            }
+            Assert-SummaryListsEveryProblem -Output $result.Output
+            Assert-AnnouncedSectionSet -Output $result.Output
         }
     }
 }

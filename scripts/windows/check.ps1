@@ -157,9 +157,20 @@ if ([string]::IsNullOrEmpty($AgentLogPath) -and
 Write-Section 'Windows'
 try {
     $osInfo = Get-CimInstance -ClassName Win32_OperatingSystem
-    Write-Host ('  Edition / version : ' + $osInfo.Caption)
-    Write-Host ('  Version            : ' + $osInfo.Version)
-    Write-Host ('  Build              : ' + $osInfo.BuildNumber)
+    if ($null -ne $osInfo) {
+        Write-Host ('  Edition / version : ' + $osInfo.Caption)
+        Write-Host ('  Version            : ' + $osInfo.Version)
+        Write-Host ('  Build              : ' + $osInfo.BuildNumber)
+    } else {
+        # The query succeeded but returned no instance. Property access on a
+        # null result is silent (this script sets no StrictMode), so without
+        # this branch the section would print empty values and record
+        # nothing - the same silent-skip class as the null Win32_Service
+        # result in the service section below: an unperformed diagnostic
+        # (edition/version/build is a SPEC 24 report item) is always a
+        # recorded problem, never a blank line.
+        Add-Problem 'Could not determine the Windows edition/version/build (operating-system query returned no result).'
+    }
 } catch {
     Add-Problem ('Could not read Win32_OperatingSystem: ' + $_.Exception.Message)
 }
@@ -212,6 +223,19 @@ try {
         Write-Host ('  Status      : ' + $service.Status)
         if ($null -ne $serviceCim) {
             Write-Host ('  StartupType : ' + $serviceCim.StartMode + ' (Win32_Service StartMode)')
+        } else {
+            # Get-Service found the service, but the Win32_Service query
+            # succeeded and still returned no row for it (a transient
+            # provider inconsistency). The startup-type diagnostic was then
+            # never performed, and an unperformed diagnostic is always a
+            # recorded problem (the same invariant as the missing/unreadable
+            # agent log): without this record, a running service on an
+            # otherwise healthy machine could exit 0 with 'All checks
+            # passed' even though the startup configuration - a SPEC 24
+            # report item - was never determined. The StartMode validation
+            # below already skips on a null result, so this problem record
+            # is the fix.
+            Add-Problem 'Could not determine the AmazonSSMAgent startup type (service query returned no result).'
         }
         if ($service.Status -ne 'Running') {
             Add-Problem ('AmazonSSMAgent is not running (status: ' + $service.Status + ').')
