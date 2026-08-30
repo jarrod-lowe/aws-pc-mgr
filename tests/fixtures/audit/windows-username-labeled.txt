@@ -1,0 +1,23 @@
+# Synthetic audit fixture: labeled Windows usernames (SPEC §27; review
+# thread 3888208297) — the label matches a span, so `Windows username:`,
+# `win_username`, `UserName`, `USER-NAME`, `user.name` are all the one
+# two-word label in every case and separator spelling. The value anchor is
+# a single 4-plus run (dots, underscores, hyphens are username characters);
+# spaces break the run, which is the prose brake. Doc filler (the, your,
+# none, unknown, example, placeholder, name) is excluded by a post-match
+# generic gate that deliberately does NOT include real account names —
+# root/administrator behind a label are findings. Synthetic values.
+Windows username: alice.smith
+username = "svc-win-ci"
+"UserName": "LocalAdmin1"
+win_username := alice.smith
+USER-NAME: svc-win-ci
+# Prose, filler, placeholder and sub-floor forms that must stay silent.
+Windows username: the local account
+username: your
+username: none
+username: unknown
+username: example
+username = <username>
+username: abc
+User Name: name

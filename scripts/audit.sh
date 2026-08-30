@@ -125,6 +125,23 @@
 # ARE scanned; the allowlist above keeps the standard trailer out of the
 # findings.
 #
+# The labeled-identifier detectors (windows-username-labeled,
+# hostname-labeled) are SPEC §27's "Windows username" and "hostname" items
+# as COMMITTED CONTENT: a labeled identifier on the audited machine
+# (`Windows username: alice.smith`, `Windows hostname: ALICE-PC`) is a
+# finding even though the runtime whoami/hostname checks only describe
+# the machine RUNNING the audit — on the documented Unix Terraform/CI
+# runner those runtime values can never be the Windows machine's. The
+# username label is the bare two-word `user…name` (the label matches a
+# span, so `Windows username` needs no prefix handling of its own; the
+# bare `user` is deliberately not a label), the hostname label alternates
+# `host…name` and the Windows-UI `computer…name`, and each value anchor is
+# a single 4-plus run — spaces break the run, which is the prose brake —
+# with doc-filler sets (GENERIC_LABELED_USERS / GENERIC_LABELED_HOSTS)
+# excluded after the match. A pre-flight walk over the tracked tree and
+# full history with maximally loosened anchors found zero label-adjacent
+# values, so no tracked line depends on those sets today.
+#
 # The personal-name detector (personal-name) covers SPEC §27's "personal
 # name" item directly: the identifying name-field labels — `personal
 # name`, `full name`, `real name` in every case/separator spelling, never
@@ -341,6 +358,20 @@ GENERIC_PROFILES=' default example examples placeholder value name profile none 
 #   test user / sample user        QA filler
 #   first last / john doe / jane doe / your name  documentation examples
 GENERIC_NAMES=' not applicable not provided unknown anonymous test user sample user first last john doe jane doe your name '
+# Generic LABELED-username values (lowercased, whole-token): prose and doc
+# filler that can follow a `username:` label without naming an account.
+# Deliberately NOT GENERIC_USERS: root/administrator/ec2-user are REAL
+# accounts (especially on Windows) and a labeled occurrence of one is a
+# finding, not filler. Each is justified:
+#   the, your, this, name, value  ordinary doc words after a colon
+#   none, unknown                 self-describing absent data
+#   example, placeholder          documentation filler
+GENERIC_LABELED_USERS=' the your this name value none unknown example placeholder '
+# Generic LABELED-hostname values: doc filler a `hostname:`/`computer
+# name:` label can carry without naming a machine: localhost and the
+# self-referential hostname/computer/name words, the RFC-2606 example
+# domains documentation uses, and `test`.
+GENERIC_LABELED_HOSTS=' localhost hostname computer name your the example.com example.invalid test '
 
 # ---------------------------------------------------------------------------
 # Detection engine (used by both the default audit and --selftest)
@@ -504,13 +535,40 @@ SERIAL_VALUE='[A-Za-z0-9][A-Za-z0-9-]{7,}'
 # cannot match at all.
 PERSONAL_NAME_LABEL="(personal|full|real)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 PERSONAL_NAME_VALUE="([A-Za-z][A-Za-z'.-]{4,}[[:space:]]+[A-Za-z][A-Za-z'.-]{2,}|[A-Za-z][A-Za-z'.-]{3,}[[:space:]]+[A-Za-z][A-Za-z'.-]{3,}|[A-Za-z][A-Za-z'.-]{2,}[[:space:]]+[A-Za-z][A-Za-z'.-]{4,})"
+# WINUSER/HOSTNAME labels are the labeled-identifier detectors for SPEC §27's
+# "Windows username" and "hostname" bullets (review thread 3888208297: a
+# LABELED identifier on the Windows machine is committed content —
+# `Windows username: alice.smith`, `Windows hostname: ALICE-PC` — and the
+# runtime whoami/hostname checks only describe the machine RUNNING the
+# audit, so a Unix CI runner never sees the Windows values). The label
+# matches a span, so `Windows username:`/`Win10 hostname:` need no prefix
+# handling of their own; the bare two-word forms cover `user_name`,
+# `UserName`, `USER-NAME`, `user.name`, `hostname`, `host_name`,
+# `ComputerName` in every case and separator spelling. Values are single
+# unbroken runs (spaces break the run — the prose brake): usernames carry
+# dots/underscores/hyphens (alice.smith), hostnames dots/hyphens
+# (ALICE-PC, ci-host.example.internal), each 4-plus. Prose/boilerplate is
+# excluded AFTER the match by generic-value gates (eh_all_generic): these
+# are deliberately NOT the runtime GENERIC_USERS set — root/administrator
+# are REAL Windows accounts and stay findings — but doc-word sets
+# (GENERIC_LABELED_USERS / GENERIC_LABELED_HOSTS), justified inline. A
+# pre-flight walk (tracked tree + full history, messages and patches, the
+# standard exclusions, maximally loosened anchors) found ZERO label-adjacent
+# values, so nothing in this repository gates on them; the sets exist for
+# future prose. Both classes are marker-suppressible label classes.
+WINUSER_LABEL="user${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
+WINUSER_VALUE='[A-Za-z0-9][A-Za-z0-9._-]{3,}'
+HOSTNAME_LABEL="(host|computer)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
+HOSTNAME_VALUE='[A-Za-z0-9][A-Za-z0-9.-]{3,}'
 LABEL_DETECTORS="aws-secret-access-key:(aws${LABEL_WORD_SEP})?secret${LABEL_WORD_SEP}access${LABEL_WORD_SEP}key[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
 aws-activation-code:activation${LABEL_WORD_SEP}code[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
 aws-session-token:(aws${LABEL_WORD_SEP})?(session|security)${LABEL_WORD_SEP}token[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}
 account-id-context:account(${LABEL_WORD_SEP}id)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[[:space:]]*[0-9]{12}
 aws-sso-profile:${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}
 machine-serial-number:${SERIAL_LABEL}${SERIAL_VALUE}
-personal-name:${PERSONAL_NAME_LABEL}${PERSONAL_NAME_VALUE}"
+personal-name:${PERSONAL_NAME_LABEL}${PERSONAL_NAME_VALUE}
+windows-username-labeled:${WINUSER_LABEL}${WINUSER_VALUE}
+hostname-labeled:${HOSTNAME_LABEL}${HOSTNAME_VALUE}"
 SHAPE_DETECTORS="aws-access-key-id:AKIA[0-9A-Z]{16}
 aws-session-key-id:ASIA[0-9A-Z]{16}
 managed-node-id:mi-[a-f0-9]{8,}
@@ -541,6 +599,36 @@ ANNOTATED_LINES=
 
 # Allowlisted address stripped from all input before email detection.
 ALLOWLIST_SED='s/noreply@anthropic[.]com//g'
+
+# eh_all_generic SET ERE TRIM — the post-match generic-value gate shared by
+# the set-based label detectors (aws-sso-profile, windows-username-labeled,
+# hostname-labeled): re-anchor the hit's ORIGINAL line (lowercased) with the
+# detector's own label+value ERE, strip the label through the assignment
+# separator plus leading quotes, apply the TRIM sed program to each captured
+# value, and return 0 only when EVERY captured value (there is at least one)
+# is a member of SET. These detectors' values are single tokens (no spaces),
+# so word-split comparison is exact — the personal-name gate compares whole
+# multi-word values and keeps its own loop, and the serial gate checks a
+# property, not a set. An empty capture returns 1: over-detection stays the
+# safe direction.
+eh_all_generic() {
+    _ag_set=$1
+    _ag_ere=$2
+    _ag_trim=$3
+    _ag_vals=$(printf '%s\n' "${_eh_hit#*:}" |
+        tr '[:upper:]' '[:lower:]' |
+        grep -oE -- "$_ag_ere" |
+        sed -e 's/^[^=:]*:=//' -e 's/^[^=:]*[=:][[:space:]]*//' \
+            -e "s/^[\"']*//" -e "$_ag_trim")
+    [ -n "$_ag_vals" ] || return 1
+    for _ag_val in $_ag_vals; do
+        case "$_ag_set" in
+        *" $_ag_val "*) ;;
+        *) return 1 ;;
+        esac
+    done
+    return 0
+}
 
 # emit_hits NAME LABEL HITS — HITS is grep -n output; first field is a line
 # number. Prints one `FINDING` record per surviving hit. Suppression (see
@@ -592,38 +680,23 @@ emit_hits() {
                     fi
                 fi
             fi
-            # Generic-value gate (aws-sso-profile only): the detector's
-            # value anchor is shape-free — letter-only profile names
+            # Generic-value gate (aws-sso-profile): the detector's value
+            # anchor is shape-free — letter-only profile names
             # (`production`) are real — so the documentation boilerplate a
-            # shape restriction used to keep out is excluded HERE instead.
-            # The gate re-anchors the original line with the very ERE the
-            # detector matched (AWS_PROFILE_LABEL + AWS_PROFILE_VALUE), then
-            # skips the hit only when EVERY captured value, lowercased, is
-            # one of GENERIC_PROFILES. Any other value stands, an empty
-            # extraction (the re-anchor found nothing) also stands —
+            # shape restriction used to keep out is excluded HERE instead,
+            # by the shared eh_all_generic helper: every captured value,
+            # lowercased and trimmed of leading quotes and trailing
+            # dot/underscore/dash (`aws_profile = "default."` is
+            # boilerplate, not a finding), must be one of GENERIC_PROFILES
+            # or the finding stands. An empty extraction also stands —
             # over-detection stays the safe direction — and the marker and
-            # history rules above are untouched. Leading quotes and trailing
-            # dot/underscore/dash are trimmed from each value first, so
-            # `aws_profile = "default."` is boilerplate, not a finding.
-            if [ "$_eh_name" = 'aws-sso-profile' ]; then
-                _eh_vals=$(printf '%s\n' "${_eh_hit#*:}" |
-                    tr '[:upper:]' '[:lower:]' |
-                    grep -oE -- "${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}" |
-                    sed -e 's/^[^=:]*:=//' -e 's/^[^=:]*[=:][[:space:]]*//' \
-                        -e "s/^[\"']*//" -e 's/[._-]*$//')
-                _eh_generic=no
-                if [ -n "$_eh_vals" ]; then
-                    _eh_generic=yes
-                    for _eh_val in $_eh_vals; do
-                        case "$GENERIC_PROFILES" in
-                        *" $_eh_val "*) ;;
-                        *) _eh_generic=no ;;
-                        esac
-                    done
-                fi
-                if [ "$_eh_generic" = yes ]; then
-                    continue
-                fi
+            # history rules above are untouched. The
+            # windows-username-labeled and hostname-labeled gates below
+            # share the helper.
+            if [ "$_eh_name" = 'aws-sso-profile' ] &&
+                eh_all_generic "$GENERIC_PROFILES" \
+                    "${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}" 's/[._-]*$//'; then
+                continue
             fi
             # Serial-property gate (machine-serial-number only), mirroring
             # the generic-value gate's structure: the detector's value
@@ -697,6 +770,22 @@ EOF
                 if [ "$_eh_ngeneric" = yes ]; then
                     continue
                 fi
+            fi
+            # Labeled-identifier generic-value gates (windows-username-labeled,
+            # hostname-labeled): single-token value anchors, so doc filler
+            # after the label — GENERIC_LABELED_USERS / GENERIC_LABELED_HOSTS,
+            # deliberately NOT the runtime GENERIC_USERS set, since root or
+            # administrator behind a label is a REAL account and a finding —
+            # is excluded after the match by the same shared helper.
+            if [ "$_eh_name" = 'windows-username-labeled' ] &&
+                eh_all_generic "$GENERIC_LABELED_USERS" \
+                    "${WINUSER_LABEL}${WINUSER_VALUE}" 's/[._-]*$//'; then
+                continue
+            fi
+            if [ "$_eh_name" = 'hostname-labeled' ] &&
+                eh_all_generic "$GENERIC_LABELED_HOSTS" \
+                    "${HOSTNAME_LABEL}${HOSTNAME_VALUE}" 's/[._-]*$//'; then
+                continue
             fi
             printf 'FINDING %s:%s: %s\n' "$_eh_label" "${_eh_hit%%:*}" "$_eh_name"
         done
@@ -1205,6 +1294,15 @@ st_form() {
     'name 0') printf 'name' ;;
     'name 1') printf 'NAME' ;;
     'name 2') printf 'Name' ;;
+    'user 0') printf 'user' ;;
+    'user 1') printf 'USER' ;;
+    'user 2') printf 'User' ;;
+    'host 0') printf 'host' ;;
+    'host 1') printf 'HOST' ;;
+    'host 2') printf 'Host' ;;
+    'computer 0') printf 'computer' ;;
+    'computer 1') printf 'COMPUTER' ;;
+    'computer 2') printf 'Computer' ;;
     *)
         printf 'selftest: internal: st_form: no case form for word "%s"\n' \
             "$1" >&2
@@ -1414,7 +1512,10 @@ machine-serial-number|serial|mtx1aaaaaa,9mtxaaaaaa,ABC12345,ABC-12345,ABCDEFG1,A
 machine-serial-number|serial number|mtx1aaaaaa,9mtxaaaaaa,ABC12345,ABC-12345,ABCDEFG1,ABC1234Z
 personal-name|personal name|Alice Smith,Jean-Pierre Blanc,Mary Jane Watson
 personal-name|full name|Alice Smith,Jean-Pierre Blanc,Mary Jane Watson
-personal-name|real name|Alice Smith,Jean-Pierre Blanc,Mary Jane Watson'
+personal-name|real name|Alice Smith,Jean-Pierre Blanc,Mary Jane Watson
+windows-username-labeled|user name|alice.smith,svc-win-ci,LocalAdmin1
+hostname-labeled|host name|ALICE-PC,build-runner-01,ci-host.example.internal
+hostname-labeled|computer name|ALICE-PC,build-runner-01,ci-host.example.internal'
 
 st_label_matrix() {
     _lm_status=0
@@ -1852,6 +1953,38 @@ personal-name|X|full_name = "first last"
 personal-name|X|personal_name: …
 personal-name|X|real_name = var.instance_name
 personal-name|X|fullname = each.person.name
+windows-username-labeled|M|Windows username: alice.smith
+windows-username-labeled|M|username = "svc-win-ci"
+windows-username-labeled|M|"UserName": "LocalAdmin1"
+windows-username-labeled|M|win_username := alice.smith
+windows-username-labeled|M|USER-NAME: svc-win-ci
+windows-username-labeled|X|Windows username: the local account
+windows-username-labeled|X|username: your
+windows-username-labeled|X|username: this
+windows-username-labeled|X|username: none
+windows-username-labeled|X|username: unknown
+windows-username-labeled|X|username: example
+windows-username-labeled|X|username = <username>
+windows-username-labeled|X|username: abc
+windows-username-labeled|X|username: …
+windows-username-labeled|X|User Name: name
+windows-username-labeled|X|username
+hostname-labeled|M|Windows hostname: ALICE-PC
+hostname-labeled|M|hostname = "build-runner-01"
+hostname-labeled|M|Computer Name: DESKTOP-PC1
+hostname-labeled|M|"hostname": "ci-host.example.internal"
+hostname-labeled|M|host_name := ALICE-PC
+hostname-labeled|M|HOSTNAME=build-runner-01
+hostname-labeled|X|hostname: localhost
+hostname-labeled|X|hostname: hostname
+hostname-labeled|X|hostname: computer
+hostname-labeled|X|hostname: name
+hostname-labeled|X|computer name: your
+hostname-labeled|X|hostname = "example.com"
+hostname-labeled|X|hostname = <hostname>
+hostname-labeled|X|hostname: abc
+hostname-labeled|X|hostname: …
+hostname-labeled|X|hostname
 EOF
     {
         printf 'aws-secret-access-key|M|aws_secret_access_key\t=\tEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE\n'
@@ -1861,6 +1994,8 @@ EOF
         printf 'aws-sso-profile|M|aws_profile\t=\tmxprod7\n'
         printf 'machine-serial-number|M|serial_number\t=\tABC12345\n'
         printf 'personal-name|M|personal_name\t=\tAlice Smith\n'
+        printf 'windows-username-labeled|M|username\t=\talice.smith\n'
+        printf 'hostname-labeled|M|hostname\t=\tbuild-runner-01\n'
     } >>"$ST_WORK/vt-table"
     # Serial interleaving closure, by generation: real serials interleave
     # letters and digits arbitrarily, and a hand-picked value list can
@@ -1926,11 +2061,18 @@ EOF
 #     credential set the token belongs to.
 #   * "SSO profile names" → aws-sso-profile (committed label spellings)
 #     and aws-profile-name (the runtime $AWS_PROFILE literal scan).
-#   * "hostname" → the runtime hostname literal check (full and short
-#     form, case-insensitive). No shape can anchor a hostname.
+#   * "hostname" → hostname (the runtime literal check, full and short
+#     form, case-insensitive, describing the machine running the audit)
+#     AND hostname-labeled (the direct label detector: a labeled hostname
+#     in committed content — `Windows hostname: ALICE-PC` — is a finding
+#     even when the audit runs on a Unix CI runner that can never see the
+#     machine's own hostname; review thread 3888208297).
 #   * "Windows username" → username (the runtime whoami literal; on
-#     Windows whoami returns the account name) and user-home-path
-#     (C:\Users\<name> is the committed form of the same identity).
+#     Windows whoami returns the account name), user-home-path
+#     (C:\Users\<name> is the committed form of the same identity) and
+#     windows-username-labeled (the direct label detector for
+#     `Windows username: alice.smith`-style committed content; review
+#     thread 3888208297).
 #   * "personal name" → personal-name (label detector over the
 #     identifying name-field family: personal/full/real name, value
 #     anchored on a two-run name shape — see the PERSONAL_NAME notes) and
@@ -1963,8 +2105,8 @@ SSO profile names|aws-sso-profile aws-profile-name
 SSO URLs|sso-start-url
 AWS account ID|account-id-context account-id-arn
 managed-node ID|managed-node-id
-hostname|hostname
-Windows username|username user-home-path
+hostname|hostname hostname-labeled
+Windows username|username user-home-path windows-username-labeled
 personal name|personal-name display-name
 email address|email-address
 machine serial numbers|machine-serial-number

@@ -1,0 +1,23 @@
+# Synthetic audit fixture: labeled hostnames (SPEC §27; review thread
+# 3888208297) — the label alternation covers `hostname`, `host_name`,
+# `HostName`, `HOSTNAME`, `host.name` and the Windows-UI `Computer Name` /
+# `ComputerName` spellings. The value anchor is a single 4-plus run
+# (letters, digits, hyphens, dots — FQDNs included); spaces break the run,
+# which is the prose brake. Doc filler (localhost, hostname, computer,
+# name, your, example.com, example.invalid, test) is excluded by a
+# post-match generic gate. Synthetic values.
+Windows hostname: ALICE-PC
+hostname = "build-runner-01"
+Computer Name: DESKTOP-PC1
+"hostname": "ci-host.example.internal"
+host_name := ALICE-PC
+HOSTNAME=build-runner-01
+# Filler, placeholder and sub-floor forms that must stay silent.
+hostname: localhost
+hostname: hostname
+hostname: computer
+hostname: name
+computer name: your
+hostname = "example.com"
+hostname = <hostname>
+hostname: abc

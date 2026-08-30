@@ -669,7 +669,15 @@ shape is required — with an explicit generic-value
 exclusion (default, example, examples, placeholder, value, name, profile,
 none, test: words that name the slot, not a profile anyone selected), so
 `AWS_PROFILE=<profile>` placeholders (angle brackets cannot match),
-`AWS_PROFILE=default` boilerplate and prose never trip, the personal-name
+`AWS_PROFILE=default` boilerplate and prose never trip, the labeled
+Windows-identifier labels (`username` — as `Windows username:`,
+`win_username`, `UserName`, `user.name`; alternated `hostname` /
+`computer name` — as a Windows `hostname` or `ComputerName` key) anchored
+to a single 4-plus identifier run with doc-filler sets excluded after the
+match (a labeled `root` or `Administrator` is a finding, not filler), so a
+labeled identifier on the Windows machine is caught as committed content
+even when the audit runs on the Unix CI runner whose runtime checks can
+never see it, the personal-name
 label family (`personal name`, `full name`, `real name` in any spelling —
 never the bare `name` key of ordinary code) anchored to a two-run name
 shape (each run 3-plus, totalling 8-plus, with a small form-boilerplate
