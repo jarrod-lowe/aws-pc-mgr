@@ -587,16 +587,41 @@ if ($action -eq 'Reregister') {
     # while merely writing a warning to stderr would be misreported as a
     # failure. So: relax ErrorActionPreference around the call, discard BOTH
     # streams (the agent's text never reaches the console), restore the
-    # preference in finally, and judge the outcome by $LASTEXITCODE alone.
+    # preference in finally, and judge the outcome by $LASTEXITCODE alone -
+    # but only once $LASTEXITCODE has proved the agent actually launched: a
+    # launch that never happened (the executable quarantined or deleted
+    # between the existence check above and the invocation) leaves it
+    # holding whatever an earlier native call in this session left there -
+    # commonly 0 - which the exit-code branch would read as a successful
+    # clear. The sentinel closes that hole: $LASTEXITCODE is reset to $null
+    # before the call, and a still-$null value after it is a hard failure
+    # of the clear. Only a genuinely captured exit code 0 may print the
+    # success message below.
     $previousEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
+    $clearExitCode = $null
     try {
+        $global:LASTEXITCODE = $null
         & $agentExe -register -clear 2>&1 | Out-Null
+        $clearExitCode = $LASTEXITCODE
+    } catch {
+        # The launch failure itself (nonexistent or non-runnable image). It
+        # can surface as a terminating error even under 'Continue'; it is
+        # absorbed here so the sentinel branch below reports the failure in
+        # this block's own terms (nothing on this command line is secret).
+        $clearExitCode = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previousEap
     }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Fail ("Clearing the local registration failed with exit code " + $LASTEXITCODE + ".")
+    if ($null -eq $clearExitCode) {
+        Write-Fail ("Clearing the local registration failed: " + $agentExe + " could not be launched, so the clear never ran.")
+        Write-Host 'Nothing was cleared. The agent executable passed the existence check above but could'
+        Write-Host 'not be started (for example quarantined while the service was being stopped). Inspect'
+        Write-Host 'the agent installation and re-run.'
+        exit 3
+    }
+    if ($clearExitCode -ne 0) {
+        Write-Fail ("Clearing the local registration failed with exit code " + $clearExitCode + ".")
         Write-Host 'The registration may be partially cleared. Inspect the registration file and'
         Write-Host 'the SSM Agent log before re-running.'
         exit 3

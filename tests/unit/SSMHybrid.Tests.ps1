@@ -269,6 +269,40 @@ Describe 'Invoke-SsmEnrollment temp-download cleanup' {
         $global:EnrollCleanupWarnings | Should -BeNullOrEmpty
     }
 
+    It 'treats a ssm-setup-cli that cannot be launched as a failed enrollment, never as a stale-exit-code success' {
+        $chmodAvailable = [bool](Get-Command -Name chmod -CommandType Application -ErrorAction SilentlyContinue)
+        if (-not ($script:TrueExe -and $chmodAvailable)) { Set-ItResult -Skipped -Because 'this host cannot build a launch-failing executable fixture'; return }
+
+        # The agent-quarantine shape: the download lands, passes the
+        # signature gate, and then cannot be LAUNCHED (here: the copy of
+        # 'true' has its execute bit removed). A launch that never happened
+        # leaves $LASTEXITCODE at whatever ran earlier in the session, so the
+        # stale 0 below is exactly the value the exit-code check must not be
+        # allowed to read as success.
+        Mock Invoke-WebRequest -ModuleName SSMHybrid -MockWith {
+            $trueCmd = Get-Command -Name true -CommandType Application -ErrorAction Stop
+            Copy-Item -LiteralPath $trueCmd.Source -Destination $OutFile
+            & chmod 644 $OutFile
+        }
+        $global:LASTEXITCODE = 0
+
+        $threw = $false
+        $failureMessage = ''
+        try {
+            Invoke-SsmEnrollment @script:EnrollParams | Out-Null
+        } catch {
+            $threw = $true
+            $failureMessage = $_.Exception.Message
+        }
+
+        $threw | Should -BeTrue
+        $failureMessage | Should -Match 'launched'
+        # The failed launch is still a failed enrollment: the finally block
+        # ran its cleanup, and the failure is the throw, not a warning.
+        Should -Invoke Remove-Item -ModuleName SSMHybrid -Exactly 1
+        $global:EnrollCleanupWarnings | Should -BeNullOrEmpty
+    }
+
     It 'exposes exactly TempDownloadPath and TempDownloadRemoved' {
         if (-not $script:TrueExe) { Set-ItResult -Skipped -Because 'no exit-0 executable available on this host'; return }
 
@@ -499,6 +533,19 @@ Describe 'Get-SsmNodeState' {
             ServiceStartType  = 'Automatic'
             Expected          = 'Ambiguous'
         }
+        @{
+            # Same fail-closed rule for the other field setup.ps1/check.ps1
+            # echo from this record: a corrupted Region must not classify as
+            # healthy even with a healthy service, because the agent's region
+            # config cannot be trusted. The Region check throws inside
+            # ConvertFrom-SsmRegistrationJson, and the throw maps to Ambiguous.
+            Name              = 'registration parseable but Region malformed, service healthy'
+            RegistrationJson  = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"garbage"}' # audit-allow:synthetic
+            ServiceExists     = $true
+            ServiceStatus     = 'Running'
+            ServiceStartType  = 'Automatic'
+            Expected          = 'Ambiguous'
+        }
     ) {
         param($RegistrationJson, $ServiceExists, $ServiceStatus, $ServiceStartType, $Expected)
         Get-SsmNodeState -RegistrationJson $RegistrationJson -ServiceExists $ServiceExists -ServiceStatus $ServiceStatus -ServiceStartType $ServiceStartType |
@@ -575,6 +622,33 @@ Describe 'ConvertFrom-SsmRegistrationJson' {
 
     It 'throws when ManagedInstanceID has trailing junk after a valid ID' {
         { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"mi-0123456789abcdef0 extra","Region":"ap-southeast-2"}' } | Should -Throw # audit-allow:synthetic
+    }
+
+    # A present-but-invalid Region is corruption the same way a malformed
+    # ManagedInstanceID is: setup.ps1 and check.ps1 echo the recorded region,
+    # so a value that fails Test-SsmRegion must not parse as a healthy record
+    # and classify the node RegisteredHealthy.
+    It 'throws when Region is not a valid region code' {
+        { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"garbage"}' } | Should -Throw # audit-allow:synthetic
+    }
+
+    # Case is part of the Region shape too: Test-SsmRegion matches
+    # case-sensitively (the region code used by AWS endpoints is lowercase),
+    # so a wrong-case region is corruption and must throw, not pass.
+    It 'throws when Region is uppercase' {
+        { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"US-EAST-1"}' } | Should -Throw # audit-allow:synthetic
+    }
+
+    It 'throws when Region has a trailing hyphen' {
+        { ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"us-east-1-"}' } | Should -Throw # audit-allow:synthetic
+    }
+
+    # The boundary that deliberately does NOT throw: an absent or empty
+    # Region is a $null Region, not corruption - only a Region that is
+    # present and nonempty is validated.
+    It 'keeps Region $null when the record carries an empty Region' {
+        $result = ConvertFrom-SsmRegistrationJson -Json '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":""}' # audit-allow:synthetic
+        $result.Region | Should -BeNullOrEmpty
     }
 
     It 'throws when the JSON is not an object' {

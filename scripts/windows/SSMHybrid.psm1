@@ -148,8 +148,10 @@ SECURITY: the activation code is passed to the executable only. The command
 line is never echoed, written or logged, and the tool's stdout AND stderr are
 both discarded (redirected together and piped to Out-Null under a temporarily
 relaxed $ErrorActionPreference), because they may reflect arguments (SPEC 43).
-Only a success/failure verdict is returned: a non-zero exit code throws, and
-the tool's own text never reaches the console or any log.
+Only a success/failure verdict is returned: a non-zero exit code, or a launch
+that never happened (detected via a $LASTEXITCODE sentinel, because a failed
+launch leaves it at a stale earlier value), throws - and the tool's own text
+never reaches the console or any log.
 
 .PARAMETER Region
 Validated AWS region code.
@@ -233,16 +235,36 @@ function Invoke-SsmEnrollment {
         # a caller's $ErrorActionPreference = 'Stop' redirected stderr can
         # raise a NativeCommandError embedding the tool's text. Relaxing
         # ErrorActionPreference around the call keeps the merged redirect
-        # quiet; $LASTEXITCODE still carries the verdict.
+        # quiet. $LASTEXITCODE carries the verdict only when the tool
+        # actually launched: a launch that never happened (the download
+        # quarantined between the signature check above and this call)
+        # leaves it holding a stale earlier value - commonly 0 - which the
+        # exit-code check below would read as success. So a sentinel guards
+        # it: $LASTEXITCODE is reset to $null first, and a still-$null value
+        # after the call means nothing was launched.
         $previousEap = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
+        $launchExitCode = $null
         try {
+            $global:LASTEXITCODE = $null
             & $exePath -register -region $Region -activation-id $ActivationId -activation-code $ActivationCode 2>&1 | Out-Null
+            $launchExitCode = $LASTEXITCODE
+        } catch {
+            # The launch failure itself (nonexistent or non-runnable image);
+            # it can surface as a terminating error even under 'Continue'.
+            # Its text is deliberately not re-thrown: an invocation error can
+            # embed the command line, which carries the activation code
+            # (SPEC 43). The sentinel branch below reports the failure
+            # without it.
+            $launchExitCode = $LASTEXITCODE
         } finally {
             $ErrorActionPreference = $previousEap
         }
-        if ($LASTEXITCODE -ne 0) {
-            throw "Invoke-SsmEnrollment: ssm-setup-cli exited with code $LASTEXITCODE. Registration may have partially completed; inspect the SSM Agent log before re-running."
+        if ($null -eq $launchExitCode) {
+            throw "Invoke-SsmEnrollment: ssm-setup-cli could not be launched, so the registration never ran. Verify the downloaded executable (antivirus quarantine) and re-run."
+        }
+        if ($launchExitCode -ne 0) {
+            throw "Invoke-SsmEnrollment: ssm-setup-cli exited with code $launchExitCode. Registration may have partially completed; inspect the SSM Agent log before re-running."
         }
     } finally {
         # SPEC 21 step 16: removing the temp download is a required
@@ -504,7 +526,7 @@ returns exactly one node state:
                          a status that is neither Running nor Stopped)
   Ambiguous              registration file present but unparseable,
                          incomplete, or carrying a malformed managed node ID
-                         (ConvertFrom-SsmRegistrationJson throws)
+                         or Region (ConvertFrom-SsmRegistrationJson throws)
 
 Classification never destroys registration state; Ambiguous is reported
 rather than repaired so an operator can decide (SPEC 22/23).
@@ -599,12 +621,17 @@ returns an object with the properties:
                       when the record carries no Region value)
 
 Throws when the JSON is malformed, is not an object, lacks a non-empty
-'ManagedInstanceID' key, or carries a ManagedInstanceID that is not a
-well-formed managed node ID. The ID shape is the exact form AWS issues
+'ManagedInstanceID' key, carries a ManagedInstanceID that is not a
+well-formed managed node ID, or carries a present Region that is not a
+valid AWS region code. The ID shape is the exact form AWS issues
 ('mi-' followed by exactly 17 lowercase hex digits; tighter than the
 audit's managed-node-id grammar, which is a deliberately broad scan) and
 the match is case-sensitive, because AWS issues only lowercase IDs; any
-other shape means the record is corrupted. Callers treat a throw as "registration
+other shape means the record is corrupted. The Region check is
+Test-SsmRegion, also case-sensitive because the region code used by AWS
+endpoints is lowercase: a wrong-case region is corruption the same way an
+uppercase mi- ID is. An absent or empty Region is not a throw; it is
+reported as Region = $null. Callers treat a throw as "registration
 present but unparseable/incomplete" and classify the node as Ambiguous
 rather than destroying registration state (SPEC 23).
 
@@ -665,6 +692,18 @@ function ConvertFrom-SsmRegistrationJson {
         Select-Object -First 1
     if ($null -ne $regionProperty -and -not [string]::IsNullOrEmpty([string]$regionProperty.Value)) {
         $region = [string]$regionProperty.Value
+        # A parseable record can also carry a corrupted Region, which used
+        # to pass straight through and be echoed by setup.ps1 and check.ps1
+        # as if the agent's region config were trustworthy. The check is
+        # Test-SsmRegion, case-sensitive for the same reason the ID match
+        # is: the region code used by AWS endpoints is lowercase, so a
+        # wrong-case region is corruption exactly the way an uppercase mi-
+        # ID is, and fails closed to Ambiguous the same way (SPEC 23). An
+        # absent or empty Region is NOT corruption by this rule: it is
+        # reported as Region = $null, as before.
+        if (-not (Test-SsmRegion -Region $region)) {
+            throw "ConvertFrom-SsmRegistrationJson: '$region' is not a valid AWS region code (expected the form 'us-east-1')."
+        }
     }
 
     return [PSCustomObject]@{

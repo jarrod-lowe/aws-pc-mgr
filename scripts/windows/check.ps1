@@ -186,6 +186,13 @@ if ($agentInstalled) {
     $previousEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
+        # Sentinel: a launch that never happened (the executable quarantined
+        # between the existence check above and this invocation) leaves
+        # $LASTEXITCODE at a stale earlier value - commonly 0 - which would
+        # print invocation error text as the version. Only a genuinely
+        # captured exit code 0 counts; a failed launch falls through to the
+        # file's version resource below.
+        $global:LASTEXITCODE = $null
         $versionOutput = @(& $agentExePath --version 2>&1)
         if ($LASTEXITCODE -eq 0) {
             $versionText = (($versionOutput | ForEach-Object { $_.ToString() }) -join ' ').Trim()
