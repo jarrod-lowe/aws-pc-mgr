@@ -646,7 +646,13 @@ uuid-literal:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-f
 sso-start-url:[hH][tT][tT][pP][sS]://[A-Za-z0-9-][A-Za-z0-9.-]*[aA][wW][sS][aA][pP][pP][sS][.][cC][oO][mM]/start
 email-address:[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]{2,}
 account-id-arn:[aA][rR][nN]:[aA][wW][sS][A-Za-z-]*:[A-Za-z0-9-]*(:[A-Za-z0-9-]*)?:[0-9]{12}
-user-home-path:(^|[^A-Za-z0-9/])([A-Za-z]:${PATH_SEP_CLASS}{1,2}|/)[Uu][sS][eE][rR][sS]${PATH_SEP_CLASS}{1,2}[A-Za-z0-9._-]+|(^|[^A-Za-z0-9/])/home/[A-Za-z0-9._-]+"
+user-home-path:(^|[^A-Za-z0-9/])([A-Za-z]:${PATH_SEP_CLASS}{1,2}|/)[Uu][sS][eE][rR][sS]${PATH_SEP_CLASS}{1,2}${WINUSER_VALUE}|(^|[^A-Za-z0-9/])/home/${WINUSER_VALUE}"
+# The home-path username segment IS WINUSER_VALUE (the SAM alphabet):
+# Windows profile directories are named after the account, so a path under
+# a punctuation-bearing account (`C:\Users\$svc\...`) must be detectable by
+# the same characters the labeled-username detector accepts - the two
+# classes are one vocabulary and cannot drift apart. Unix /home segments
+# take the same class (over-broad there, safe direction).
 
 # Suppression marker (see header): a raw line containing this string is
 # skipped by every suppressible detector, in file mode and in history mode.
