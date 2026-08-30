@@ -518,9 +518,10 @@ LABEL_ASSIGN='([=:]|:=)'
 # letter-only profile names (`production`) are real — so the prose/placeholder
 # safety lives in the gate, not here.
 AWS_PROFILE_LABEL="aws${LABEL_WORD_SEP}profile[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
-# First position accepts the same characters the rest of the run does:
-# the AWS CLI accepts profile names beginning with `_` (`[profile _dev]`).
-AWS_PROFILE_VALUE='[A-Za-z0-9._-]+'
+# The value class is AWS's documented profile-name alphabet (letters,
+# digits, and _+.,@-; `=` cannot appear because the label's assignment
+# separator is the first [=:] on the line), any position, any length.
+AWS_PROFILE_VALUE='[A-Za-z0-9_+.,@-]+'
 # SERIAL_LABEL/SERIAL_VALUE are the machine-serial-number detector's label
 # and value anchors, shared between the detector ERE and the serial-property
 # gate in emit_hits for the same reason AWS_PROFILE_LABEL/AWS_PROFILE_VALUE
@@ -613,12 +614,20 @@ PERSONAL_NAME_VALUE="(${NAME_RUN}{5,}[[:space:]]+${NAME_RUN}{3,}|${NAME_RUN}{4,}
 #   machine…name         INCLUDE  round 30: `Machine Name: ALICE-PC`
 #                                  sysinfo-style output
 WINUSER_LABEL="((user|logon)${LABEL_WORD_SEP}name|(windows|win|local)${LABEL_WORD_SEP}(user|account)|sam${LABEL_WORD_SEP}account(${LABEL_WORD_SEP}name)?)[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
-# First position accepts the same punctuation the rest of the token does:
-# Windows local account names may begin with `_` or `-` (service accounts
-# like _svc are the common shape). HOSTNAME_VALUE below deliberately keeps
-# its alnum first character - DNS labels and Windows computer names both
-# forbid leading punctuation there, so that floor is correctness, not a gap.
-WINUSER_VALUE='[A-Za-z0-9._-]+'
+# The value class IS the OS's documented alphabet, not an enumeration that
+# grows one review round at a time: SAM account names accept letters,
+# digits, and the punctuation !#$%&'().@^_{}~- (Microsoft's naming-
+# conventions list minus backtick and the `"/\[]:|<>+=;,?*` exclusions).
+# Backtick is documented-valid but dropped with a comment here: in real
+# dumps a backtick in an account name is exotic, while in THIS repository
+# backtick-quoting directly after a label spelling (`Windows account:` in
+# the docs below) would parse the quote mark as a one-character value -
+# the collision is constant, the legit value vanishingly rare. Any
+# position accepts any member, so $svc and !svc are as detectable as
+# _svc. HOSTNAME_VALUE below deliberately keeps its alnum first character
+# - DNS labels and Windows computer names both forbid leading punctuation
+# there, so that floor is correctness, not a gap.
+WINUSER_VALUE="[!#\$%&'().@^_{}~A-Za-z0-9-]+"
 HOSTNAME_LABEL="(host|computer|machine)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 HOSTNAME_VALUE='[A-Za-z0-9][A-Za-z0-9.-]*'
 LABEL_DETECTORS="aws-secret-access-key:(aws${LABEL_WORD_SEP})?secret${LABEL_WORD_SEP}access${LABEL_WORD_SEP}key[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
