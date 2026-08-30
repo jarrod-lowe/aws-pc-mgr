@@ -26,3 +26,4 @@ serial_number = each.value.serial
 # spelling matrix). Synthetic values.
 serial_number = "ABC-12345"
 serial := CND1234567
+Machine Serial Number: 12345678

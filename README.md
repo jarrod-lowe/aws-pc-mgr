@@ -672,7 +672,7 @@ shape is required — with an explicit generic-value
 exclusion (default, example, examples, placeholder, value, name, profile,
 none, test: words that name the slot, not a profile anyone selected), so
 `AWS_PROFILE=<profile>` placeholders (angle brackets cannot match),
-`AWS_PROFILE=default` boilerplate and prose never trip, the labeled
+`AWS_PROFILE=example`-style doc filler never trips, the labeled
 Windows-identifier labels (the `username` core — `Windows username:`,
 `win_username`, `UserName`, `user.name` — plus the Windows-qualified nouns
 `Windows user:`, `Windows account:`, `LocalAccount`, `SamAccountName`,

@@ -16,3 +16,11 @@ letter-only profile like AWS_PROFILE=production audited clean; the # audit-allow
 # 4acfa8e (managed-node-id): commit message quoted the finding's synthetic
 # too-short node-ID example.
 digits, so mi-deadbeef still classified RegisteredHealthy and printed # audit-allow:synthetic
+# The README's audit-coverage sentence quoted the built-in default profile
+# as a doc-filler example across its historical edits (ed90ee9, 556c765,
+# 0e91583, 8db7ac5, 7795a84 patch copies). The sentence was reworded when
+# the label detector stopped treating the built-in profile name as filler
+# (aws-sso-profile); these entries cover the already-committed copies.
+`AWS_PROFILE=default` boilerplate and prose never trip, the labeled # audit-allow:synthetic
+`AWS_PROFILE=default` boilerplate and prose never trip, the personal-name # audit-allow:synthetic
+`AWS_PROFILE=default` boilerplate and prose never trip, and the serial label # audit-allow:synthetic

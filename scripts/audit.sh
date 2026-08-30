@@ -357,8 +357,13 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 # The aws-sso-profile value anchor is a shape-free run of any length
 # (letter-only
 # names are real), so emit_hits's generic-value gate excludes these AFTER the
-# match, and default_audit's runtime AWS_PROFILE guard skips the same set.
-GENERIC_PROFILES=' default example examples placeholder value name profile none test '
+# match. `default` is deliberately NOT a member: it is the name of a REAL
+# built-in profile, so a committed `AWS_PROFILE=default` assignment names
+# actual configuration and is a finding (SPEC 27 bans committed profile
+# names without a real-vs-filler exception); the runtime guard below keeps
+# its own separate skip for it, because substring-scanning the ordinary
+# English word would be breakage rather than detection.
+GENERIC_PROFILES=' example examples placeholder value name profile none test '
 # Generic personal-name VALUES (lowercased, matched whole by the same
 # `*" word "*` idiom): form boilerplate a name-shaped value can carry
 # without naming anyone. The personal-name VALUE anchor is name-shaped by
@@ -789,31 +794,48 @@ emit_hits() {
             # serial label" (SERIAL_LABEL + SERIAL_VALUE), because serials
             # have no positional grammar — every positional pattern so far
             # (letters-then-digits, digit-then-letter, hyphenated) missed
-            # the next interleaving someone found in review. The gate
-            # re-anchors the original line with the very ERE the detector
-            # matched, captures the token(s), and requires at least ONE
-            # captured token to contain BOTH a letter and a digit — that
-            # is the serial PROPERTY. Pure-digit tokens (a Terraform state
-            # file's growth counter) and pure-letter words (`rotation`)
-            # have no such token and are skipped; an empty capture keeps
-            # the finding (over-detection stays the safe direction); the
-            # marker and history rules above are untouched.
+            # the next interleaving someone found in review. The gate is
+            # TWO-TIER by label form: both tiers require at least one
+            # DIGIT in a captured token (pure-letter words name nothing
+            # serial), and the tiers differ on the LETTER requirement —
+            # the EXPLICIT `serial number` label is unambiguous, so
+            # digits-only tokens keep the finding (all-numeric hardware
+            # serials are real), while the BARE `serial` label is
+            # ambiguous with ordinary keyed data (a Terraform state
+            # file's numeric growth counter), so there a token must
+            # contain BOTH a letter and a digit. An empty capture keeps the finding
+            # (over-detection stays the safe direction); the marker and
+            # history rules above are untouched.
             if [ "$_eh_name" = 'machine-serial-number' ]; then
-                _eh_vals=$(printf '%s\n' "${_eh_hit#*:}" |
+                _eh_span=$(printf '%s\n' "${_eh_hit#*:}" |
                     tr '[:upper:]' '[:lower:]' |
-                    grep -oE -- "${SERIAL_LABEL}${SERIAL_VALUE}" |
+                    grep -oE -- "${SERIAL_LABEL}${SERIAL_VALUE}")
+                _eh_vals=$(printf '%s\n' "$_eh_span" |
                     sed -e 's/^[^=:]*:=//' -e 's/^[^=:]*[=:][[:space:]]*//' \
                         -e "s/^[\"']*//")
+                case $_eh_span in
+                *number*) _eh_explicit=yes ;;
+                *) _eh_explicit=no ;;
+                esac
                 _eh_keep=no
                 if [ -z "$_eh_vals" ]; then
                     _eh_keep=yes
                 else
                     for _eh_val in $_eh_vals; do
                         case $_eh_val in
-                        *[A-Za-z]*)
-                            case $_eh_val in
-                            *[0-9]*) _eh_keep=yes ;;
-                            esac
+                        # Both tiers require a digit: pure-letter words
+                        # (`rotation`) name nothing serial anywhere.
+                        *[0-9]*)
+                            # Only the BARE label additionally requires a
+                            # letter - there a digit-only token is the
+                            # state-file growth-counter shape.
+                            if [ "$_eh_explicit" = yes ]; then
+                                _eh_keep=yes
+                            else
+                                case $_eh_val in
+                                *[A-Za-z]*) _eh_keep=yes ;;
+                                esac
+                            fi
                             ;;
                         esac
                     done
@@ -1271,7 +1293,14 @@ scan_history() {
         # Patch content, with the audit script and fixtures excluded. Same
         # rule: a failing read is a finding, not a skip. The message form is
         # still attempted above even when this one fails (and vice versa),
-        # because one can fail while the other succeeds.
+        # because one can fail while the other succeeds. Hunk-header lines
+        # (@@ ... @@ section echoes) are dropped after the read: git
+        # truncates the echoed context line mid-text, which can cut a
+        # suppression marker in half and leave a bare label+value shape on
+        # a metadata line — and the echoed line is by definition a real
+        # line of the file, which appears whole (annotated, or as a + line
+        # in the commit that introduced it) elsewhere in the same history,
+        # so dropping headers loses nothing scannable.
         git -C "$ROOT" show --no-color --patch --format= "$_sh_sha" -- \
             ':(exclude)scripts/audit.sh' \
             ':(exclude)tests/fixtures/audit' \
@@ -1282,6 +1311,7 @@ scan_history() {
                 "$_sh_label"
             continue
         fi
+        sed '/^@@/d' "$_sh_tmp" >"${_sh_tmp}.stripped" 2>/dev/null && mv "${_sh_tmp}.stripped" "$_sh_tmp"
         [ -s "$_sh_tmp" ] || continue
         if grep -Eq '^Binary files .* differ' "$_sh_tmp" 2>/dev/null; then
             printf 'FINDING %s: unscannable-binary-content (binary content changed in history — not content-scanned; verify manually)\n' \
@@ -1965,11 +1995,15 @@ st_serial_table_line() {
         _st_tok=${_st_tok}${_st_c}
         _st_i=$((_st_i + 1))
     done
-    case $((_sv_count % 3)) in
-    0) _st_spell='serial_number =' ;;
-    1) _st_spell='Serial Number:' ;;
-    2) _st_spell='serial:=' ;;
-    esac
+    if [ -n "${_st_forcespell:-}" ]; then
+        _st_spell=$_st_forcespell
+    else
+        case $((_sv_count % 3)) in
+        0) _st_spell='serial_number =' ;;
+        1) _st_spell='Serial Number:' ;;
+        2) _st_spell='serial:=' ;;
+        esac
+    fi
     _sv_count=$((_sv_count + 1))
     printf 'machine-serial-number|%s|%s "%s"\n' \
         "$_st_flag" "$_st_spell" "$_st_tok" >>"$ST_WORK/vt-table"
@@ -1993,7 +2027,7 @@ st_serial_table_line() {
 # NAME (`default+`, `unknown_` are distinct identifiers, not the generic
 # filler), and the generic gates compare the complete captured value with
 # no trim — when punctuation could be name or formatting, finding is the
-# safe direction. Bare unquoted generics (`AWS_PROFILE=default`) stay
+# safe direction. Doc-filler generics (`AWS_PROFILE=example`) stay
 # silent.
 st_value_tables() {
     _vt_status=0
@@ -2060,7 +2094,7 @@ aws-sso-profile|M|AWS PROFILE = CorpAdmin-Prod2
 aws-sso-profile|M|awsProfile=dev_profile
 aws-sso-profile|M|aws.profile := 9prod.name-x
 aws-sso-profile|M|aws profile : mxprod7
-aws-sso-profile|X|AWS_PROFILE=default
+aws-sso-profile|M|AWS_PROFILE=default
 aws-sso-profile|X|aws_profile: "example"
 aws-sso-profile|X|export AWS_PROFILE=<profile>
 aws-sso-profile|M|aws_profile = "default."
@@ -2199,7 +2233,10 @@ EOF
             st_serial_table_line "$_sv_len" "$_sv_pos" 2 no M
             _sv_pos=$((_sv_pos + 1))
         done
-        st_serial_table_line "$_sv_len" 1 "$_sv_len" yes X
+        # Pure-digit silence is BARE-LABEL-ONLY (the two-tier rule): behind
+        # an explicit serial-number label a digit-only token is a real
+        # serial and fires. Pure letters are silent at both tiers.
+        _st_forcespell='serial:=' st_serial_table_line "$_sv_len" 1 "$_sv_len" yes X
         st_serial_table_line "$_sv_len" 1 "$_sv_len" no X
     done
     # Length sweep (review round 29, the minimum-length-floor class): the
@@ -2260,9 +2297,12 @@ EOF
     st_sweep_grow account-id-context M 'account_id =' 1234567890123456 10 13 12
     st_sweep_grow machine-serial-number M 'serial_number =' abc123abc123 6 10 8
     # Pure-digit / pure-letter serial tokens at and above the 8-plus
-    # floor: the ERE matches but the serial-property gate must skip them
-    # (no digit, or no letter) — the sweep's silent side for the property.
-    st_sweep_grow machine-serial-number X 'serial_number =' 1234567890123 8 10 0
+    # floor: the ERE matches but the serial-property gate must skip them.
+    # Digit-only silence is pinned behind the BARE label only (the
+    # two-tier rule: an explicit serial-number label makes digit-only
+    # tokens real serials and findings); pure letters are silent behind
+    # the explicit spelling — the stronger assertion.
+    st_sweep_grow machine-serial-number X 'serial =' 1234567890123 8 10 0
     st_sweep_grow machine-serial-number X 'serial_number =' abcdefghijkl 8 10 0
     # personal-name two-run shape: run lengths 1..6 squared, runs grown
     # character by character (the outer run carries across its inner loop).
@@ -2853,18 +2893,20 @@ default_audit() {
     # Hostname: also checked case-insensitively; very short values are noise.
     [ ${#_host} -ge 4 ] 2>/dev/null || _host=
     [ ${#_host_short} -ge 4 ] 2>/dev/null || _host_short=
-    # AWS_PROFILE: the SSO profile this machine selects. Guarded like the
-    # username: the literal scan substring-matches, so a value that is
-    # exactly one of GENERIC_PROFILES (`default`, `test` — words naming the
-    # slot, not a profile, and appearing in this repository's own prose) is
-    # skipped, while every other 2-plus name is scanned, letter-only or not
-    # — the same rule and set the aws-sso-profile label detector's
-    # generic-value gate applies.
+    # AWS_PROFILE: the SSO profile this machine selects. The runtime skip
+    # set is NOT GENERIC_PROFILES: this is a fixed-substring scan over
+    # every file and patch, so ordinary-English profile names (`default`,
+    # `test` — the built-in profile is a real name, but the WORD appears
+    # throughout this repository's prose) are skipped here as noise, not
+    # as filler. A committed `AWS_PROFILE=default` assignment is still a
+    # finding — the label detector's generic gate no longer excludes it;
+    # only this substring scan skips the word.
     if [ -n "$_profile" ]; then
         _profile_lc=$(printf '%s' "$_profile" | tr '[:upper:]' '[:lower:]')
-        case "$GENERIC_PROFILES" in
+        _runtime_profile_noise=' default test '
+        case "$_runtime_profile_noise" in
         *" $_profile_lc "*)
-            printf 'audit: note: skipping AWS_PROFILE check for generic profile name "%s"\n' "$_profile"
+            printf 'audit: note: skipping AWS_PROFILE runtime substring scan for ordinary-word profile name "%s" (committed labeled assignments are still detected)\n' "$_profile"
             _profile=
             ;;
         esac
