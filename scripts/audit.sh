@@ -684,12 +684,11 @@ ALLOWLIST_SED='s/noreply@anthropic[.]com//g'
 eh_all_generic() {
     _ag_set=$1
     _ag_ere=$2
-    _ag_trim=$3
     _ag_vals=$(printf '%s\n' "${_eh_hit#*:}" |
         tr '[:upper:]' '[:lower:]' |
         grep -oE -- "$_ag_ere" |
         sed -e 's/^[^=:]*:=//' -e 's/^[^=:]*[=:][[:space:]]*//' \
-            -e "s/^[\"']*//" -e "$_ag_trim")
+            -e "s/^[\"']*//")
     [ -n "$_ag_vals" ] || return 1
     for _ag_val in $_ag_vals; do
         case "$_ag_set" in
@@ -755,19 +754,20 @@ emit_hits() {
             # (`production`) are real — so the documentation boilerplate a
             # shape restriction used to keep out is excluded HERE instead,
             # by the shared eh_all_generic helper: every captured value,
-            # lowercased and trimmed of leading quotes and trailing
-            # value-alphabet punctuation (`aws_profile = "default."` is
-            # boilerplate, not a finding; the trim set is the value
-            # class's own punctuation so `default,` reduces the same way)
-            # , must be one of GENERIC_PROFILES
-            # or the finding stands. An empty extraction also stands —
+            # lowercased and stripped of leading quotes, then compared to
+            # GENERIC_PROFILES as the COMPLETE captured value: no trailing-
+            # punctuation trim. The trim this gate once had reduced
+            # `default+` to `default` — but under the documented value
+            # alphabet `+` is a legal profile-name character, so `default+`
+            # is a DISTINCT name and suppressing it was suppressing a real
+            # identifier. When punctuation could be name or formatting the
+            # safe direction is to find. An empty extraction also stands —
             # over-detection stays the safe direction — and the marker and
-            # history rules above are untouched. The
-            # windows-username-labeled and hostname-labeled gates below
-            # share the helper.
+            # history rules above are untouched. The windows-username-
+            # labeled and hostname-labeled gates below share the helper.
             if [ "$_eh_name" = 'aws-sso-profile' ] &&
                 eh_all_generic "$GENERIC_PROFILES" \
-                    "${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}" 's/[.,+@_-]*$//'; then
+                    "${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}"; then
                 continue
             fi
             # Serial-property gate (machine-serial-number only), mirroring
@@ -851,12 +851,12 @@ EOF
             # is excluded after the match by the same shared helper.
             if [ "$_eh_name" = 'windows-username-labeled' ] &&
                 eh_all_generic "$GENERIC_LABELED_USERS" \
-                    "${WINUSER_LABEL}${WINUSER_VALUE}" 's/[._-]*$//'; then
+                    "${WINUSER_LABEL}${WINUSER_VALUE}"; then
                 continue
             fi
             if [ "$_eh_name" = 'hostname-labeled' ] &&
                 eh_all_generic "$GENERIC_LABELED_HOSTS" \
-                    "${HOSTNAME_LABEL}${HOSTNAME_VALUE}" 's/[._-]*$//'; then
+                    "${HOSTNAME_LABEL}${HOSTNAME_VALUE}"; then
                 continue
             fi
             printf 'FINDING %s:%s: %s\n' "$_eh_label" "${_eh_hit%%:*}" "$_eh_name"
@@ -1974,11 +1974,14 @@ st_serial_table_line() {
 # spellings the matrix itself found missing (dotted keys, ':='
 # assignment, hyphenated serials). The
 # tab-indented assignment forms are appended by printf after the heredoc
-# because heredocs make a literal tab invisible to review. Note
-# `aws_profile = "default,"` sits on the SILENT side: the profile value
-# anchor stops at the comma (not in its class), so the generic-value
-# gate still sees plain `default` — the gate trims trailing dot,
-# underscore and dash only, and a trailing comma changes nothing.
+# because heredocs make a literal tab invisible to review. Note the
+# punctuation-bearing generic forms sit on the MUST-FIRE side: under the
+# documented value alphabets, trailing punctuation is a legal part of the
+# NAME (`default+`, `unknown_` are distinct identifiers, not the generic
+# filler), and the generic gates compare the complete captured value with
+# no trim — when punctuation could be name or formatting, finding is the
+# safe direction. Bare unquoted generics (`AWS_PROFILE=default`) stay
+# silent.
 st_value_tables() {
     _vt_status=0
     cat >"$ST_WORK/vt-table" <<'EOF'
@@ -2047,8 +2050,9 @@ aws-sso-profile|M|aws profile : mxprod7
 aws-sso-profile|X|AWS_PROFILE=default
 aws-sso-profile|X|aws_profile: "example"
 aws-sso-profile|X|export AWS_PROFILE=<profile>
-aws-sso-profile|X|aws_profile = "default."
-aws-sso-profile|X|aws_profile = "default,"
+aws-sso-profile|M|aws_profile = "default."
+aws-sso-profile|M|aws_profile = "default,"
+aws-sso-profile|M|AWS_PROFILE=default+
 aws-sso-profile|X|AWS_PROFILE=examples
 aws-sso-profile|M|AWS_PROFILE=dev
 aws-sso-profile|M|AWS_PROFILE=abc
@@ -2109,6 +2113,7 @@ windows-username-labeled|X|username: your
 windows-username-labeled|X|username: this
 windows-username-labeled|X|username: none
 windows-username-labeled|X|username: unknown
+windows-username-labeled|M|Windows username: unknown_
 windows-username-labeled|X|username: example
 windows-username-labeled|X|username = <username>
 windows-username-labeled|M|username: bob
