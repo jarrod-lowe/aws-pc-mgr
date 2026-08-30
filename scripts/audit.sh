@@ -66,25 +66,40 @@
 #     output) decoded to UTF-8 and scanned in decoded form — by every
 #     detector AND by the runtime-value literal scans below, so a UTF-16
 #     file is not a blind spot for the bucket/username/hostname checks, and
-#   * every commit, all refs: commit message body plus patch. The message
-#     body is scanned for EVERY commit independently of the patch: the patch
-#     stream is path-filtered (audit script and fixtures excluded), and a
-#     commit whose changed paths are all excluded — including an empty
-#     commit — makes `git show --patch -- <paths>` emit nothing at all,
-#     message included. Message bodies therefore get their own unfiltered
-#     `git show -s --format=%B` pass.
+#   * every commit, all refs: commit message body, changed-path list and
+#     patch. The message body is scanned for EVERY commit independently of
+#     the patch: the patch stream is path-filtered (audit script and
+#     fixtures excluded), and a commit whose changed paths are all excluded
+#     — including an empty commit — makes `git show --patch -- <paths>`
+#     emit nothing at all, message included. Message bodies therefore get
+#     their own unfiltered `git show -s --format=%B` pass. The
+#     changed-path list (same pathspec exclusions, read fail-closed like
+#     every other per-commit git call) carries the path-level
+#     Terraform-state check into HISTORY: a *.tfstate / *.tfstate.* path
+#     touched by any commit is a finding even when the file's content is
+#     minimal and even when the file was later deleted from the tree.
 #   * the values `whoami` and `hostname` return locally (tracked files and
 #     history — both the message-body and the patch stream),
+#   * this account's display name — the GECOS/full-name field, via
+#     `id -F` (macOS) or `getent passwd` field 5 (Linux) — when the
+#     platform exposes one that is name-shaped (two-plus word runs,
+#     8-plus characters). Like the username, a real person's name must
+#     never be committed; the finding class display-name is never
+#     suppressible, and empty/unshaped discoveries are skipped with a
+#     note (tracked files and history, case-insensitive),
 #   * the bucket_name from the local untracked terraform/bootstrap/
 #     terraform.tfvars, if that file exists (tracked files and history),
 #   * a path-level Terraform-state check: any TRACKED file matching
 #     *.tfstate or *.tfstate.* is an explicit terraform-state-tracked
-#     finding (SPEC §27 "Terraform state"), mirroring .gitignore. The
-#     marker never applies to it — a state file is never synthetic, and
-#     the finding is about the path, not a line. History is covered
-#     content-wise: a state file's patch text goes through every
-#     detector like any other patch, so its ARNs, account IDs and
-#     credentials still fire there.
+#     finding (SPEC §27 "Terraform state"), mirroring .gitignore — the
+#     check fires on the PATH alone, so even a minimal state file
+#     (`{"version":4,...}`) with no detector-tripping content is caught.
+#     The history pass carries the same check over every commit's
+#     changed-path list (see above). The marker never applies to it — a
+#     state file is never synthetic, and the finding is about the path,
+#     not a line. History is ALSO covered content-wise: a state file's
+#     patch text goes through every detector like any other patch, so
+#     its ARNs, account IDs and credentials still fire there.
 #   * the value of AWS_PROFILE, when it is set to a specific-enough profile
 #     name (tracked files and history, both streams): the SSO/IAM Identity
 #     Center profile this machine selects is a committed-content item of
@@ -109,6 +124,16 @@
 # content under audit (and cannot be scrubbed here). Commit message bodies
 # ARE scanned; the allowlist above keeps the standard trailer out of the
 # findings.
+#
+# The personal-name detector (personal-name) covers SPEC §27's "personal
+# name" item directly: the identifying name-field labels — `personal
+# name`, `full name`, `real name` in every case/separator spelling, never
+# the bare `name` key of ordinary code — anchored to a two-run name shape
+# (each run 3-plus, totalling 8-plus), with a small GENERIC_NAMES
+# form-boilerplate set (Not Applicable, John Doe, …) excluded by a gate in
+# emit_hits after the match. Very short real names (Jan Li) stay silent —
+# a documented miss; over-detection stays the safe direction. The runtime
+# display-name check above is the same item's local-value carrier.
 #
 # The whoami check skips a small set of generic usernames (root, runner, …):
 # CI runners execute as users whose names are ordinary words appearing in
@@ -306,6 +331,16 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 # names are real), so emit_hits's generic-value gate excludes these AFTER the
 # match, and default_audit's runtime AWS_PROFILE guard skips the same set.
 GENERIC_PROFILES=' default example examples placeholder value name profile none test '
+# Generic personal-name VALUES (lowercased, matched whole by the same
+# `*" word "*` idiom): form boilerplate a name-shaped value can carry
+# without naming anyone. The personal-name VALUE anchor is name-shaped by
+# design, so emit_hits's generic-name gate excludes these AFTER the match,
+# mirroring the profile gate: each justified:
+#   not applicable / not provided  the standard empty form-field values
+#   unknown / anonymous            self-describing absent data
+#   test user / sample user        QA filler
+#   first last / john doe / jane doe / your name  documentation examples
+GENERIC_NAMES=' not applicable not provided unknown anonymous test user sample user first last john doe jane doe your name '
 
 # ---------------------------------------------------------------------------
 # Detection engine (used by both the default audit and --selftest)
@@ -450,12 +485,32 @@ AWS_PROFILE_VALUE='[A-Za-z0-9][A-Za-z0-9._-]{3,}'
 # letter-and-digit property is the gate's job (see header).
 SERIAL_LABEL="serial(${LABEL_WORD_SEP}number)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 SERIAL_VALUE='[A-Za-z0-9][A-Za-z0-9-]{7,}'
+# PERSONAL_NAME_LABEL/PERSONAL_NAME_VALUE are the personal-name detector's
+# anchors, shared with the generic-name gate in emit_hits. The label is the
+# genuinely identifying name-field family — `personal name`, `full name`,
+# `real name` in every case/separator spelling via the shared machinery —
+# and deliberately NOT bare `name`, which is an ordinary key everywhere in
+# code and HCL. The value anchor is a NAME SHAPE, not a positional pattern:
+# two-or-more consecutive word runs of name characters whose combined
+# length is at least 8 with each run at least 3 — expressed as the three
+# ERE regions (>=5+>=3, >=4+>=4, >=3+>=5). Case cannot carry the shape
+# (labels match a lowercased copy), so prose pairs like `the name` (3+4=7)
+# and `of the` stay silent while `Alice Smith` (5+5), `Mary Jane Watson`
+# (4+4 from the first two runs) and `Jean-Pierre Blanc` fire; very short
+# real names (`Jan Li`, 3+2) stay silent — a documented, acceptable miss,
+# over-detection being the safe direction and the length rule the only
+# prose brake that survives lowercasing. Single tokens (`Smith`), and
+# placeholders (`<your name>` — the angle bracket is outside the class)
+# cannot match at all.
+PERSONAL_NAME_LABEL="(personal|full|real)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
+PERSONAL_NAME_VALUE="([A-Za-z][A-Za-z'.-]{4,}[[:space:]]+[A-Za-z][A-Za-z'.-]{2,}|[A-Za-z][A-Za-z'.-]{3,}[[:space:]]+[A-Za-z][A-Za-z'.-]{3,}|[A-Za-z][A-Za-z'.-]{2,}[[:space:]]+[A-Za-z][A-Za-z'.-]{4,})"
 LABEL_DETECTORS="aws-secret-access-key:(aws${LABEL_WORD_SEP})?secret${LABEL_WORD_SEP}access${LABEL_WORD_SEP}key[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
 aws-activation-code:activation${LABEL_WORD_SEP}code[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
 aws-session-token:(aws${LABEL_WORD_SEP})?(session|security)${LABEL_WORD_SEP}token[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}
 account-id-context:account(${LABEL_WORD_SEP}id)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[[:space:]]*[0-9]{12}
 aws-sso-profile:${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}
-machine-serial-number:${SERIAL_LABEL}${SERIAL_VALUE}"
+machine-serial-number:${SERIAL_LABEL}${SERIAL_VALUE}
+personal-name:${PERSONAL_NAME_LABEL}${PERSONAL_NAME_VALUE}"
 SHAPE_DETECTORS="aws-access-key-id:AKIA[0-9A-Z]{16}
 aws-session-key-id:ASIA[0-9A-Z]{16}
 managed-node-id:mi-[a-f0-9]{8,}
@@ -472,7 +527,10 @@ MARKER='# audit-allow:synthetic'
 # Detector classes the marker can NEVER silence (see header):
 #   * the four AWS key-material classes — hard rule, no exception;
 #   * the runtime per-machine value classes — real values, never synthetic.
-NEVER_SUPPRESSED=' aws-access-key-id aws-session-key-id aws-secret-access-key aws-session-token state-bucket-name username hostname aws-profile-name '
+# display-name is the runtime GECOS/full-name literal (see default_audit):
+# a real person's name on this machine, never synthetic — same rule as the
+# other runtime per-machine values.
+NEVER_SUPPRESSED=' aws-access-key-id aws-session-key-id aws-secret-access-key aws-session-token state-bucket-name username hostname aws-profile-name display-name '
 
 # ANNOTATED_LINES, when non-empty, names a file holding the content of every
 # current tracked line that carries the marker (marker and trailing
@@ -603,6 +661,40 @@ emit_hits() {
                     done
                 fi
                 if [ "$_eh_keep" != yes ]; then
+                    continue
+                fi
+            fi
+            # Generic-name gate (personal-name only), mirroring the
+            # generic-value gate: the value anchor is name-SHAPED, so the
+            # form boilerplate a shape restriction cannot distinguish
+            # (`Full Name: Not Applicable` in real dumps) is excluded HERE,
+            # by exact lowercased match against GENERIC_NAMES, after the
+            # match. Any other value stands, an empty capture stands
+            # (over-detection stays the safe direction), and the marker and
+            # history rules above are untouched.
+            if [ "$_eh_name" = 'personal-name' ]; then
+                _eh_nvals=$(printf '%s\n' "${_eh_hit#*:}" |
+                    tr '[:upper:]' '[:lower:]' |
+                    grep -oE -- "${PERSONAL_NAME_LABEL}${PERSONAL_NAME_VALUE}" |
+                    sed -e 's/^[^=:]*:=//' \
+                        -e 's/^[^=:]*[=:][[:space:]]*//' -e "s/^[\"']*//")
+                _eh_ngeneric=no
+                if [ -n "$_eh_nvals" ]; then
+                    _eh_ngeneric=yes
+                    # Captured name values contain spaces, so they are
+                    # compared WHOLE (one grep -oE match per line), not
+                    # word-split; the heredoc keeps the loop in this shell.
+                    while IFS= read -r _eh_nval; do
+                        [ -n "$_eh_nval" ] || continue
+                        case "$GENERIC_NAMES" in
+                        *" $_eh_nval "*) ;;
+                        *) _eh_ngeneric=no ;;
+                        esac
+                    done <<EOF
+$_eh_nvals
+EOF
+                fi
+                if [ "$_eh_ngeneric" = yes ]; then
                     continue
                 fi
             fi
@@ -844,9 +936,9 @@ annotated_current_lines() {
     return 0
 }
 
-# scan_history BUCKET USER HOST HOST_SHORT PROFILE — scan every commit's
-# message body and patch (all refs), excluding the audit script and
-# fixtures from the patches. Message bodies are scanned separately from the
+# scan_history BUCKET USER HOST HOST_SHORT PROFILE DISPLAY — scan every
+# commit's message body, changed-path list and patch (all refs), excluding
+# the audit script and fixtures from the patches and path lists. Message bodies are scanned separately from the
 # patches: a pathspec-filtered `git show --patch` emits NOTHING — message
 # included — for a commit whose changed paths are all excluded (or an empty
 # commit), so a credential in such a message would otherwise go unscanned.
@@ -855,19 +947,21 @@ annotated_current_lines() {
 # explicit finding, and so does any per-commit `git show` that exits
 # nonzero — empty output is a legitimate skip, a failed read never is (see
 # the loop). The runtime values (bucket name, username, hostname including
-# its short form, AWS profile name) are scanned against BOTH streams, with
-# the same scan_literal calls the tracked-file loop makes — same needles,
-# hostname case-insensitive as there — so a value that only ever reached
-# history (a file later removed, a commit message naming the machine) is
-# still a finding. The values arrive already carrying default_audit's
-# guards (generic-user skip, short-hostname minimum, generic-profile skip),
-# the same guarded forms the tracked-file loop scans.
+# its short form, AWS profile name, display name) are scanned against BOTH
+# streams, with the same scan_literal calls the tracked-file loop makes —
+# same needles, hostname and display name case-insensitive as there — so a
+# value that only ever reached history (a file later removed, a commit
+# message naming the machine) is still a finding. The values arrive
+# already carrying default_audit's guards (generic-user skip,
+# short-hostname minimum, generic-profile skip, name-shape skip), the same
+# guarded forms the tracked-file loop scans.
 scan_history() {
     _sh_bucket=${1-}
     _sh_user=${2-}
     _sh_host=${3-}
     _sh_host_short=${4-}
     _sh_profile=${5-}
+    _sh_display=${6-}
     # Temp allocation failures fail CLOSED: returning success here would let
     # default_audit report "clean (tracked files and full history scanned)"
     # without having scanned any history (unwritable TMPDIR, full disk).
@@ -885,6 +979,11 @@ scan_history() {
         printf '%s: error: cannot create history rev-list temp file - failing closed\n' "$SCRIPT_NAME" >&2
         exit 1
     }
+    _sh_paths=$(mktemp "${TMPDIR:-/tmp}/audit-history-paths.XXXXXXXX") || {
+        rm -f "$_sh_tmp" "$_sh_msg" "$_sh_revs"
+        printf '%s: error: cannot create history paths temp file - failing closed\n' "$SCRIPT_NAME" >&2
+        exit 1
+    }
     # History-equivalence set: current tracked lines carrying the marker.
     ANNOTATED_LINES=$(mktemp "${TMPDIR:-/tmp}/audit-annotated.XXXXXXXX") || {
         rm -f "$_sh_tmp" "$_sh_msg" "$_sh_revs"
@@ -892,7 +991,7 @@ scan_history() {
         exit 1
     }
     if ! annotated_current_lines "$ANNOTATED_LINES"; then
-        rm -f "$_sh_tmp" "$_sh_msg" "$_sh_revs" "$ANNOTATED_LINES"
+        rm -f "$_sh_tmp" "$_sh_msg" "$_sh_revs" "$_sh_paths" "$ANNOTATED_LINES"
         ANNOTATED_LINES=
         printf '%s: error: cannot enumerate tracked files for the history-equivalence set (git ls-files failed?) - failing closed, no clean result\n' \
             "$SCRIPT_NAME" >&2
@@ -904,7 +1003,7 @@ scan_history() {
     # while default_audit still reports "full history scanned" — a false
     # clean (corrupt or unreadable history, a failing git).
     if ! git -C "$ROOT" rev-list --abbrev-commit --all >"$_sh_revs"; then
-        rm -f "$_sh_tmp" "$_sh_msg" "$_sh_revs" "$ANNOTATED_LINES"
+        rm -f "$_sh_tmp" "$_sh_msg" "$_sh_revs" "$_sh_paths" "$ANNOTATED_LINES"
         ANNOTATED_LINES=
         printf '%s: error: git rev-list failed (corrupt or unreadable history?) - failing closed, no clean result\n' "$SCRIPT_NAME" >&2
         exit 1
@@ -936,6 +1035,39 @@ scan_history() {
                 "$_sh_host_short" ic
             scan_literal aws-profile-name "$_sh_label" "$_sh_msg" \
                 "$_sh_profile"
+            scan_literal display-name "$_sh_label" "$_sh_msg" \
+                "$_sh_display" ic
+        fi
+        # Changed-path list, with the SAME exclusions as the patch stream.
+        # The path is itself audit content: a *.tfstate / *.tfstate.* path
+        # changed by this commit is a terraform-state-tracked finding even
+        # when the file's content is minimal (`{"version":4,...}`) and even
+        # when the file was later deleted from the tree — SPEC §27 requires
+        # Terraform state in Git HISTORY to be detected, which content
+        # scanning alone cannot do (review thread 3888113063: a
+        # committed-then-deleted old.tfstate audited clean). Same fail-closed
+        # rule as every other per-commit read: nonzero exit is a finding
+        # naming the commit, never a silent skip; exit 0 with empty output
+        # is a legitimate skip (a commit whose changed paths are all
+        # excluded, or an empty commit).
+        git -C "$ROOT" show --no-color --name-only --format= "$_sh_sha" -- \
+            ':(exclude)scripts/audit.sh' \
+            ':(exclude)tests/fixtures/audit' \
+            >"$_sh_paths" 2>/dev/null
+        _sh_paths_rc=$?
+        if [ "$_sh_paths_rc" -ne 0 ]; then
+            printf 'FINDING %s: unreadable-commit-content (git show failed — corrupt object or I/O error; verify manually)\n' \
+                "$_sh_label"
+        else
+            while IFS= read -r _sh_path; do
+                [ -n "$_sh_path" ] || continue
+                case "$_sh_path" in
+                *.tfstate | *.tfstate.*)
+                    printf 'FINDING %s %s: terraform-state-tracked (Terraform state path changed in history - SPEC §27; purge the history)\n' \
+                        "$_sh_label" "$_sh_path"
+                    ;;
+                esac
+            done <"$_sh_paths"
         fi
         # Patch content, with the audit script and fixtures excluded. Same
         # rule: a failing read is a finding, not a skip. The message form is
@@ -964,8 +1096,10 @@ scan_history() {
         scan_literal hostname "$_sh_label" "$_sh_tmp" "$_sh_host_short" ic
         scan_literal aws-profile-name "$_sh_label" "$_sh_tmp" \
             "$_sh_profile"
+        scan_literal display-name "$_sh_label" "$_sh_tmp" \
+            "$_sh_display" ic
     done <"$_sh_revs"
-    rm -f "$_sh_tmp" "$_sh_msg" "$_sh_revs" "$ANNOTATED_LINES"
+    rm -f "$_sh_tmp" "$_sh_msg" "$_sh_revs" "$_sh_paths" "$ANNOTATED_LINES"
     ANNOTATED_LINES=
     return 0
 }
@@ -1059,6 +1193,18 @@ st_form() {
     'number 0') printf 'number' ;;
     'number 1') printf 'NUMBER' ;;
     'number 2') printf 'Number' ;;
+    'personal 0') printf 'personal' ;;
+    'personal 1') printf 'PERSONAL' ;;
+    'personal 2') printf 'Personal' ;;
+    'full 0') printf 'full' ;;
+    'full 1') printf 'FULL' ;;
+    'full 2') printf 'Full' ;;
+    'real 0') printf 'real' ;;
+    'real 1') printf 'REAL' ;;
+    'real 2') printf 'Real' ;;
+    'name 0') printf 'name' ;;
+    'name 1') printf 'NAME' ;;
+    'name 2') printf 'Name' ;;
     *)
         printf 'selftest: internal: st_form: no case form for word "%s"\n' \
             "$1" >&2
@@ -1161,17 +1307,17 @@ st_expand() {
     _ex_spells=$1
     _ex_out=$2
     _ex_vals=$3
-    _ex_nvals=$(printf '%s\n' "$_ex_vals" | wc -w | tr -d ' ')
+    _ex_nvals=$(printf '%s' "$_ex_vals" | awk -F, '{print NF}')
     while IFS= read -r _ex_spell; do
         [ -n "$_ex_spell" ] || continue
         for _ex_assign in '=' ':' ':='; do
             for _ex_qopen in '' '"' "'"; do
                 for _ex_qclose in '' '"' "'"; do
-                    _ex_val=${_ex_vals%% *}
+                    _ex_val=${_ex_vals%%,*}
                     printf '%s\n' \
                         "${_ex_spell}${_ex_qopen}${_ex_assign}${_ex_qclose}${_ex_val}"
                     if [ "$_ex_nvals" -gt 1 ]; then
-                        _ex_vals="${_ex_vals#* } ${_ex_val}"
+                        _ex_vals="${_ex_vals#*,},${_ex_val}"
                     fi
                 done
             done
@@ -1245,26 +1391,30 @@ st_check() {
 # Label-matrix registry: `detector|word set|value alternatives` per line.
 # The word sets are the label's mandatory words plus its optional prefix
 # (`aws`) or suffix (`id`, `number`) in every combination the ERE accepts;
-# values are taken from the detector's own value grammar (length floors
-# included, and every alternative of a multi-alternative grammar) — and,
+# values are COMMA-separated (name values contain spaces) and are taken
+# from the detector's own value grammar (length floors included, and every
+# alternative of a multi-alternative grammar) — and,
 # for key material, from the SYNTHETIC-KEY CONVENTION in the header:
 # every value a generator can emit is a deterministic sequential pattern
 # (EXAMPLE repetition, alphabet wrap, SYNTHETIC-word prefix, ascending
 # digits) so no server-side secret scanner can mistake it for entropy.
 # The first check below fails if this registry and LABEL_DETECTORS ever
 # name different detectors, in either direction.
-MATRIX_LABEL_SETS='aws-secret-access-key|secret access key|EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE EXAMPLEEXAMPLEEXAMPLEEXAMPLE+/==ABC ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
-aws-secret-access-key|aws secret access key|EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE EXAMPLEEXAMPLEEXAMPLEEXAMPLE+/==ABC ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
-aws-activation-code|activation code|SYNTHETICACTIVATIONCODE01234567 aaaa/bbbb+
-aws-session-token|session token|SYNTHETICSESSIONTOKEN0123456789 SYNTHETICSESSIONTOKEN+/==ABCDEF
-aws-session-token|security token|SYNTHETICSESSIONTOKEN0123456789 SYNTHETICSESSIONTOKEN+/==ABCDEF
-aws-session-token|aws session token|SYNTHETICSESSIONTOKEN0123456789 SYNTHETICSESSIONTOKEN+/==ABCDEF
-aws-session-token|aws security token|SYNTHETICSESSIONTOKEN0123456789 SYNTHETICSESSIONTOKEN+/==ABCDEF
-account-id-context|account|123456789012 000000000000
-account-id-context|account id|123456789012 000000000000
-aws-sso-profile|aws profile|mxprod7 9prod.name-x MX-Prod_99
-machine-serial-number|serial|mtx1aaaaaa 9mtxaaaaaa ABC12345 ABC-12345 ABCDEFG1 ABC1234Z
-machine-serial-number|serial number|mtx1aaaaaa 9mtxaaaaaa ABC12345 ABC-12345 ABCDEFG1 ABC1234Z'
+MATRIX_LABEL_SETS='aws-secret-access-key|secret access key|EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE,EXAMPLEEXAMPLEEXAMPLEEXAMPLE+/==ABC,ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
+aws-secret-access-key|aws secret access key|EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE,EXAMPLEEXAMPLEEXAMPLEEXAMPLE+/==ABC,ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
+aws-activation-code|activation code|SYNTHETICACTIVATIONCODE01234567,aaaa/bbbb+
+aws-session-token|session token|SYNTHETICSESSIONTOKEN0123456789,SYNTHETICSESSIONTOKEN+/==ABCDEF
+aws-session-token|security token|SYNTHETICSESSIONTOKEN0123456789,SYNTHETICSESSIONTOKEN+/==ABCDEF
+aws-session-token|aws session token|SYNTHETICSESSIONTOKEN0123456789,SYNTHETICSESSIONTOKEN+/==ABCDEF
+aws-session-token|aws security token|SYNTHETICSESSIONTOKEN0123456789,SYNTHETICSESSIONTOKEN+/==ABCDEF
+account-id-context|account|123456789012,000000000000
+account-id-context|account id|123456789012,000000000000
+aws-sso-profile|aws profile|mxprod7,9prod.name-x,MX-Prod_99
+machine-serial-number|serial|mtx1aaaaaa,9mtxaaaaaa,ABC12345,ABC-12345,ABCDEFG1,ABC1234Z
+machine-serial-number|serial number|mtx1aaaaaa,9mtxaaaaaa,ABC12345,ABC-12345,ABCDEFG1,ABC1234Z
+personal-name|personal name|Alice Smith,Jean-Pierre Blanc,Mary Jane Watson
+personal-name|full name|Alice Smith,Jean-Pierre Blanc,Mary Jane Watson
+personal-name|real name|Alice Smith,Jean-Pierre Blanc,Mary Jane Watson'
 
 st_label_matrix() {
     _lm_status=0
@@ -1686,6 +1836,22 @@ machine-serial-number|X|serial number: …
 machine-serial-number|X|serial = ABC1234
 machine-serial-number|X|serial_number
 account-id-context|X|account_id = 12345678901
+personal-name|M|Personal Name: Alice Smith
+personal-name|M|full_name = "Jean-Pierre Blanc"
+personal-name|M|"full_name": "Mary Jane Watson"
+personal-name|M|REAL-NAME:=O'Brien Casey
+personal-name|M|personalName: Alice Smith
+personal-name|M|full name = Jean Pierre Dupont
+personal-name|X|Personal Name: the name of the person
+personal-name|X|personal_name = <your name>
+personal-name|X|name = "Alice Smith"
+personal-name|X|full_name: Smith
+personal-name|X|full name: Jan Li
+personal-name|X|Full Name: Not Applicable
+personal-name|X|full_name = "first last"
+personal-name|X|personal_name: …
+personal-name|X|real_name = var.instance_name
+personal-name|X|fullname = each.person.name
 EOF
     {
         printf 'aws-secret-access-key|M|aws_secret_access_key\t=\tEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE\n'
@@ -1694,6 +1860,7 @@ EOF
         printf 'account-id-context|M|account_id\t=\t123456789012\n'
         printf 'aws-sso-profile|M|aws_profile\t=\tmxprod7\n'
         printf 'machine-serial-number|M|serial_number\t=\tABC12345\n'
+        printf 'personal-name|M|personal_name\t=\tAlice Smith\n'
     } >>"$ST_WORK/vt-table"
     # Serial interleaving closure, by generation: real serials interleave
     # letters and digits arbitrarily, and a hand-picked value list can
@@ -1764,24 +1931,29 @@ EOF
 #   * "Windows username" → username (the runtime whoami literal; on
 #     Windows whoami returns the account name) and user-home-path
 #     (C:\Users\<name> is the committed form of the same identity).
-#   * "personal name" → email-address + username + user-home-path: no
-#     detector can enumerate human names; a personal name reaches
-#     committed content as an email local-part, the whoami account name,
-#     or the username segment of a home path. Indirect by necessity,
-#     and the runtime username check is the direct carrier.
+#   * "personal name" → personal-name (label detector over the
+#     identifying name-field family: personal/full/real name, value
+#     anchored on a two-run name shape — see the PERSONAL_NAME notes) and
+#     display-name (the runtime GECOS/full-name literal, discovered via
+#     id -F / getent and scanned like whoami/hostname). Direct coverage;
+#     the email-address and user-home-path classes stay on their own
+#     bullets.
 #   * "generated real S3 bucket name" → state-bucket-name: the runtime
 #     literal taken from terraform/bootstrap/terraform.tfvars.
-#   * "Terraform state" → terraform-state-tracked (the path-level
-#     tracked-file check in default_audit; .gitignore already excludes
-#     *.tfstate*, this fails closed if one is tracked anyway) plus
-#     account-id-arn and uuid-literal: a state file's JSON content
-#     carries ARNs, account IDs and UUIDs, which is how state that ever
-#     reached HISTORY is caught (patches are content-scanned).
+#   * "Terraform state" → terraform-state-tracked: the DIRECT path-level
+#     check, in both passes — any tracked *.tfstate / *.tfstate.* path in
+#     the worktree, and any commit whose changed-path list (git show
+#     --name-only with the standard exclusions, fail-closed) touches one,
+#     so state committed then deleted still fires. account-id-arn and
+#     uuid-literal ride along as the content-level backstop: a state
+#     file's JSON carries ARNs, account IDs and UUIDs, which catches
+#     content even under renamed paths.
 #   * "user-specific absolute paths" → user-home-path.
 # RUNTIME_CHECK_IDS are the checks default_audit performs outside the
-# detector tables; terraform-state-tracked is the newest (§27 "Terraform
-# state" previously had no direct check at all — a coverage drift this
-# map exists to make impossible to reintroduce).
+# detector tables (terraform-state-tracked is path-level in both passes;
+# display-name is the runtime GECOS literal — both runtime-value checks
+# are machine-dependent and therefore documented as untestable by the
+# selftest, in the same note pattern as whoami/hostname).
 SPEC27_MAP='Activation Code|aws-activation-code
 Activation ID|uuid-literal
 AWS access-key IDs|aws-access-key-id
@@ -1793,13 +1965,13 @@ AWS account ID|account-id-context account-id-arn
 managed-node ID|managed-node-id
 hostname|hostname
 Windows username|username user-home-path
-personal name|email-address username user-home-path
+personal name|personal-name display-name
 email address|email-address
 machine serial numbers|machine-serial-number
 generated real S3 bucket name|state-bucket-name
 Terraform state|terraform-state-tracked account-id-arn uuid-literal
 user-specific absolute paths|user-home-path'
-RUNTIME_CHECK_IDS='hostname username state-bucket-name aws-profile-name terraform-state-tracked'
+RUNTIME_CHECK_IDS='hostname username state-bucket-name aws-profile-name terraform-state-tracked display-name'
 
 st_spec27_map() {
     _s27_status=0
@@ -1910,6 +2082,83 @@ st_hook_smoke() {
     return 0
 }
 
+# st_tfstate_checks — end-to-end scratch-repo test of BOTH Terraform-state
+# path checks (review threads 3887975424 and 3888113063): a scratch git
+# repository is built with (a) a MINIMAL state file still TRACKED — its
+# content trips no content detector, so only the path-level check can
+# catch it — and (b) an old.tfstate committed and then DELETED, so only
+# the history changed-path check can catch it. The full default audit is
+# run in the scratch repo; both findings must appear and the audit must
+# exit 1. This drives default_audit itself, not scan_file: the path-level
+# check lives in the audit's enumeration loops (the tracked-file loop and
+# scan_history), which is exactly why a content-only reproduction through
+# scan_file shows nothing. The scratch repo is cleaned without rm -rf
+# (files first, then directories deepest-first).
+st_tfstate_checks() {
+    if ! command -v git >/dev/null 2>&1; then
+        printf 'selftest: FAIL  git unavailable: cannot build the tfstate scratch repo\n'
+        return 1
+    fi
+    _ts_dir=$(mktemp -d "${TMPDIR:-/tmp}/audit-selftest-tfstate.XXXXXXXX") || {
+        printf 'selftest: FAIL  cannot create tfstate scratch directory\n'
+        return 1
+    }
+    mkdir -p "$_ts_dir/scripts" || {
+        printf 'selftest: FAIL  cannot populate tfstate scratch directory\n'
+        find "$_ts_dir" -type f -exec rm -f {} + 2>/dev/null
+        rmdir "$_ts_dir" 2>/dev/null
+        return 1
+    }
+    cp -- "$ROOT/scripts/audit.sh" "$_ts_dir/scripts/audit.sh" || {
+        printf 'selftest: FAIL  cannot copy audit.sh into the scratch repo\n'
+        find "$_ts_dir" -type f -exec rm -f {} + 2>/dev/null
+        rmdir "$_ts_dir" 2>/dev/null
+        return 1
+    }
+    # A commit identity is required; scope it to these invocations only.
+    _ts_git() {
+        git -C "$_ts_dir" -c user.email=selftest@invalid \
+            -c user.name='Self Test' "$@"
+    }
+    _ts_git init -q >/dev/null 2>&1 || {
+        printf 'selftest: FAIL  git init failed in the scratch repo\n'
+        find "$_ts_dir" -type f -exec rm -f {} + 2>/dev/null
+        rmdir "$_ts_dir" 2>/dev/null
+        return 1
+    }
+    printf 'note\n' >"$_ts_dir/note.txt"
+    printf '{"version":4,"serial":1,"outputs":{},"resources":[]}\n' \
+        >"$_ts_dir/old.tfstate"
+    printf '{"version":4,"serial":1,"outputs":{},"resources":[]}\n' \
+        >"$_ts_dir/minimal.tfstate"
+    _ts_git add -A note.txt scripts >/dev/null 2>&1
+    _ts_git add -f old.tfstate minimal.tfstate >/dev/null 2>&1
+    _ts_git commit -qm 'add minimal state' >/dev/null 2>&1
+    _ts_git rm -q old.tfstate >/dev/null 2>&1
+    _ts_git commit -qm 'remove old state' >/dev/null 2>&1
+    bash "$_ts_dir/scripts/audit.sh" >"$_ts_dir/audit.out" 2>&1
+    _ts_rc=$?
+    _ts_ok=yes
+    [ "$_ts_rc" -eq 1 ] || _ts_ok=no
+    grep -q 'FINDING minimal.tfstate: terraform-state-tracked' \
+        "$_ts_dir/audit.out" || _ts_ok=no
+    grep -q 'old.tfstate: terraform-state-tracked' \
+        "$_ts_dir/audit.out" || _ts_ok=no
+    if [ "$_ts_ok" != yes ]; then
+        printf 'selftest: FAIL  tfstate path checks: rc=%s (want 1); tracked-path and history-path findings both expected\n' \
+            "$_ts_rc"
+        sed 's/^/         /' "$_ts_dir/audit.out" | head -n 5
+        find "$_ts_dir" -type f -exec rm -f {} + 2>/dev/null
+        find "$_ts_dir" -depth -type d -exec rmdir {} + 2>/dev/null
+        return 1
+    fi
+    printf 'selftest: PASS  %-44s tracked + history minimal-state paths\n' \
+        'terraform-state-tracked'
+    find "$_ts_dir" -type f -exec rm -f {} + 2>/dev/null
+    find "$_ts_dir" -depth -type d -exec rmdir {} + 2>/dev/null
+    return 0
+}
+
 # st_message_file — exercise the --message-file pre-commit gate, in the
 # same style as st_hook_smoke: a synthetic tripping message must produce
 # named findings and exit 1 — including a line that carries the
@@ -1996,6 +2245,33 @@ default_audit() {
     _host=$(hostname 2>/dev/null) || _host=
     _host_short=${_host%%.*}
     _profile=${AWS_PROFILE-}
+    # Display name (SPEC §27 "personal name", runtime carrier): the
+    # GECOS/full-name field of this account, discovered portably — macOS
+    # `id -F` first, Linux `getent passwd` field 5 (first comma segment;
+    # GECOS carries office/phone after it) when that yields nothing. Like
+    # the username, the discovered value is a REAL identifying value that
+    # must never be committed, so its literal is scanned through files and
+    # history (case-insensitively, like the hostname — a lowercased leak is
+    # still a leak) and the finding class display-name is never
+    # suppressible (NEVER_SUPPRESSED). Guards, in the whoami/hostname
+    # discipline: empty and failed discoveries are silent skips (the
+    # platform exposes no name), and a value that is not NAME-SHAPED (not
+    # two-plus word runs totalling 8-plus — e.g. a bare username echoed
+    # back) is skipped with a note, because the personal-name LABEL
+    # detector's own value anchor uses exactly that shape and a non-shaped
+    # display value carries no name to leak. Like whoami/hostname, this is
+    # a runtime value the selftest cannot pin — it differs per machine.
+    _display=$(id -F 2>/dev/null) || _display=
+    if [ -z "$_display" ] && command -v getent >/dev/null 2>&1; then
+        _display=$(getent passwd "$(id -un 2>/dev/null)" 2>/dev/null |
+            cut -d: -f5 | cut -d, -f1) || _display=
+    fi
+    if [ -n "$_display" ]; then
+        if ! printf '%s' "$_display" | grep -qE -- "$PERSONAL_NAME_VALUE"; then
+            printf 'audit: note: skipping display-name check: value is not name-shaped (two-plus word runs, 8-plus chars)\n'
+            _display=
+        fi
+    fi
 
     case "$GENERIC_USERS" in
     *" $_user "*)
@@ -2075,6 +2351,7 @@ default_audit() {
         scan_literal hostname "$_f" "$_scan" "$_host" ic
         scan_literal hostname "$_f" "$_scan" "$_host_short" ic
         scan_literal aws-profile-name "$_f" "$_scan" "$_profile"
+        scan_literal display-name "$_f" "$_scan" "$_display" ic
         drop_scan_temp "$_scan" "$ROOT/$_f"
     done <"$_files" >"$_results"
     rm -f "$_files"
@@ -2083,7 +2360,7 @@ default_audit() {
     # values pass through so history gets the same literal scans the
     # tracked-file loop above applies.
     scan_history "$_bucket" "$_user" "$_host" "$_host_short" "$_profile" \
-        >>"$_results"
+        "$_display" >>"$_results"
 
     if [ -s "$_results" ]; then
         printf 'audit: FAIL - %s finding(s)\n' "$(grep -c . "$_results")"
@@ -2251,6 +2528,7 @@ selftest() {
     st_shape_matrix || _status=1
     st_value_tables || _status=1
     st_spec27_map || _status=1
+    st_tfstate_checks || _status=1
     st_hook_smoke || _status=1
     st_message_file || _status=1
     rm -f "$ST_WORK"/* 2>/dev/null

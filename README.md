@@ -669,7 +669,13 @@ shape is required — with an explicit generic-value
 exclusion (default, example, examples, placeholder, value, name, profile,
 none, test: words that name the slot, not a profile anyone selected), so
 `AWS_PROFILE=<profile>` placeholders (angle brackets cannot match),
-`AWS_PROFILE=default` boilerplate and prose never trip, and the serial label
+`AWS_PROFILE=default` boilerplate and prose never trip, the personal-name
+label family (`personal name`, `full name`, `real name` in any spelling —
+never the bare `name` key of ordinary code) anchored to a two-run name
+shape (each run 3-plus, totalling 8-plus, with a small form-boilerplate
+exclusion set for values like `Not Applicable`), so `Personal Name: Alice
+Smith` fires while `Personal Name: the name of the person`, single tokens,
+placeholders and very short names stay silent, and the serial label
 (`serial number`, `SerialNumber`, `serial_number`, `Machine Serial
 Number: …` — a `machine` prefix word needs no handling of its own)
 requires one post-label token of 8-plus carrying both a letter and a
@@ -695,9 +701,16 @@ runtime values as findings if they
 appear in tracked files or in history (commit message bodies and patches
 alike): the bucket name from your local untracked
 `terraform/bootstrap/terraform.tfvars`, plus your local `whoami` and `hostname`
-values, and — when set to a specific-enough name — your `AWS_PROFILE`
+values, your account's display name (the GECOS/full-name field via
+`id -F` on macOS or `getent passwd` on Linux, skipped with a note when the
+platform exposes none or the value is not name-shaped), and — when set to
+a specific-enough name — your `AWS_PROFILE`
 value, the SSO profile this machine selects (generic values such as
-`default` are skipped, like generic CI usernames). `--selftest` runs the same engine over the synthetic fixtures in
+`default` are skipped, like generic CI usernames). Tracked and historical
+`*.tfstate`/`*.tfstate.*` PATHS are findings too — in the worktree and in
+every commit's changed-path list — so even a minimal
+`{"version":4,...}` state file, or one committed and later deleted, is
+caught independently of its content. `--selftest` runs the same engine over the synthetic fixtures in
 `tests/fixtures/audit/` (each constructed to trip a detector) and exits 0 only
 if every detector fires — it proves the audit itself still works. The fixture
 directory is excluded from the default audit by path (that is its purpose), as
