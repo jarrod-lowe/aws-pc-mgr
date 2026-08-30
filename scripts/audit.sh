@@ -756,8 +756,10 @@ emit_hits() {
             # shape restriction used to keep out is excluded HERE instead,
             # by the shared eh_all_generic helper: every captured value,
             # lowercased and trimmed of leading quotes and trailing
-            # dot/underscore/dash (`aws_profile = "default."` is
-            # boilerplate, not a finding), must be one of GENERIC_PROFILES
+            # value-alphabet punctuation (`aws_profile = "default."` is
+            # boilerplate, not a finding; the trim set is the value
+            # class's own punctuation so `default,` reduces the same way)
+            # , must be one of GENERIC_PROFILES
             # or the finding stands. An empty extraction also stands —
             # over-detection stays the safe direction — and the marker and
             # history rules above are untouched. The
@@ -765,7 +767,7 @@ emit_hits() {
             # share the helper.
             if [ "$_eh_name" = 'aws-sso-profile' ] &&
                 eh_all_generic "$GENERIC_PROFILES" \
-                    "${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}" 's/[._-]*$//'; then
+                    "${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}" 's/[.,+@_-]*$//'; then
                 continue
             fi
             # Serial-property gate (machine-serial-number only), mirroring
