@@ -41,3 +41,4 @@ Windows account: -svc
 Windows username: $svc
 Windows account: !svc
 Windows username: Élodie
+Windows username: unknown svc

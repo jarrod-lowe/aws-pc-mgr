@@ -639,7 +639,17 @@ WINUSER_LABEL="((user|logon)${LABEL_WORD_SEP}name|(windows|win|local)${LABEL_WOR
 # variable). Bracket order: the byte range sits between `9` and the
 # trailing literal hyphen, so `0-9` and `\200-\377` are both ranges and
 # the trailing `-` stays literal.
-WINUSER_VALUE="[!#\$%&'().@^_{}~A-Za-z0-9${_highrange}-]+"
+# SAM account names also allow INTERNAL single spaces ("unknown svc" is
+# one account, not the filler `unknown` plus a word), so the value is a
+# run of name words joined by whitespace — the generic gates compare the
+# WHOLE captured value line-wise, so a two-word account can never be
+# suppressed by its first word matching a filler. The prose cost is
+# deliberate: multi-word text behind the label now fires unless the
+# entire captured value is a generic (over-detection, the safe
+# direction). HOSTNAME_VALUE stays single-token (DNS names have no
+# spaces) and so does the profile class.
+WINUSER_WORD="[!#\$%&'().@^_{}~A-Za-z0-9${_highrange}-]+"
+WINUSER_VALUE="${WINUSER_WORD}([[:space:]]+${WINUSER_WORD})*"
 HOSTNAME_LABEL="(host|computer|machine)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 HOSTNAME_VALUE='[A-Za-z0-9][A-Za-z0-9.-]*'
 LABEL_DETECTORS="aws-secret-access-key:(aws${LABEL_WORD_SEP})?secret${LABEL_WORD_SEP}access${LABEL_WORD_SEP}key[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
@@ -708,12 +718,19 @@ eh_all_generic() {
         sed -e 's/^[^=:]*:=//' -e 's/^[^=:]*[=:][[:space:]]*//' \
             -e "s/^[\"']*//")
     [ -n "$_ag_vals" ] || return 1
-    for _ag_val in $_ag_vals; do
+    # Values are compared WHOLE, one per line: the username class captures
+    # multi-word account names ("unknown svc"), and a word-split loop would
+    # test each word against the filler set and suppress the finding on its
+    # first word alone.
+    while IFS= read -r _ag_val; do
+        [ -n "$_ag_val" ] || continue
         case "$_ag_set" in
         *" $_ag_val "*) ;;
         *) return 1 ;;
         esac
-    done
+    done <<EOF
+$_ag_vals
+EOF
     return 0
 }
 
@@ -2155,7 +2172,8 @@ windows-username-labeled|M|username = "svc-win-ci"
 windows-username-labeled|M|"UserName": "LocalAdmin1"
 windows-username-labeled|M|win_username := alice.smith
 windows-username-labeled|M|USER-NAME: svc-win-ci
-windows-username-labeled|X|Windows username: the local account
+windows-username-labeled|M|Windows username: the local account
+windows-username-labeled|M|Windows username: unknown svc
 windows-username-labeled|X|username: your
 windows-username-labeled|X|username: this
 windows-username-labeled|X|username: none

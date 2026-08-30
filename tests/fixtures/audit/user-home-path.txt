@@ -18,3 +18,4 @@ copy "%USERPROFILE%\.aws\config" D:\backup\
 ~/.aws/config and $HOME/.aws/config identify nobody
 C:\Users\$svc\.aws\config
 C:\Users\Élodie\.aws\config
+C:\Users\John Smith-x\.aws\config
