@@ -10,6 +10,7 @@
 Windows hostname: ALICE-PC
 hostname = "build-runner-01"
 Computer Name: DESKTOP-PC1
+Machine Name: ALICE-PC
 "hostname": "ci-host.example.internal"
 host_name := ALICE-PC
 HOSTNAME=build-runner-01

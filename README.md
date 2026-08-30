@@ -670,9 +670,13 @@ exclusion (default, example, examples, placeholder, value, name, profile,
 none, test: words that name the slot, not a profile anyone selected), so
 `AWS_PROFILE=<profile>` placeholders (angle brackets cannot match),
 `AWS_PROFILE=default` boilerplate and prose never trip, the labeled
-Windows-identifier labels (`username` — as `Windows username:`,
-`win_username`, `UserName`, `user.name`; alternated `hostname` /
-`computer name` — as a Windows `hostname` or `ComputerName` key) anchored
+Windows-identifier labels (the `username` core — `Windows username:`,
+`win_username`, `UserName`, `user.name` — plus the Windows-qualified nouns
+`Windows user:`, `Windows account:`, `LocalAccount`, `SamAccountName`,
+`logon name`; the hostname label alternation `hostname` / `computer name` /
+`machine name` — every alternative is decided in the LABEL VOCABULARY
+TABLE inside scripts/audit.sh, with bare `user`/`account` and `login
+name` deliberately excluded) anchored
 to a single identifier run of any length with doc-filler sets excluded after the
 match (a labeled `root` or `Administrator` is a finding, not filler), so a
 labeled identifier on the Windows machine is caught as committed content

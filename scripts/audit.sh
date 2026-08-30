@@ -560,9 +560,41 @@ PERSONAL_NAME_VALUE="([A-Za-z][A-Za-z'.-]{4,}[[:space:]]+[A-Za-z][A-Za-z'.-]{2,}
 # standard exclusions, maximally loosened anchors) found ZERO label-adjacent
 # values, so nothing in this repository gates on them; the sets exist for
 # future prose. Both classes are marker-suppressible label classes.
-WINUSER_LABEL="user${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
+# LABEL VOCABULARY TABLE (review round 30, thread 3888296684): the label
+# words these two detectors accept, each alternative decided explicitly —
+# the third vocabulary addition (security token, computer name, Windows
+# user/account) made the dimension a table so every future proposal has a
+# landing place. Windows-username class:
+#   user…name            INCLUDE  core (UserName, user_name, USER-NAME)
+#   windows/win…user     INCLUDE  reviewer's line — the Windows qualifier
+#                                  makes the bare noun specific enough
+#   windows/win…account  INCLUDE  ditto (`Windows account: bob`)
+#   local…user/account   INCLUDE  `net user`/LocalAccount-style tooling
+#                                  output; LocalAccount matches via the
+#                                  empty separator
+#   sam…account(…name)?  INCLUDE  AD/PowerShell `SamAccountName : alice`
+#                                  dumps; the optional name suffix is the
+#                                  same (sep*word)? shape account-id and
+#                                  serial use
+#   logon…name           INCLUDE  Windows whoami/audit dump spelling
+#                                  (Windows-only word, not a schema column)
+#   login…name           EXCLUDE  cross-platform schema/form column
+#                                  (login_name) whose values are app-level
+#                                  usernames, not machine accounts
+#   bare user / account  EXCLUDE  ordinary nouns — code and prose
+#                                  everywhere; the qualifier is load-bearing
+#   computer account     EXCLUDE  identifies a MACHINE and its value
+#                                  carries a trailing `$` outside the value
+#                                  class; machine…name (below) carries the
+#                                  same identifier
+# Hostname class:
+#   host…name            INCLUDE  core
+#   computer…name        INCLUDE  Windows-UI Computer Name
+#   machine…name         INCLUDE  round 30: `Machine Name: ALICE-PC`
+#                                  sysinfo-style output
+WINUSER_LABEL="((user|logon)${LABEL_WORD_SEP}name|(windows|win|local)${LABEL_WORD_SEP}(user|account)|sam${LABEL_WORD_SEP}account(${LABEL_WORD_SEP}name)?)[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 WINUSER_VALUE='[A-Za-z0-9][A-Za-z0-9._-]*'
-HOSTNAME_LABEL="(host|computer)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
+HOSTNAME_LABEL="(host|computer|machine)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 HOSTNAME_VALUE='[A-Za-z0-9][A-Za-z0-9.-]*'
 LABEL_DETECTORS="aws-secret-access-key:(aws${LABEL_WORD_SEP})?secret${LABEL_WORD_SEP}access${LABEL_WORD_SEP}key[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
 aws-activation-code:activation${LABEL_WORD_SEP}code[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
@@ -1307,6 +1339,24 @@ st_form() {
     'computer 0') printf 'computer' ;;
     'computer 1') printf 'COMPUTER' ;;
     'computer 2') printf 'Computer' ;;
+    'windows 0') printf 'windows' ;;
+    'windows 1') printf 'WINDOWS' ;;
+    'windows 2') printf 'Windows' ;;
+    'win 0') printf 'win' ;;
+    'win 1') printf 'WIN' ;;
+    'win 2') printf 'Win' ;;
+    'local 0') printf 'local' ;;
+    'local 1') printf 'LOCAL' ;;
+    'local 2') printf 'Local' ;;
+    'sam 0') printf 'sam' ;;
+    'sam 1') printf 'SAM' ;;
+    'sam 2') printf 'Sam' ;;
+    'logon 0') printf 'logon' ;;
+    'logon 1') printf 'LOGON' ;;
+    'logon 2') printf 'Logon' ;;
+    'machine 0') printf 'machine' ;;
+    'machine 1') printf 'MACHINE' ;;
+    'machine 2') printf 'Machine' ;;
     *)
         printf 'selftest: internal: st_form: no case form for word "%s"\n' \
             "$1" >&2
@@ -1501,7 +1551,10 @@ st_check() {
 # (EXAMPLE repetition, alphabet wrap, SYNTHETIC-word prefix, ascending
 # digits) so no server-side secret scanner can mistake it for entropy.
 # The first check below fails if this registry and LABEL_DETECTORS ever
-# name different detectors, in either direction.
+# name different detectors, in either direction. Word-set rows cover every
+# label word and both label shapes; the optional-suffix three-word form
+# (sam…account…name) is pinned by value-table rows — a full matrix row
+# for it costs 18k variants of machinery every other row already sweeps.
 MATRIX_LABEL_SETS='aws-secret-access-key|secret access key|EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE,EXAMPLEEXAMPLEEXAMPLEEXAMPLE+/==ABC,ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
 aws-secret-access-key|aws secret access key|EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE,EXAMPLEEXAMPLEEXAMPLEEXAMPLE+/==ABC,ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
 aws-activation-code|activation code|SYNTHETICACTIVATIONCODE01234567,aaaa/bbbb+
@@ -1519,7 +1572,14 @@ personal-name|full name|Alice Smith,Jean-Pierre Blanc,Mary Jane Watson
 personal-name|real name|Alice Smith,Jean-Pierre Blanc,Mary Jane Watson
 windows-username-labeled|user name|alice.smith,svc-win-ci,LocalAdmin1
 hostname-labeled|host name|ALICE-PC,build-runner-01,ci-host.example.internal
-hostname-labeled|computer name|ALICE-PC,build-runner-01,ci-host.example.internal'
+hostname-labeled|computer name|ALICE-PC,build-runner-01,ci-host.example.internal
+hostname-labeled|machine name|ALICE-PC,build-runner-01,ci-host.example.internal
+windows-username-labeled|windows user|alice.smith,svc-win-ci,LocalAdmin1
+windows-username-labeled|windows account|alice.smith,svc-win-ci,LocalAdmin1
+windows-username-labeled|win account|alice.smith,svc-win-ci,LocalAdmin1
+windows-username-labeled|local account|alice.smith,svc-win-ci,LocalAdmin1
+windows-username-labeled|sam account|alice.smith,svc-win-ci,LocalAdmin1
+windows-username-labeled|logon name|alice.smith,svc-win-ci,LocalAdmin1'
 
 st_label_matrix() {
     _lm_status=0
@@ -1974,6 +2034,11 @@ personal-name|X|personal_name: …
 personal-name|X|real_name = var.instance_name
 personal-name|X|fullname = each.person.name
 windows-username-labeled|M|Windows username: alice.smith
+windows-username-labeled|M|Windows user: bob
+windows-username-labeled|M|Windows account: bob
+windows-username-labeled|M|LocalAccount = alice
+windows-username-labeled|M|sAMAccountName: alice.smith
+windows-username-labeled|M|logon name: alice
 windows-username-labeled|M|username = "svc-win-ci"
 windows-username-labeled|M|"UserName": "LocalAdmin1"
 windows-username-labeled|M|win_username := alice.smith
@@ -1991,12 +2056,17 @@ windows-username-labeled|M|username: q
 windows-username-labeled|X|username: …
 windows-username-labeled|X|User Name: name
 windows-username-labeled|X|username
+windows-username-labeled|X|user: bob
+windows-username-labeled|X|account: bob
+windows-username-labeled|X|login name: alice
+windows-username-labeled|X|computer account: PC1
 hostname-labeled|M|Windows hostname: ALICE-PC
 hostname-labeled|M|hostname = "build-runner-01"
 hostname-labeled|M|Computer Name: DESKTOP-PC1
 hostname-labeled|M|"hostname": "ci-host.example.internal"
 hostname-labeled|M|host_name := ALICE-PC
 hostname-labeled|M|HOSTNAME=build-runner-01
+hostname-labeled|M|Machine Name: ALICE-PC
 hostname-labeled|X|hostname: localhost
 hostname-labeled|X|hostname: hostname
 hostname-labeled|X|hostname: computer
