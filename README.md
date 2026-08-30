@@ -609,8 +609,30 @@ Test date:               <yyyy-mm-dd>
 ### audit.sh
 
 ```sh
-scripts/audit.sh             # audit the repository; exit 1 on any finding
-scripts/audit.sh --selftest  # prove every detector still fires on synthetic fixtures
+scripts/audit.sh                          # audit the repository; exit 1 on any finding
+scripts/audit.sh --selftest               # prove every detector still fires on synthetic fixtures,
+                                          #   a generated spelling matrix, value must/must-not
+                                          #   tables, and the SPEC §27 coverage map
+scripts/audit.sh --message-file FILE      # pre-commit gate: the same detectors over PROPOSED
+                                          #   commit-message text; exit 1 on any finding
+```
+
+`--message-file` is the gate for **commit message text**: the default audit
+scans message bodies as content, but only after the commit exists, when the
+fix is history surgery. Twice a commit has quoted a detector-tripping value
+in its body and the audit went red only afterwards; checking the message
+before committing makes that class impossible to create. Suppression is
+deliberately unavailable in this mode — uncommitted text has no standing
+annotations, so reword the message. The runtime per-machine value checks are
+skipped (they describe this machine, not proposed content).
+
+**pre-push hook.** `scripts/hooks/pre-push` runs the full audit as the last
+gate before commits leave the machine — the last point at which
+`git commit --amend` still fixes a finding for free. Install it once per
+clone (git does not track `.git/hooks`):
+
+```sh
+git config core.hooksPath scripts/hooks
 ```
 
 The default audit scans all tracked files — text directly, UTF-16 files
@@ -650,10 +672,11 @@ none, test: words that name the slot, not a profile anyone selected), so
 `AWS_PROFILE=default` boilerplate and prose never trip, and the serial label
 (`serial number`, `SerialNumber`, `serial_number`, `Machine Serial
 Number: …` — a `machine` prefix word needs no handling of its own)
-requires one unbroken run holding both a letter and a digit — including
-letters-then-digits serials such as `ABC12345` through a dedicated third
-alternative — so free text and a Terraform state file's pure-digit
-`"serial": 57` counter never trip —
+requires one post-label token of 8-plus carrying both a letter and a
+digit — a **property**, not a positional pattern, so any interleaving
+(`ABC12345`, `ABC-12345`, `ABCDEFG1`, `ABC1234Z`) fires while free text,
+a Terraform state file's pure-digit `"serial": 57` counter and
+pure-letter words never do —
 managed-node IDs (`mi-...`), UUID
 literals, SSO start URLs (any scheme/host capitalization), email addresses, 12-digit account IDs in ARNs
 of any service (empty-region `arn:aws:iam::…` style or regional

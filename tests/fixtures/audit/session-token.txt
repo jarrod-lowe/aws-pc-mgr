@@ -7,3 +7,7 @@
 # synthetic literals such as 'Session Token: EXAMPLE' in the Windows-tier
 # tests and prose mentions cannot false-positive. Synthetic value.
 AWS_SESSION_TOKEN=SYNTHETICSESSIONTOKEN0123456789
+# Dotted-key and Makefile :=: assignment spellings the label grammar
+# accepts (found by the selftest spelling matrix). Synthetic value.
+session.token = SYNTHETICSESSIONTOKEN0123456789
+aws_session_token := SYNTHETICSESSIONTOKEN0123456789

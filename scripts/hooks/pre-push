@@ -1,0 +1,35 @@
+#!/bin/sh
+# pre-push — SPEC §27 repository-hygiene gate.
+#
+# Runs the full audit (every tracked file plus the ENTIRE history: commit
+# message bodies and patches, all refs) before the push leaves the
+# machine. This is the last gate at which fixing is still cheap: until
+# the commits are public, `git commit --amend` (or an interactive rebase)
+# rewrites a finding away for free; after the push the same fix takes
+# history surgery and a coordinated re-clone.
+#
+# The audit scans commit MESSAGE BODIES as content, so a message that
+# quotes a detector-tripping value — synthetic or not — fails here, after
+# the fact. Check proposed message text BEFORE committing with:
+#
+#     bash scripts/audit.sh --message-file <message-file>
+#
+# which runs the same detectors over uncommitted message text and exits 1
+# on any finding. Uncommitted text cannot carry the suppression marker:
+# reword the message instead.
+#
+# Install once per clone (git does not track .git/hooks):
+#
+#     git config core.hooksPath scripts/hooks
+
+_pp_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd) || {
+    printf 'pre-push: error: cannot locate repository root\n' >&2
+    exit 1
+}
+bash "${_pp_root}/scripts/audit.sh"
+_pp_rc=$?
+if [ "$_pp_rc" -ne 0 ]; then
+    printf 'pre-push: audit failed - findings above; unpushed commits can still be amended for free\n' >&2
+    printf 'pre-push: check proposed commit messages beforehand: bash scripts/audit.sh --message-file <file>\n' >&2
+fi
+exit "$_pp_rc"

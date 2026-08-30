@@ -5,13 +5,60 @@
 # Usage:
 #   scripts/audit.sh              audit repo; exit 1 on any finding, 0 if clean
 #   scripts/audit.sh --selftest   run the same detection engine over the
-#                                 synthetic fixtures in tests/fixtures/audit/;
-#                                 exit 0 iff every fixture class is detected
-#                                 as expected, including the two marker
+#                                 synthetic fixtures in tests/fixtures/audit/
+#                                 AND over three generated checks (see the
+#                                 harness section above selftest()): a
+#                                 generative spelling matrix, per-detector
+#                                 value must/must-not tables, and a SPEC §27
+#                                 coverage map. Exit 0 iff every fixture class
+#                                 is detected as expected, every generated
+#                                 variant fires (or stays silent) as expected,
+#                                 and the §27 bullet list maps onto the
+#                                 detector classes — including the two marker
 #                                 fixtures: synthetic values carrying the
 #                                 suppression marker stay silent, and an
 #                                 AKIA key shape carrying the marker is still
 #                                 detected (hard rule below)
+#   scripts/audit.sh --scan-file NAME PATH
+#                              [INTERNAL TEST HOOK] run the full engine
+#                                 (every detector, the emit_hits marker /
+#                                 generic-profile gates) over ONE file, with
+#                                 the standard exclusions (a NAME naming
+#                                 this script or the fixture directory is
+#                                 skipped silently), and print the FINDING
+#                                 lines. ALWAYS exits 0 — findings do not
+#                                 change the status — so an external harness
+#                                 can assert on the printed records. This
+#                                 exists so test harnesses drive the REAL
+#                                 engine instead of sed-extracting a copy of
+#                                 it (which breaks whenever the script's
+#                                 shape changes); the selftest below uses
+#                                 the internal functions directly and keeps
+#                                 one CLI smoke test on this mode so the
+#                                 hook itself cannot rot. Wrong argument
+#                                 count is a usage error (exit 2); a missing
+#                                 PATH prints an error and exits 0 with no
+#                                 findings (the caller's own count asserts
+#                                 then fail, loudly).
+#   scripts/audit.sh --message-file FILE
+#                              PRE-COMMIT GATE for commit-message text:
+#                                 the full engine (label + shape detectors)
+#                                 over a proposed message file, findings
+#                                 printed, exit 1 on any. The marker and
+#                                 history-equivalence suppressions are OFF
+#                                 — uncommitted text has no standing
+#                                 annotations, so a tripping line must be
+#                                 reworded — and the runtime per-machine
+#                                 value checks are skipped (they describe
+#                                 this machine, not proposed content). The
+#                                 default audit scans commit message bodies
+#                                 too, but only AFTER the commit exists;
+#                                 this mode is how a message is checked
+#                                 BEFORE it needs history surgery to fix.
+#                                 scripts/hooks/pre-push runs the full
+#                                 audit as the last pre-push gate (while
+#                                 --amend is still free) and points here
+#                                 for messages.
 #
 # What the default audit scans:
 #   * tracked files (git ls-files) — text files directly, UTF-16 files
@@ -30,6 +77,14 @@
 #     history — both the message-body and the patch stream),
 #   * the bucket_name from the local untracked terraform/bootstrap/
 #     terraform.tfvars, if that file exists (tracked files and history),
+#   * a path-level Terraform-state check: any TRACKED file matching
+#     *.tfstate or *.tfstate.* is an explicit terraform-state-tracked
+#     finding (SPEC §27 "Terraform state"), mirroring .gitignore. The
+#     marker never applies to it — a state file is never synthetic, and
+#     the finding is about the path, not a line. History is covered
+#     content-wise: a state file's patch text goes through every
+#     detector like any other patch, so its ARNs, account IDs and
+#     credentials still fire there.
 #   * the value of AWS_PROFILE, when it is set to a specific-enough profile
 #     name (tracked files and history, both streams): the SSO/IAM Identity
 #     Center profile this machine selects is a committed-content item of
@@ -84,19 +139,26 @@
 # $AWS_PROFILE guard in default_audit applies the same rule and the same
 # set.
 #
-# The machine-serial-number detector anchors the same way: the value is ONE
-# unbroken run carrying both a letter and a digit, so `serial number: see
-# the underside of the device` (spaces break the run, and no mixed run
-# exists) never trips, and neither does a pure-digit run (a Terraform state
-# file's `"serial": 57` growth counter) or a pure-letter word. Serials whose
-# letters all precede their digits (`ABC12345`, a standard hardware-serial
-# shape) are covered by a third alternative of their own,
-# `[A-Za-z]{3,}[0-9]{5,}` — at least eight characters by construction, with
-# a 3-plus letter run and a 5-plus digit run inside ONE token. That
-# alternative is prose-safe because it fires only after the serial label
-# anchor: an ordinary prose word following `serial:` never holds both a
-# three-letter run and a five-digit run in one unbroken token, and
-# over-detection remains the safe direction.
+# The machine-serial-number detector anchors on a PROPERTY, not a
+# positional pattern: after the serial label and assignment anchor, the
+# value must be a single post-label token of 8-plus characters
+# (SERIAL_VALUE), and emit_hits's serial-property gate then requires that
+# token to contain BOTH at least one letter and at least one digit. The
+# detector ERE deliberately only proves "one 8-plus token after the
+# label" — earlier revisions enumerated positional alternatives
+# (letters-then-digits, digit-then-letter-plus-tail, ...) and each new
+# hardware-serial interleaving (`ABCDEFG1`, `ABC1234Z`) found in review
+# was another miss; a property cannot be misspelled. What the property
+# keeps out: free text (`serial number: see the underside of the device`
+# — no single 8-plus token after the separator at all), pure-digit runs
+# (a Terraform state file's `"serial": 123456789` growth counter — a
+# digit-only token has no letter), and pure-letter words (`serial:
+# rotation` — no digit). A token that carries both, however sparse the
+# interleaving (`9mtxaaaaaa`, `ABC-12345`, `1A2B3C4D5E`), is a finding.
+# The gate follows the profile gate's empty-capture rule: an empty
+# re-anchored capture keeps the finding — over-detection remains the
+# safe direction — and only a capture in which NO token holds both a
+# letter and a digit is skipped.
 #
 # The user-home-path shape detector (Windows drive-letter form, macOS
 # /Users form, Linux /home form) anchors on the ORIGINAL line: the username
@@ -138,6 +200,25 @@
 #   runtime-discovered values (real activation IDs/codes, keys, account,
 #   bucket, machine or person identifiers) must never be committed, and the
 #   marker does not make committing one acceptable.
+#
+#   SYNTHETIC-KEY CONVENTION (learned from GitHub push protection, which
+#   rejected a push of this repository): server-side secret scanners do
+#   not honor this script's path exclusions — any synthetic key material
+#   pushed in ANY file is pattern-matched as real. Therefore ALL synthetic
+#   key material anywhere in this repository — fixtures, the selftest
+#   harness's generator value pools, selftest messages, documentation
+#   examples — must be DETERMINISTIC SEQUENTIAL PATTERNS with zero
+#   apparent entropy, so no scanner's confidence model can mistake it for
+#   a real credential: access-key bodies are alphabet wraps
+#   (`AKIAQRSTUVWXYZHIJKLMNOP`) or ascending digits (`0123456789012345`),
+#   secret-key bodies are EXAMPLE repetition or an alphabet wrap,
+#   session/activation/token values carry a SYNTHETIC… word prefix with
+#   sequential padding. Pseudo-random-looking synthetic values (mixed
+#   random case and digit runs) are FORBIDDEN, even inside the harness's
+#   temp-file generators and even though this script itself is excluded
+#   from its own scan: the literals still get pushed. The value pools in
+#   MATRIX_LABEL_SETS, st_shape_matrix, st_value_tables, st_hook_smoke and
+#   st_message_file are the enforcement points of this rule.
 #
 #   HARD RULE (no exception, by construction): the marker NEVER suppresses
 #   real AWS key material. A line matching an AKIA…/ASIA… access or session
@@ -240,10 +321,20 @@ GENERIC_PROFILES=' default example examples placeholder value name profile none 
 #     (scan_stream below), so their EREs are written lowercase-only and
 #     match every case variant of the label — lowercase, UPPER, camelCase,
 #     MiXeD — without enumerating any of them. Between the words of a
-#     label, `[[:space:]_-]*` accepts every separator spelling: none
-#     (camelCase), `-`, `_`, a space, or any run mixing them, so
-#     `activation_code`, `ACTIVATION-CODE`, `Activation Code` and
-#     `activationcode` are all the same pattern.
+#     label, LABEL_WORD_SEP (`[[:space:]_.-]*`) accepts every separator
+#     spelling: none (camelCase), `-`, `_`, `.`, a space, or any run
+#     mixing them, so `activation_code`, `ACTIVATION-CODE`,
+#     `Activation Code`, `activation.code` and `activationcode` are all
+#     the same pattern. The `.` member was added by the selftest matrix
+#     (dotted config keys — Java properties, TOML dotted keys, dotted
+#     .env — are a real-world spelling the class originally missed:
+#     `aws.account.id=123456789012` used to pass silently). The
+#     assignment separator LABEL_ASSIGN (`[=:]` or the Makefile/Go
+#     `:=`) was widened by the same matrix: `account_id := 123456789012`
+#     in a Makefile used to pass silently too. Both widenings keep the
+#     prose safety exactly where it always lived — in the value anchors
+#     and the requirement that an assignment separator be present — so
+#     a sentence merely containing the label words still never matches.
 #   * SHAPE detectors (SHAPE_DETECTORS) anchor on the VALUE's shape, whose
 #     grammar is case-bearing — AKIA…/ASIA… key IDs are uppercase, UUIDs
 #     and managed-node IDs are lowercase hex, SSO start URLs and email
@@ -305,15 +396,16 @@ GENERIC_PROFILES=' default example examples placeholder value name profile none 
 # The SSO-profile and machine-serial detectors are the same label machinery
 # with value anchors chosen for values that are SHORT arbitrary strings —
 # there, prose safety cannot come from value length alone: a serial value
-# must be one unbroken run holding both a letter and a digit (see the header
-# notes for what that keeps out), while a profile value cannot be shaped at
-# all (letter-only names are real), so it is only length-floored
-# (AWS_PROFILE_VALUE) and the prose safety lives in the generic-value gate
-# emit_hits applies to that detector (GENERIC_PROFILES; see header). The
-# profile label is aws-prefixed only — bare `profile` is a documented HCL
-# key — while the serial label needs no `machine` prefix of its own: the
-# label matches a span, so `MachineSerialNumber` is covered by
-# `serial…number` inside it.
+# is a PROPERTY, not a positional pattern (see the header notes: one
+# post-label token of 8-plus carrying both a letter and a digit, enforced
+# by the serial-property gate in emit_hits), while a profile value cannot
+# be shaped at all (letter-only names are real), so it is only
+# length-floored (AWS_PROFILE_VALUE) and the prose safety lives in the
+# generic-value gate emit_hits applies to that detector (GENERIC_PROFILES;
+# see header). The profile label is aws-prefixed only — bare `profile` is
+# a documented HCL key — while the serial label needs no `machine` prefix
+# of its own: the label matches a span, so `MachineSerialNumber` is
+# covered by `serial…number` inside it.
 #
 # The user-home-path detector is a SHAPE detector because what it anchors
 # on — a username inside a filesystem path — is case-bearing free text with
@@ -331,6 +423,15 @@ GENERIC_PROFILES=' default example examples placeholder value name profile none 
 # backslash under every regcomp.
 PATH_SEP_CLASS='[\\/]'
 QUOTE_CLASS="[\"']?"
+# LABEL_WORD_SEP is the inter-word separator span of every label detector and
+# LABEL_ASSIGN its assignment separator; both are shared by every ERE below
+# (and by AWS_PROFILE_LABEL, hence by the generic-value gate in emit_hits), so
+# the spelling grammar lives in exactly one place and the selftest matrix can
+# regenerate its variant cross-product from these definitions' documented
+# grammar. See the engine notes above each list for what each class member is
+# for; the matrix in the selftest harness asserts the closure.
+LABEL_WORD_SEP='[[:space:]_.-]*'
+LABEL_ASSIGN='([=:]|:=)'
 # AWS_PROFILE_LABEL is the label+separator+quote anchor of the aws-sso-profile
 # detector, AWS_PROFILE_VALUE its value anchor. Both are shared between the
 # detector ERE in LABEL_DETECTORS and the generic-value gate in emit_hits
@@ -339,14 +440,22 @@ QUOTE_CLASS="[\"']?"
 # deliberately shape-free — one unbroken 4-plus run in any mix, because
 # letter-only profile names (`production`) are real — so the prose/placeholder
 # safety lives in the gate, not here.
-AWS_PROFILE_LABEL="aws[[:space:]_-]*profile[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}"
+AWS_PROFILE_LABEL="aws${LABEL_WORD_SEP}profile[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 AWS_PROFILE_VALUE='[A-Za-z0-9][A-Za-z0-9._-]{3,}'
-LABEL_DETECTORS="aws-secret-access-key:(aws[[:space:]_-]*)?secret[[:space:]_-]*access[[:space:]_-]*key[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
-aws-activation-code:activation[[:space:]_-]*code[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
-aws-session-token:(aws[[:space:]_-]*)?(session|security)[[:space:]_-]*token[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}
-account-id-context:account([[:space:]_-]*id)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}[[:space:]]*[0-9]{12}
+# SERIAL_LABEL/SERIAL_VALUE are the machine-serial-number detector's label
+# and value anchors, shared between the detector ERE and the serial-property
+# gate in emit_hits for the same reason AWS_PROFILE_LABEL/AWS_PROFILE_VALUE
+# are shared: the gate re-anchors exactly the tokens the detector matched.
+# The value anchor proves only "one 8-plus token after the label" — the
+# letter-and-digit property is the gate's job (see header).
+SERIAL_LABEL="serial(${LABEL_WORD_SEP}number)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
+SERIAL_VALUE='[A-Za-z0-9][A-Za-z0-9-]{7,}'
+LABEL_DETECTORS="aws-secret-access-key:(aws${LABEL_WORD_SEP})?secret${LABEL_WORD_SEP}access${LABEL_WORD_SEP}key[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
+aws-activation-code:activation${LABEL_WORD_SEP}code[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
+aws-session-token:(aws${LABEL_WORD_SEP})?(session|security)${LABEL_WORD_SEP}token[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}
+account-id-context:account(${LABEL_WORD_SEP}id)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[[:space:]]*[0-9]{12}
 aws-sso-profile:${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}
-machine-serial-number:serial([[:space:]_-]*number)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*[=:][[:space:]]*${QUOTE_CLASS}([A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]*[0-9][A-Za-z0-9-]{5,}|[A-Za-z0-9-]*[0-9][A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]{5,}|[A-Za-z]{3,}[0-9]{5,})"
+machine-serial-number:${SERIAL_LABEL}${SERIAL_VALUE}"
 SHAPE_DETECTORS="aws-access-key-id:AKIA[0-9A-Z]{16}
 aws-session-key-id:ASIA[0-9A-Z]{16}
 managed-node-id:mi-[a-f0-9]{8,}
@@ -388,10 +497,19 @@ emit_hits() {
     _eh_label=$2
     _eh_hits=$3
     [ -n "$_eh_hits" ] || return 0
-    case "$NEVER_SUPPRESSED" in
-    *" $_eh_name "*) _eh_gate=no ;;
-    *) _eh_gate=yes ;;
-    esac
+    # MARKER_GATE_OFF (set by --message-file): proposed commit-message text
+    # is UNCOMMITTED — it has no standing annotations, so the marker and
+    # history-equivalence suppressions are switched off entirely and every
+    # detector, suppressible or not, reports. See the header's --message-file
+    # notes.
+    if [ "${MARKER_GATE_OFF:-}" = yes ]; then
+        _eh_gate=no
+    else
+        case "$NEVER_SUPPRESSED" in
+        *" $_eh_name "*) _eh_gate=no ;;
+        *) _eh_gate=yes ;;
+        esac
+    fi
     case "$_eh_label" in
     'git-history '*) _eh_hist=yes ;;
     *) _eh_hist=no ;;
@@ -433,7 +551,7 @@ emit_hits() {
                 _eh_vals=$(printf '%s\n' "${_eh_hit#*:}" |
                     tr '[:upper:]' '[:lower:]' |
                     grep -oE -- "${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}" |
-                    sed -e 's/^[^=:]*[=:][[:space:]]*//' \
+                    sed -e 's/^[^=:]*:=//' -e 's/^[^=:]*[=:][[:space:]]*//' \
                         -e "s/^[\"']*//" -e 's/[._-]*$//')
                 _eh_generic=no
                 if [ -n "$_eh_vals" ]; then
@@ -446,6 +564,45 @@ emit_hits() {
                     done
                 fi
                 if [ "$_eh_generic" = yes ]; then
+                    continue
+                fi
+            fi
+            # Serial-property gate (machine-serial-number only), mirroring
+            # the generic-value gate's structure: the detector's value
+            # anchor deliberately proves only "one 8-plus token after the
+            # serial label" (SERIAL_LABEL + SERIAL_VALUE), because serials
+            # have no positional grammar — every positional pattern so far
+            # (letters-then-digits, digit-then-letter, hyphenated) missed
+            # the next interleaving someone found in review. The gate
+            # re-anchors the original line with the very ERE the detector
+            # matched, captures the token(s), and requires at least ONE
+            # captured token to contain BOTH a letter and a digit — that
+            # is the serial PROPERTY. Pure-digit tokens (a Terraform state
+            # file's growth counter) and pure-letter words (`rotation`)
+            # have no such token and are skipped; an empty capture keeps
+            # the finding (over-detection stays the safe direction); the
+            # marker and history rules above are untouched.
+            if [ "$_eh_name" = 'machine-serial-number' ]; then
+                _eh_vals=$(printf '%s\n' "${_eh_hit#*:}" |
+                    tr '[:upper:]' '[:lower:]' |
+                    grep -oE -- "${SERIAL_LABEL}${SERIAL_VALUE}" |
+                    sed -e 's/^[^=:]*:=//' -e 's/^[^=:]*[=:][[:space:]]*//' \
+                        -e "s/^[\"']*//")
+                _eh_keep=no
+                if [ -z "$_eh_vals" ]; then
+                    _eh_keep=yes
+                else
+                    for _eh_val in $_eh_vals; do
+                        case $_eh_val in
+                        *[A-Za-z]*)
+                            case $_eh_val in
+                            *[0-9]*) _eh_keep=yes ;;
+                            esac
+                            ;;
+                        esac
+                    done
+                fi
+                if [ "$_eh_keep" != yes ]; then
                     continue
                 fi
             fi
@@ -814,11 +971,1009 @@ scan_history() {
 }
 
 # ---------------------------------------------------------------------------
+# Selftest harness: generative spelling matrix, value must/must-not
+# tables, SPEC §27 coverage map
+# ---------------------------------------------------------------------------
+# Three classes of regression kept recurring in review rounds 19-23 —
+# spelling variance (one more case/separator form of a label someone
+# types), anchor over/under-matching (a value shape matching prose, or a
+# real value slipping under a floor), and SPEC §27 coverage drift (a new
+# §27 bullet with no detector behind it). The fixtures pin one instance
+# each; the three checks below retire the CLASSES:
+#
+#   * st_label_matrix — a closure proof over the label spelling grammar:
+#     for every LABEL detector, every word set it accepts, the cross
+#     product of per-word case forms × inter-word separators × assignment
+#     separators × quote styles × value alternatives, every generated
+#     line asserted to fire its detector. Generated, not sampled: a new
+#     spelling the engine mishandles fails the matrix the moment it is
+#     added to the grammar below (and the matrix registry fails loudly if
+#     a detector is added without one).
+#   * st_shape_matrix / st_value_tables — the same must/must-not
+#     discipline for SHAPE detectors (case products that must match and
+#     lookalikes that must not) and, per detector, value tables asserting
+#     BOTH directions: values that must fire and near-miss values (prose
+#     words, pure digits where excluded, sub-floor lengths, Unicode
+#     ellipsis, angle-bracket placeholders, generic profile values,
+#     quoted generics with trailing punctuation) that must stay silent.
+#   * st_spec27_map — SPEC.md §27's bullet list is PARSED at selftest
+#     runtime and every bullet must map to at least one detector class or
+#     documented runtime check; a mapping naming a class that does not
+#     exist, a §27 bullet with no mapping, a detector with no §27 anchor,
+#     or a §27 edit that renames the section all FAIL the selftest.
+#
+# Everything drives the REAL engine (scan_file / scan_stream) with the
+# standard exclusions; nothing re-implements a detector. POSIX sh only:
+# no arrays, no local, no process substitution, no GNU-only flags.
+
+# Work directory created by selftest() and removed by it; every harness
+# function below reads and writes its scratch files in here.
+ST_WORK=
+
+# st_form WORD INDEX — print WORD in case form INDEX (0 lower, 1 UPPER,
+# 2 Title). A static table: no per-call subprocesses (the matrix builds
+# ~10^5 lines), and a MATRIX_LABEL_SETS word missing here yields an empty
+# form, a broken spelling, and the count assertion's own FAIL — the
+# harness cannot drift silently.
+st_form() {
+    case "$1 $2" in
+    'aws 0') printf 'aws' ;;
+    'aws 1') printf 'AWS' ;;
+    'aws 2') printf 'Aws' ;;
+    'secret 0') printf 'secret' ;;
+    'secret 1') printf 'SECRET' ;;
+    'secret 2') printf 'Secret' ;;
+    'access 0') printf 'access' ;;
+    'access 1') printf 'ACCESS' ;;
+    'access 2') printf 'Access' ;;
+    'key 0') printf 'key' ;;
+    'key 1') printf 'KEY' ;;
+    'key 2') printf 'Key' ;;
+    'activation 0') printf 'activation' ;;
+    'activation 1') printf 'ACTIVATION' ;;
+    'activation 2') printf 'Activation' ;;
+    'code 0') printf 'code' ;;
+    'code 1') printf 'CODE' ;;
+    'code 2') printf 'Code' ;;
+    'session 0') printf 'session' ;;
+    'session 1') printf 'SESSION' ;;
+    'session 2') printf 'Session' ;;
+    'security 0') printf 'security' ;;
+    'security 1') printf 'SECURITY' ;;
+    'security 2') printf 'Security' ;;
+    'token 0') printf 'token' ;;
+    'token 1') printf 'TOKEN' ;;
+    'token 2') printf 'Token' ;;
+    'account 0') printf 'account' ;;
+    'account 1') printf 'ACCOUNT' ;;
+    'account 2') printf 'Account' ;;
+    'id 0') printf 'id' ;;
+    'id 1') printf 'ID' ;;
+    'id 2') printf 'Id' ;;
+    'profile 0') printf 'profile' ;;
+    'profile 1') printf 'PROFILE' ;;
+    'profile 2') printf 'Profile' ;;
+    'serial 0') printf 'serial' ;;
+    'serial 1') printf 'SERIAL' ;;
+    'serial 2') printf 'Serial' ;;
+    'number 0') printf 'number' ;;
+    'number 1') printf 'NUMBER' ;;
+    'number 2') printf 'Number' ;;
+    *)
+        printf 'selftest: internal: st_form: no case form for word "%s"\n' \
+            "$1" >&2
+        return 1
+        ;;
+    esac
+    return 0
+}
+
+# st_spellings WORDS OUT MODE — write to OUT every label spelling for
+# the space-separated WORDS: the product of per-word case forms ×
+# inter-word separators ('' space '_' '-' '.'). Iterative prefix
+# expansion, one word per round over a scratch file — deliberately NOT
+# recursive: POSIX sh has no local variables, so a recursive generator's
+# globals are clobbered by its own children (the first draft of this
+# function dropped each spelling's last word exactly that way). Each
+# intermediate line carries its case STATE before the spelling
+# ('u awsSecret', states separated by a space from the spelling, which
+# never contains one). MODE picks the case assignments generated:
+#   f  free — every word independently lower/UPPER/Title (full 3^n);
+#      used for word sets of at most three words.
+#   u  uniform-so-far — all-lower, or an all-UPPER / all-Title suffix
+#      from any one word on (2n+1 assignments); used for the one
+#      four-word set, where the full 3^4 would triple the matrix for no
+#      information: label matching runs against a LOWERCASED copy of the
+#      line (scan_matches), so per-word case cannot interact with any
+#      other dimension — the u/U/T set still exercises every word in
+#      every case form crossed with every separator, assignment and
+#      quote spelling, and the all-UPPER/all-Title spellings pin the
+#      lowercasing architecture itself (drop the lowercasing and the
+#      matrix fails instantly).
+st_spellings() {
+    _sw_words=$1
+    _sw_out=$2
+    _sw_mode=$3
+    _sw_first=yes
+    printf '%s \n' "$_sw_mode" >"$ST_WORK/sw-cur"
+    while [ -n "$_sw_words" ]; do
+        _sw_word=${_sw_words%% *}
+        case $_sw_words in
+        *" "*) _sw_words=${_sw_words#* } ;;
+        *) _sw_words= ;;
+        esac
+        _sw_f0=$(st_form "$_sw_word" 0)
+        _sw_f1=$(st_form "$_sw_word" 1)
+        _sw_f2=$(st_form "$_sw_word" 2)
+        : >"$ST_WORK/sw-next"
+        while IFS= read -r _sw_entry; do
+            [ -n "$_sw_entry" ] || continue
+            _sw_state=${_sw_entry%% *}
+            _sw_prefix=${_sw_entry#* }
+            case $_sw_state in
+            u) _sw_pairs='0-u 1-U 2-T' ;;
+            U) _sw_pairs='1-U' ;;
+            T) _sw_pairs='2-T' ;;
+            *) _sw_pairs='0-f 1-f 2-f' ;;
+            esac
+            for _sw_pair in $_sw_pairs; do
+                _sw_ci=${_sw_pair%-*}
+                _sw_next=${_sw_pair#*-}
+                case $_sw_ci in
+                0) _sw_form=$_sw_f0 ;;
+                1) _sw_form=$_sw_f1 ;;
+                *) _sw_form=$_sw_f2 ;;
+                esac
+                if [ "$_sw_first" = yes ]; then
+                    # A separator goes BETWEEN words only: the first
+                    # word takes none (a leading one is not a spelling
+                    # the grammar has, and it would multiply the whole
+                    # product by 5 per word set).
+                    printf '%s %s%s\n' "$_sw_next" "$_sw_prefix" \
+                        "$_sw_form" >>"$ST_WORK/sw-next"
+                else
+                    for _sw_sep in '' ' ' '_' '-' '.'; do
+                        printf '%s %s%s%s\n' "$_sw_next" "$_sw_prefix" \
+                            "$_sw_sep" "$_sw_form" >>"$ST_WORK/sw-next"
+                    done
+                fi
+            done
+        done <"$ST_WORK/sw-cur"
+        mv -- "$ST_WORK/sw-next" "$ST_WORK/sw-cur"
+        _sw_first=no
+    done
+    sed 's/^[A-Za-z] //' "$ST_WORK/sw-cur" >>"$_sw_out"
+    return 0
+}
+
+# st_expand SPELLS OUT VALUES — for every label spelling in SPELLS,
+# append to OUT one variant line per assignment separator ('=', ':',
+# ':=') × open quote (none, ", ') × close quote (none, ", '), rotating
+# the space-separated VALUE alternatives across the emitted lines.
+# Rotation rather than product: the value grammars share no character
+# class with the quote/assignment spans, so pair-closure needs every
+# spelling to MEET every value (27 variants per spelling, every value
+# appears in each spelling's run), not every (spelling, value) pair —
+# which keeps the matrix ~10^5 lines instead of ~10^6. Quote open/close
+# are independent because QUOTE_CLASS appears twice in every label ERE
+# (closing a quoted JSON key, opening a quoted value).
+st_expand() {
+    _ex_spells=$1
+    _ex_out=$2
+    _ex_vals=$3
+    _ex_nvals=$(printf '%s\n' "$_ex_vals" | wc -w | tr -d ' ')
+    while IFS= read -r _ex_spell; do
+        [ -n "$_ex_spell" ] || continue
+        for _ex_assign in '=' ':' ':='; do
+            for _ex_qopen in '' '"' "'"; do
+                for _ex_qclose in '' '"' "'"; do
+                    _ex_val=${_ex_vals%% *}
+                    printf '%s\n' \
+                        "${_ex_spell}${_ex_qopen}${_ex_assign}${_ex_qclose}${_ex_val}"
+                    if [ "$_ex_nvals" -gt 1 ]; then
+                        _ex_vals="${_ex_vals#* } ${_ex_val}"
+                    fi
+                done
+            done
+        done
+    done <"$_ex_spells" >>"$_ex_out"
+    return 0
+}
+
+# st_assert_all WHAT CLASS WANT INFILE OUTFILE — OUTFILE holds the
+# engine's FINDING records for INFILE; assert every one of INFILE's WANT
+# lines fired CLASS. grep -n reports a line at most once per ERE per
+# scan, so CLASS hits each line at most once: a count of WANT proves
+# every line fired (none twice, none missed). On failure, name the
+# offending input lines.
+st_assert_all() {
+    _aa_what=$1
+    _aa_class=$2
+    _aa_want=$3
+    _aa_in=$4
+    _aa_out=$5
+    _aa_got=$(grep -c ": ${_aa_class}\$" "$_aa_out")
+    if [ "$_aa_got" -eq "$_aa_want" ]; then
+        printf 'selftest: PASS  %-44s %s variants fired\n' \
+            "$_aa_what" "$_aa_want"
+        return 0
+    fi
+    printf 'selftest: FAIL  %-44s %s of %s fired\n' \
+        "$_aa_what" "$_aa_got" "$_aa_want"
+    sed -n "s/^FINDING [^:]*:\\([0-9]*\\): ${_aa_class}\$/\\1/p" \
+        "$_aa_out" >"$ST_WORK/aa-fired"
+    awk 'NR==FNR{_h[$1]=1;next}!_h[FNR]{printf "         silent input line %d: %s\n",FNR,$0}' \
+        "$ST_WORK/aa-fired" "$_aa_in" | head -n 3
+    return 1
+}
+
+# st_assert_none WHAT CLASS INFILE OUTFILE — assert no line of INFILE
+# fired CLASS; on violation, show the offending FINDING records.
+st_assert_none() {
+    _an_what=$1
+    _an_class=$2
+    _an_in=$3
+    _an_out=$4
+    if ! grep -q ": ${_an_class}\$" "$_an_out"; then
+        printf 'selftest: PASS  %-44s %s lines silent\n' \
+            "$_an_what" "$(grep -c . "$_an_in")"
+        return 0
+    fi
+    printf 'selftest: FAIL  %-44s fired on must-silent input\n' "$_an_what"
+    grep ": ${_an_class}\$" "$_an_out" | head -n 3 |
+        sed 's/^/         /'
+    return 1
+}
+
+# st_check WHAT CLASS MUSTFILE MUSTNOTFILE — scan both files through the
+# real engine (standard exclusions; the labels carry no colon so FINDING
+# records stay one-colon-parseable) and assert both directions.
+st_check() {
+    _ck_what=$1
+    _ck_class=$2
+    _ck_must=$3
+    _ck_mustnot=$4
+    scan_file "$_ck_must" "harness-${_ck_class}-must" >"$ST_WORK/ck-must.out"
+    scan_file "$_ck_mustnot" "harness-${_ck_class}-silent" \
+        >"$ST_WORK/ck-silent.out"
+    st_assert_all "$_ck_what must" "$_ck_class" \
+        "$(grep -c . "$_ck_must")" "$_ck_must" "$ST_WORK/ck-must.out" &&
+        st_assert_none "$_ck_what silent" "$_ck_class" \
+            "$_ck_mustnot" "$ST_WORK/ck-silent.out"
+}
+
+# Label-matrix registry: `detector|word set|value alternatives` per line.
+# The word sets are the label's mandatory words plus its optional prefix
+# (`aws`) or suffix (`id`, `number`) in every combination the ERE accepts;
+# values are taken from the detector's own value grammar (length floors
+# included, and every alternative of a multi-alternative grammar) — and,
+# for key material, from the SYNTHETIC-KEY CONVENTION in the header:
+# every value a generator can emit is a deterministic sequential pattern
+# (EXAMPLE repetition, alphabet wrap, SYNTHETIC-word prefix, ascending
+# digits) so no server-side secret scanner can mistake it for entropy.
+# The first check below fails if this registry and LABEL_DETECTORS ever
+# name different detectors, in either direction.
+MATRIX_LABEL_SETS='aws-secret-access-key|secret access key|EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE EXAMPLEEXAMPLEEXAMPLEEXAMPLE+/==ABC ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
+aws-secret-access-key|aws secret access key|EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE EXAMPLEEXAMPLEEXAMPLEEXAMPLE+/==ABC ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
+aws-activation-code|activation code|SYNTHETICACTIVATIONCODE01234567 aaaa/bbbb+
+aws-session-token|session token|SYNTHETICSESSIONTOKEN0123456789 SYNTHETICSESSIONTOKEN+/==ABCDEF
+aws-session-token|security token|SYNTHETICSESSIONTOKEN0123456789 SYNTHETICSESSIONTOKEN+/==ABCDEF
+aws-session-token|aws session token|SYNTHETICSESSIONTOKEN0123456789 SYNTHETICSESSIONTOKEN+/==ABCDEF
+aws-session-token|aws security token|SYNTHETICSESSIONTOKEN0123456789 SYNTHETICSESSIONTOKEN+/==ABCDEF
+account-id-context|account|123456789012 000000000000
+account-id-context|account id|123456789012 000000000000
+aws-sso-profile|aws profile|mxprod7 9prod.name-x MX-Prod_99
+machine-serial-number|serial|mtx1aaaaaa 9mtxaaaaaa ABC12345 ABC-12345 ABCDEFG1 ABC1234Z
+machine-serial-number|serial number|mtx1aaaaaa 9mtxaaaaaa ABC12345 ABC-12345 ABCDEFG1 ABC1234Z'
+
+st_label_matrix() {
+    _lm_status=0
+    _lm_dets=
+    printf '%s\n' "$MATRIX_LABEL_SETS" >"$ST_WORK/lm-reg"
+    # Registry closure: matrix word sets exist for every label detector
+    # and nothing else.
+    sed 's/|.*//' "$ST_WORK/lm-reg" | LC_ALL=C sort -u >"$ST_WORK/lm-a"
+    printf '%s\n' "$LABEL_DETECTORS" | sed 's/:.*//' | LC_ALL=C sort -u \
+        >"$ST_WORK/lm-b"
+    _lm_diff=$(comm -3 "$ST_WORK/lm-a" "$ST_WORK/lm-b")
+    if [ -n "$_lm_diff" ]; then
+        printf 'selftest: FAIL  label matrix registry out of sync with LABEL_DETECTORS (only-in-matrix / only-in-detectors):\n'
+        printf '%s\n' "$_lm_diff" | sed 's/^/         /'
+        return 1
+    fi
+    while IFS='|' read -r _lm_det _lm_words _lm_vals; do
+        [ -n "$_lm_det" ] || continue
+        case " $_lm_dets " in
+        *" $_lm_det "*) ;;
+        *)
+            _lm_dets="$_lm_dets $_lm_det"
+            : >"$ST_WORK/lm-$_lm_det"
+            ;;
+        esac
+        if [ "$(printf '%s\n' "$_lm_words" | wc -w | tr -d ' ')" -le 3 ]; then
+            _lm_mode=f
+        else
+            _lm_mode=u
+        fi
+        : >"$ST_WORK/lm-spells"
+        st_spellings "$_lm_words" "$ST_WORK/lm-spells" "$_lm_mode"
+        # Runaway guard: a grammar bug in the generator must fail loudly,
+        # not expand a bogus product to disk-filling size.
+        if [ "$(grep -c . "$ST_WORK/lm-spells")" -gt 15000 ]; then
+            printf 'selftest: FAIL  spelling generator runaway for %s (%s spellings; harness grammar bug - refusing to expand)\n' \
+                "$_lm_det" "$(grep -c . "$ST_WORK/lm-spells")"
+            _lm_status=1
+            continue
+        fi
+        st_expand "$ST_WORK/lm-spells" "$ST_WORK/lm-$_lm_det" "$_lm_vals"
+    done <"$ST_WORK/lm-reg"
+    for _lm_det in $_lm_dets; do
+        scan_file "$ST_WORK/lm-$_lm_det" "matrix-$_lm_det" \
+            >"$ST_WORK/lm-out" ||
+            {
+                printf 'selftest: FAIL  matrix scan failed for %s\n' "$_lm_det"
+                _lm_status=1
+                continue
+            }
+        st_assert_all "label matrix $_lm_det" "$_lm_det" \
+            "$(grep -c . "$ST_WORK/lm-$_lm_det")" \
+            "$ST_WORK/lm-$_lm_det" "$ST_WORK/lm-out" || _lm_status=1
+    done
+    return "$_lm_status"
+}
+
+# st_shape_matrix — case products that MUST match and lookalikes that
+# MUST NOT, per SHAPE detector, against the original (non-lowercased)
+# line. The products cover every case-bearing span each detector treats
+# as insensitive (SSO scheme + awsapps.com host, ARN arn:aws prefix
+# through partition/service/region, Windows drive + Users, Users in
+# /Users) and the must-not side pins the case-bearing grammar (path
+# /start, lowercase akia/mi, uppercase hex bodies, /home literal).
+st_shape_matrix() {
+    _sh_status=0
+
+    # aws-access-key-id / aws-session-key-id: the AKIA/ASIA prefix is
+    # uppercase by AWS's own grammar; the body is [0-9A-Z]{16,}. Every
+    # body follows the SYNTHETIC-KEY CONVENTION (header): alphabet wraps
+    # and ascending digits only, and never the exact fixture bodies at
+    # new sites — push protection flags per-secret, so new literals stay
+    # new patterns.
+    : >"$ST_WORK/shp-akia-m"
+    : >"$ST_WORK/shp-akia-x"
+    cat >>"$ST_WORK/shp-akia-m" <<'EOF'
+variable = "AKIAQRSTUVWXYZHIJKLMNOP"
+AKIA0123456789012345
+AKIAQRSTUVWXYZABCDEFGHIJKLMNOP
+key AKIAQRSTUVWXYZHIJKLMNOP end
+AKIA012345678901234567890123
+EOF
+    cat >>"$ST_WORK/shp-akia-x" <<'EOF'
+akiaqrstuvwxyzhijklmnop
+AkiaQRSTUVWXYZHIJKLMNOP
+aKIAQRSTUVWXYZHIJKLMNOP
+AKIAABCDEFGHIJKLMNO
+AKIA-0123456789012345
+AKIA QRSTUVWXYZHIJKLMNOP
+EOF
+    st_check 'shape aws-access-key-id' aws-access-key-id \
+        "$ST_WORK/shp-akia-m" "$ST_WORK/shp-akia-x" || _sh_status=1
+
+    : >"$ST_WORK/shp-asia-m"
+    : >"$ST_WORK/shp-asia-x"
+    cat >>"$ST_WORK/shp-asia-m" <<'EOF'
+variable = "ASIAQRSTUVWXYZHIJKLMNOP"
+ASIA0123456789012345
+ASIAQRSTUVWXYZABCDEFGHIJKLMNOP
+key ASIAQRSTUVWXYZHIJKLMNOP end
+EOF
+    cat >>"$ST_WORK/shp-asia-x" <<'EOF'
+asiaqrstuvwxyzhijklmnop
+AsiaQRSTUVWXYZHIJKLMNOP
+aSIAQRSTUVWXYZHIJKLMNOP
+ASIAABCDEFGHIJKLMNO
+ASIA-0123456789012345
+ASIA QRSTUVWXYZHIJKLMNOP
+variable = "AKIAQRSTUVWXYZHIJKLMNOP"
+EOF
+    st_check 'shape aws-session-key-id' aws-session-key-id \
+        "$ST_WORK/shp-asia-m" "$ST_WORK/shp-asia-x" || _sh_status=1
+
+    # managed-node-id: lowercase mi- scheme, lowercase hex body, 8+.
+    : >"$ST_WORK/shp-mi-m"
+    : >"$ST_WORK/shp-mi-x"
+    cat >>"$ST_WORK/shp-mi-m" <<'EOF'
+managed_node_id = "mi-abcdef0123456789"
+mi-0123456789abcdef0
+node=mi-1234abcd5678ef90
+mi-1234abcd
+mi-deadbeefcafe0123
+EOF
+    cat >>"$ST_WORK/shp-mi-x" <<'EOF'
+MI-abcdef0123456789
+Mi-abcdef0123456789
+mi-ABCDEF0123
+mi-abc1234
+mi_abcdef01
+EOF
+    st_check 'shape managed-node-id' managed-node-id \
+        "$ST_WORK/shp-mi-m" "$ST_WORK/shp-mi-x" || _sh_status=1
+
+    # uuid-literal: hex case-insensitive, group structure exact.
+    : >"$ST_WORK/shp-uuid-m"
+    : >"$ST_WORK/shp-uuid-x"
+    cat >>"$ST_WORK/shp-uuid-m" <<'EOF'
+activation_id = "123e4567-e89b-12d3-a456-426614174000"
+123E4567-E89B-12D3-A456-426614174000
+123e4567-E89b-12D3-a456-426614174000
+EOF
+    cat >>"$ST_WORK/shp-uuid-x" <<'EOF'
+123e4567-e89b-12d3-a456-42661417400
+123e4567-e89b-12d3-a456_426614174000
+g23e4567-e89b-12d3-a456-426614174000
+123E4567e89b12d3a456426614174000
+123e4567-e89b-12d3-a456
+EOF
+    st_check 'shape uuid-literal' uuid-literal \
+        "$ST_WORK/shp-uuid-m" "$ST_WORK/shp-uuid-x" || _sh_status=1
+
+    # sso-start-url: scheme × host-label case × awsapps.com case product
+    # (36 must lines); /start stays case-sensitive, a host label is
+    # required, https is required, and the Unicode-ellipsis host of
+    # SPEC.md's own self-reference stays silent.
+    : >"$ST_WORK/shp-url-m"
+    for _sh_scheme in https HTTPS Https hTtPs; do
+        for _sh_host in d-a1b2c3d4e5f6g7h8i D-A1B2C3D4E5F6G7H8I D-a1B2c3D4; do
+            for _sh_apps in awsapps.com AWSAPPS.COM AwsApps.Com; do
+                printf 'start_url = "%s://%s.%s/start"\n' \
+                    "$_sh_scheme" "$_sh_host" "$_sh_apps" \
+                    >>"$ST_WORK/shp-url-m"
+            done
+        done
+    done
+    : >"$ST_WORK/shp-url-x"
+    cat >>"$ST_WORK/shp-url-x" <<'EOF'
+https://…awsapps.com/start
+https://awsapps.com/start
+http://d-x.awsapps.com/start
+https://d-x.awsapps.com/Start
+https://d-x.awsapps.com/START
+https://d-x.awsapps.co/start
+EOF
+    st_check 'shape sso-start-url' sso-start-url \
+        "$ST_WORK/shp-url-m" "$ST_WORK/shp-url-x" || _sh_status=1
+
+    # email-address: allowlisted commit-trailer address never a finding.
+    : >"$ST_WORK/shp-email-m"
+    : >"$ST_WORK/shp-email-x"
+    cat >>"$ST_WORK/shp-email-m" <<'EOF'
+contact = "user@example.invalid"
+first.last+tag@sub.example.co.uk
+UPPER@EXAMPLE.COM
+user%plus@my-host.example.org
+EOF
+    cat >>"$ST_WORK/shp-email-x" <<'EOF'
+user@localhost
+a@b.c
+user@example…com
+ @example.com
+Co-Authored-By: Claude <noreply@anthropic.com>
+EOF
+    st_check 'shape email-address' email-address \
+        "$ST_WORK/shp-email-m" "$ST_WORK/shp-email-x" || _sh_status=1
+
+    # account-id-arn: prefix case × partition × service case × region
+    # presence product (72 must lines); the identity is the 12-digit
+    # account field.
+    : >"$ST_WORK/shp-arn-m"
+    for _sh_pre in 'arn:aws' 'ARN:AWS' 'Arn:Aws' 'aRn:aWs'; do
+        for _sh_part in '' '-us-gov' '-cn'; do
+            for _sh_svc in iam IAM Iam; do
+                for _sh_reg in '' ':us-east-1'; do
+                    printf 'arn_link = "%s%s:%s%s:123456789012:role/mx"\n' \
+                        "$_sh_pre" "$_sh_part" "$_sh_svc" "$_sh_reg" \
+                        >>"$ST_WORK/shp-arn-m"
+                done
+            done
+        done
+    done
+    : >"$ST_WORK/shp-arn-x"
+    cat >>"$ST_WORK/shp-arn-x" <<'EOF'
+arn:aws:iam::12345678901:role/x
+arn:azure:iam::123456789012
+arn aws iam 123456789012
+EOF
+    st_check 'shape account-id-arn' account-id-arn \
+        "$ST_WORK/shp-arn-m" "$ST_WORK/shp-arn-x" || _sh_status=1
+
+    # user-home-path: drive-letter case × Users case × separator
+    # direction product, double separators, /Users case product, /home.
+    # Backslashes live in the printf FORMAT (where \\ is one literal
+    # backslash), never in shell variables.
+    : >"$ST_WORK/shp-home-m"
+    for _sh_drive in C d; do
+        for _sh_users in Users users USERS; do
+            printf '%s:\\%s\\mx.user1\n' "$_sh_drive" "$_sh_users" \
+                >>"$ST_WORK/shp-home-m"
+            printf '%s:/%s/mx.user1\n' "$_sh_drive" "$_sh_users" \
+                >>"$ST_WORK/shp-home-m"
+        done
+    done
+    {
+        printf 'C:\\\\Users\\\\mx.user1\n'
+        printf 'D://Users//mx.user1\n'
+        printf '/Users/mx.user1\n/users/Mx.User_1\n/USERS/mxuser2\n'
+        printf '/home/mx.user1\n/home/ec2-user/sub\n/home/mx_user-2\n'
+    } >>"$ST_WORK/shp-home-m"
+    : >"$ST_WORK/shp-home-x"
+    cat >>"$ST_WORK/shp-home-x" <<'EOF'
+C:\Users\<username>\.aws\config
+copy "%USERPROFILE%\.aws\config" D:\
+~/.aws/config and $HOME/.aws/config identify nobody
+https://example.com/home/page
+/Home/mxuser
+C:\Users\a
+EOF
+    st_check 'shape user-home-path' user-home-path \
+        "$ST_WORK/shp-home-m" "$ST_WORK/shp-home-x" || _sh_status=1
+
+    return "$_sh_status"
+}
+
+# st_serial_table_line LEN POS SIZE DIGITBLOCK FLAG — append one
+# machine-serial-number value-table line to the harness table: a token of
+# LEN characters whose positions POS..POS+SIZE-1 come from the digit pool
+# when DIGITBLOCK is yes (letter pool otherwise) and whose remaining
+# positions come from the other pool. Pools advance per consumed
+# character and wrap when exhausted, so no two generated tokens repeat.
+# FLAG is the table's M (must fire) or X (must stay silent) column — a
+# SIZE covering the whole length builds the pure-digit / pure-letter
+# silent tokens. The label spelling cycles across three canonical
+# anchors so the tokens are not all generated behind one spelling.
+# Everything is parameter expansion: ~200 tokens, zero subprocesses.
+st_serial_table_line() {
+    _st_len=$1
+    _st_pos=$2
+    _st_size=$3
+    _st_dig=$4
+    _st_flag=$5
+    _st_letters=ABCDEFGHIJKLMNOPQRSTUVWXYZ
+    _st_digits=0123456789
+    _st_tok=
+    _st_i=1
+    while [ "$_st_i" -le "$_st_len" ]; do
+        if [ "$_st_i" -ge "$_st_pos" ] &&
+            [ "$_st_i" -lt "$((_st_pos + _st_size))" ]; then
+            _st_want=$_st_dig
+        elif [ "$_st_dig" = yes ]; then
+            _st_want=no
+        else
+            _st_want=yes
+        fi
+        if [ "$_st_want" = yes ]; then
+            [ -n "$_st_digits" ] || _st_digits=0123456789
+            _st_c=${_st_digits%"${_st_digits#?}"}
+            _st_digits=${_st_digits#?}
+        else
+            [ -n "$_st_letters" ] ||
+                _st_letters=ABCDEFGHIJKLMNOPQRSTUVWXYZ
+            _st_c=${_st_letters%"${_st_letters#?}"}
+            _st_letters=${_st_letters#?}
+        fi
+        _st_tok=${_st_tok}${_st_c}
+        _st_i=$((_st_i + 1))
+    done
+    case $((_sv_count % 3)) in
+    0) _st_spell='serial_number =' ;;
+    1) _st_spell='Serial Number:' ;;
+    2) _st_spell='serial:=' ;;
+    esac
+    _sv_count=$((_sv_count + 1))
+    printf 'machine-serial-number|%s|%s "%s"\n' \
+        "$_st_flag" "$_st_spell" "$_st_tok" >>"$ST_WORK/vt-table"
+    return 0
+}
+
+# st_value_tables — per-LABEL-detector value must/must-not tables
+# (anchor class): values that must fire through a plain canonical
+# spelling, and near-miss values that must stay silent — prose words,
+# pure digits where excluded, sub-floor lengths, Unicode ellipsis,
+# angle-bracket placeholders, generic profile values, quoted generics
+# with trailing punctuation. The round-19..23 regression values are all
+# here (`production`, `corp-admin-prod`, `ABC12345`, `C02ZQ0ABC123`,
+# the X-Amz-Security-Token forms, `default`, `EXAMPLE`), alongside the
+# spellings the matrix itself found missing (dotted keys, ':='
+# assignment, hyphenated serials). The
+# tab-indented assignment forms are appended by printf after the heredoc
+# because heredocs make a literal tab invisible to review. Note
+# `aws_profile = "default,"` sits on the SILENT side: the profile value
+# anchor stops at the comma (not in its class), so the generic-value
+# gate still sees plain `default` — the gate trims trailing dot,
+# underscore and dash only, and a trailing comma changes nothing.
+st_value_tables() {
+    _vt_status=0
+    cat >"$ST_WORK/vt-table" <<'EOF'
+aws-secret-access-key|M|aws_secret_access_key = "EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE"
+aws-secret-access-key|M|SecretAccessKey=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
+aws-secret-access-key|M|"SecretAccessKey": "EXAMPLEEXAMPLEEXAMPLEEXAMPLE+/==ABC"
+aws-secret-access-key|M|Secret Access Key = EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE
+aws-secret-access-key|M|aws.secret.access.key = EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE
+aws-secret-access-key|M|secret_access_key := ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
+aws-secret-access-key|M|awsSecretAccessKey='EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE'
+aws-secret-access-key|X|secret_access_key = EXAMPLE
+aws-secret-access-key|X|SecretAccessKey = <secret-key>
+aws-secret-access-key|X|secret access key rotation is mandatory
+aws-secret-access-key|X|secret_access_key_length = 40
+aws-secret-access-key|X|secret_access_key = "…"
+aws-secret-access-key|X|the secret access key: see the runbook
+aws-secret-access-key|X|secret-key = "EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE"
+aws-activation-code|M|activation_code = "SYNTHETICACTIVATIONCODE0123456789AB"
+aws-activation-code|M|ACTIVATION_CODE=SYNTHETICACTIVATIONCODE0123456789AB
+aws-activation-code|M|"ActivationCode": "SYNTHETICACTIVATIONCODE0123456789AB"
+aws-activation-code|M|activation.code := SYNTHETICACTIVATIONCODE01234567
+aws-activation-code|M|$activationCode = 'abcdefgh'
+aws-activation-code|M|ACTIVATION CODE: 01234567
+aws-activation-code|X|activation_code = ABC1234
+aws-activation-code|X|activation code: <code>
+aws-activation-code|X|activation code: …
+aws-activation-code|X|terraform output -raw activation_code
+aws-activation-code|X|activation_code is displayed once at enrollment
+aws-activation-code|X|activation_id = 123e4567-e89b-12d3-a456-426614174000
+aws-session-token|M|AWS_SESSION_TOKEN=SYNTHETICSESSIONTOKEN0123456789
+aws-session-token|M|X-Amz-Security-Token: SYNTHETICSECURITYTOKEN0123456789
+aws-session-token|M|"SecurityToken": "SYNTHETICSECURITYTOKENABCDEFGHIJ"
+aws-session-token|M|SECURITY_TOKEN=SYNTHETICSECURITYTOKENQRSTUVWXYZ
+aws-session-token|M|session.token := SYNTHETICSESSIONTOKEN0123456789
+aws-session-token|M|Session Token = abcdefghijklmnop
+aws-session-token|M|aws_session_token = 'SYNTHETICSESSIONTOKEN+/==ABCDEF'
+aws-session-token|M|?X-Amz-Security-Token=awssecuritytokenheaderform
+aws-session-token|X|Session Token: EXAMPLE
+aws-session-token|X|session_token = <token>
+aws-session-token|X|security_token: …
+aws-session-token|X|aws_session_token
+aws-session-token|X|the session token expires hourly
+aws-session-token|X|SessionToken=short
+aws-session-token|X|session_token = abcdefghijklmno
+account-id-context|M|account_id = "123456789012"
+account-id-context|M|accountId = 123456789012
+account-id-context|M|"Account": "123456789012"
+account-id-context|M|AWS_ACCOUNT_ID=999999999999
+account-id-context|M|account.id: 000000000000
+account-id-context|M|account := 111122223333
+account-id-context|X|account_id = 12345
+account-id-context|X|account_id: <account-id>
+account-id-context|X|account_id: …
+account-id-context|X|aws account 123456789012 is used for tests
+account-id-context|X|account_owner = 123456789012
+account-id-context|X|arn = "arn:aws:iam::123456789012:role/example"
+account-id-context|X|account = 1234
+aws-sso-profile|M|export AWS_PROFILE=production
+aws-sso-profile|M|aws_profile = "corp-admin-prod"
+aws-sso-profile|M|"AwsProfile": "PowerUserAccess-123456789012"
+aws-sso-profile|M|$env:AWS_PROFILE = 'corp_admin_prod'
+aws-sso-profile|M|AWS PROFILE = CorpAdmin-Prod2
+aws-sso-profile|M|awsProfile=dev_profile
+aws-sso-profile|M|aws.profile := 9prod.name-x
+aws-sso-profile|M|aws profile : mxprod7
+aws-sso-profile|X|AWS_PROFILE=default
+aws-sso-profile|X|aws_profile: "example"
+aws-sso-profile|X|export AWS_PROFILE=<profile>
+aws-sso-profile|X|aws_profile = "default."
+aws-sso-profile|X|aws_profile = "default,"
+aws-sso-profile|X|AWS_PROFILE=examples
+aws-sso-profile|X|AWS_PROFILE=abc
+aws-sso-profile|X|AWS_PROFILE=
+aws-sso-profile|X|the AWS profile is selected externally after SSO login.
+aws-sso-profile|X|profile = "some-profile"
+machine-serial-number|M|Machine Serial Number: C02ZQ0ABC123
+machine-serial-number|M|Machine Serial Number: ABC12345
+machine-serial-number|M|Machine Serial Number: ABCDEFG1
+machine-serial-number|M|serial_number = "ABC1234Z"
+machine-serial-number|M|serial_number = "ABC-12345"
+machine-serial-number|M|serial_number := CND1234567
+machine-serial-number|M|"SerialNumber": "1A2B3C4D5E"
+machine-serial-number|M|SERIAL-NUMBER: pf-2x9k1q
+machine-serial-number|M|serial:CND1234567
+machine-serial-number|M|machine-serial = abc-123456
+machine-serial-number|M|device.serial.number = 9mtxaaaaaa
+machine-serial-number|X|serial number: see the underside of the device
+machine-serial-number|X|Serial Number: unknown
+machine-serial-number|X|Machine Serial Number: ABCDEFGH
+machine-serial-number|X|serial_number = each.value.serial
+machine-serial-number|X|"serial": 123456789
+machine-serial-number|X|serial = 1234567
+machine-serial-number|X|serial number: <serial>
+machine-serial-number|X|serial number: …
+machine-serial-number|X|serial = ABC1234
+machine-serial-number|X|serial_number
+account-id-context|X|account_id = 12345678901
+EOF
+    {
+        printf 'aws-secret-access-key|M|aws_secret_access_key\t=\tEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE\n'
+        printf 'aws-activation-code|M|activation_code\t=\tSYNTHETICACTIVATIONCODE01234567\n'
+        printf 'aws-session-token|M|aws_session_token\t=\tSYNTHETICSESSIONTOKEN0123456789\n'
+        printf 'account-id-context|M|account_id\t=\t123456789012\n'
+        printf 'aws-sso-profile|M|aws_profile\t=\tmxprod7\n'
+        printf 'machine-serial-number|M|serial_number\t=\tABC12345\n'
+    } >>"$ST_WORK/vt-table"
+    # Serial interleaving closure, by generation: real serials interleave
+    # letters and digits arbitrarily, and a hand-picked value list can
+    # silently share one interleaving shape — exactly how `ABCDEFG1` and
+    # `ABC1234Z` stayed unfound through three review rounds of positional
+    # grammar patches. For every length 8..12: exactly one digit at each
+    # position, exactly one letter at each position, a 2-digit block at
+    # each position, a 2-letter block at each position (190 must-fire
+    # tokens), plus the pure-digit and pure-letter tokens of every length
+    # (10 silent tokens: the letter-and-digit property's negative side).
+    # The other label detectors' value grammars are FLAT character
+    # classes with no positional structure — {35,45} secret keys, {8,}
+    # activation codes, {16,} session tokens, the exact 12-digit account
+    # run — so hand-picked values crossing each floor suffice there; the
+    # account detector additionally gained the 11-digit boundary line
+    # above (one short of the run).
+    _sv_count=0
+    for _sv_len in 8 9 10 11 12; do
+        _sv_pos=1
+        while [ "$_sv_pos" -le "$_sv_len" ]; do
+            st_serial_table_line "$_sv_len" "$_sv_pos" 1 yes M
+            st_serial_table_line "$_sv_len" "$_sv_pos" 1 no M
+            _sv_pos=$((_sv_pos + 1))
+        done
+        _sv_pos=1
+        while [ "$_sv_pos" -lt "$_sv_len" ]; do
+            st_serial_table_line "$_sv_len" "$_sv_pos" 2 yes M
+            st_serial_table_line "$_sv_len" "$_sv_pos" 2 no M
+            _sv_pos=$((_sv_pos + 1))
+        done
+        st_serial_table_line "$_sv_len" 1 "$_sv_len" yes X
+        st_serial_table_line "$_sv_len" 1 "$_sv_len" no X
+    done
+    printf '%s\n' "$LABEL_DETECTORS" | sed 's/:.*//' >"$ST_WORK/vt-dets"
+    while IFS= read -r _vt_det; do
+        [ -n "$_vt_det" ] || continue
+        grep "^${_vt_det}|M|" "$ST_WORK/vt-table" | cut -d'|' -f3- \
+            >"$ST_WORK/vt-must"
+        grep "^${_vt_det}|X|" "$ST_WORK/vt-table" | cut -d'|' -f3- \
+            >"$ST_WORK/vt-silent"
+        if [ ! -s "$ST_WORK/vt-must" ] || [ ! -s "$ST_WORK/vt-silent" ]; then
+            printf 'selftest: FAIL  value table for %s needs both directions\n' \
+                "$_vt_det"
+            _vt_status=1
+            continue
+        fi
+        st_check "values $_vt_det" "$_vt_det" \
+            "$ST_WORK/vt-must" "$ST_WORK/vt-silent" || _vt_status=1
+    done <"$ST_WORK/vt-dets"
+    return "$_vt_status"
+}
+
+# SPEC §27 coverage map. The bullets are parsed out of SPEC.md at
+# selftest runtime (st_spec27_map below); this table, kept next to the
+# parser, maps every bullet to the detector classes and runtime checks
+# that cover it. Mapping choices, including the indirect ones:
+#   * "Activation ID" → uuid-literal: the activation ID handed to the
+#     SSM register-on-premises-api is a UUID (the uuid fixture documents
+#     this); the separately-bulleted managed-instance identifier is the
+#     mi-... node ID under its own bullet.
+#   * "AWS session tokens" → aws-session-token AND aws-session-key-id:
+#     an ASIA... temporary key ID is the key-ID half of the same session
+#     credential set the token belongs to.
+#   * "SSO profile names" → aws-sso-profile (committed label spellings)
+#     and aws-profile-name (the runtime $AWS_PROFILE literal scan).
+#   * "hostname" → the runtime hostname literal check (full and short
+#     form, case-insensitive). No shape can anchor a hostname.
+#   * "Windows username" → username (the runtime whoami literal; on
+#     Windows whoami returns the account name) and user-home-path
+#     (C:\Users\<name> is the committed form of the same identity).
+#   * "personal name" → email-address + username + user-home-path: no
+#     detector can enumerate human names; a personal name reaches
+#     committed content as an email local-part, the whoami account name,
+#     or the username segment of a home path. Indirect by necessity,
+#     and the runtime username check is the direct carrier.
+#   * "generated real S3 bucket name" → state-bucket-name: the runtime
+#     literal taken from terraform/bootstrap/terraform.tfvars.
+#   * "Terraform state" → terraform-state-tracked (the path-level
+#     tracked-file check in default_audit; .gitignore already excludes
+#     *.tfstate*, this fails closed if one is tracked anyway) plus
+#     account-id-arn and uuid-literal: a state file's JSON content
+#     carries ARNs, account IDs and UUIDs, which is how state that ever
+#     reached HISTORY is caught (patches are content-scanned).
+#   * "user-specific absolute paths" → user-home-path.
+# RUNTIME_CHECK_IDS are the checks default_audit performs outside the
+# detector tables; terraform-state-tracked is the newest (§27 "Terraform
+# state" previously had no direct check at all — a coverage drift this
+# map exists to make impossible to reintroduce).
+SPEC27_MAP='Activation Code|aws-activation-code
+Activation ID|uuid-literal
+AWS access-key IDs|aws-access-key-id
+AWS secret keys|aws-secret-access-key
+AWS session tokens|aws-session-token aws-session-key-id
+SSO profile names|aws-sso-profile aws-profile-name
+SSO URLs|sso-start-url
+AWS account ID|account-id-context account-id-arn
+managed-node ID|managed-node-id
+hostname|hostname
+Windows username|username user-home-path
+personal name|email-address username user-home-path
+email address|email-address
+machine serial numbers|machine-serial-number
+generated real S3 bucket name|state-bucket-name
+Terraform state|terraform-state-tracked account-id-arn uuid-literal
+user-specific absolute paths|user-home-path'
+RUNTIME_CHECK_IDS='hostname username state-bucket-name aws-profile-name terraform-state-tracked'
+
+st_spec27_map() {
+    _s27_status=0
+    _s27_spec="$ROOT/SPEC.md"
+    if [ ! -f "$_s27_spec" ]; then
+        printf 'selftest: FAIL  SPEC.md not found for §27 coverage map: %s\n' \
+            "$_s27_spec"
+        return 1
+    fi
+    # Extract §27's bullet list: from the section heading to the next
+    # heading; strip the bullet marker and one trailing period. A SPEC
+    # renumbering or rewrite fails here, on purpose: the map must be
+    # revisited when §27 changes.
+    awk '
+        /^# 27\. Repository audit/ {f=1; next}
+        f && /^# / {exit}
+        f && /^\* / {s=$0; sub(/^\* /, "", s); sub(/\.$/, "", s); print s}
+    ' "$_s27_spec" >"$ST_WORK/s27-bullets"
+    if [ ! -s "$ST_WORK/s27-bullets" ]; then
+        printf 'selftest: FAIL  no §27 bullet list found in SPEC.md (section renamed or restructured? the coverage map must be revisited)\n'
+        return 1
+    fi
+    printf '%s\n' "$SPEC27_MAP" >"$ST_WORK/s27-map"
+    _s27_dets=$(printf '%s\n%s\n' "$LABEL_DETECTORS" "$SHAPE_DETECTORS" |
+        sed 's/:.*//')
+    # tr: an assignment keeps embedded newlines (no field splitting in
+    # assignments), and the membership tests below match on single
+    # spaces.
+    _s27_valid=" $(printf '%s\n%s\n' "$_s27_dets" "$RUNTIME_CHECK_IDS" |
+        tr '\n' ' ')"
+    _s27_used=" $(awk -F'|' '{print $2}' "$ST_WORK/s27-map" | tr '\n' ' ')"
+    # Direction 1: every §27 bullet maps to at least one existing class.
+    while IFS= read -r _s27_bullet; do
+        [ -n "$_s27_bullet" ] || continue
+        _s27_ids=$(awk -F'|' -v b="$_s27_bullet" '$1 == b {print $2}' \
+            "$ST_WORK/s27-map")
+        if [ -z "$_s27_ids" ]; then
+            printf 'selftest: FAIL  §27 bullet has no coverage mapping: "%s"\n' \
+                "$_s27_bullet"
+            _s27_status=1
+            continue
+        fi
+        for _s27_id in $_s27_ids; do
+            case "$_s27_valid" in
+            *" $_s27_id "*) ;;
+            *)
+                printf 'selftest: FAIL  §27 mapping for "%s" names unknown class "%s"\n' \
+                    "$_s27_bullet" "$_s27_id"
+                _s27_status=1
+                ;;
+            esac
+        done
+    done <"$ST_WORK/s27-bullets"
+    # Direction 2: every detector class and runtime check is some
+    # bullet's coverage — a detector without a §27 anchor is drift too.
+    for _s27_id in $_s27_dets $RUNTIME_CHECK_IDS; do
+        case "$_s27_used" in
+        *" $_s27_id "*) ;;
+        *)
+            printf 'selftest: FAIL  class "%s" maps to no §27 bullet\n' "$_s27_id"
+            _s27_status=1
+            ;;
+        esac
+    done
+    if [ "$_s27_status" -eq 0 ]; then
+        printf 'selftest: PASS  %-44s %s bullets mapped to %s class ids\n' \
+            'SPEC §27 coverage map' \
+            "$(grep -c . "$ST_WORK/s27-bullets")" \
+            "$(printf '%s\n' "$SPEC27_MAP" | wc -l | tr -d ' ')"
+    fi
+    return "$_s27_status"
+}
+
+# st_hook_smoke — the --scan-file CLI hook (see header) exists so test
+# harnesses drive the real engine; exercise the CLI path once so it
+# cannot rot: a finding line for a synthetic AKIA, exit 0 always, and a
+# missing file yields no findings, still exit 0.
+st_hook_smoke() {
+    if [ ! -x "$ROOT/scripts/audit.sh" ]; then
+        printf 'selftest: FAIL  %s is not executable (the --scan-file hook must be runnable)\n' \
+            'scripts/audit.sh'
+        return 1
+    fi
+    printf 'variable = "AKIAQRSTUVWXYZHIJKLMNOP"\nplain line\n' \
+        >"$ST_WORK/hook.txt"
+    "$ROOT/scripts/audit.sh" --scan-file hook-smoke "$ST_WORK/hook.txt" \
+        >"$ST_WORK/hook.out" 2>/dev/null
+    _hk_rc=$?
+    _hk_want='FINDING hook-smoke:1: aws-access-key-id'
+    _hk_got=$(grep -c . "$ST_WORK/hook.out")
+    if [ "$_hk_rc" -ne 0 ] || [ "$_hk_got" -ne 1 ] ||
+        [ "$(sed -n 1p "$ST_WORK/hook.out")" != "$_hk_want" ]; then
+        printf 'selftest: FAIL  --scan-file hook: rc=%s output=%s lines (want rc=0 and exactly %s)\n' \
+            "$_hk_rc" "$_hk_got" "$_hk_want"
+        sed 's/^/         /' "$ST_WORK/hook.out" | head -n 3
+        return 1
+    fi
+    "$ROOT/scripts/audit.sh" --scan-file hook-smoke "$ST_WORK/no-such-file" \
+        >"$ST_WORK/hook2.out" 2>/dev/null
+    _hk_rc=$?
+    if [ "$_hk_rc" -ne 0 ] || [ -s "$ST_WORK/hook2.out" ]; then
+        printf 'selftest: FAIL  --scan-file hook on missing file: rc=%s (want 0) and output must be empty\n' \
+            "$_hk_rc"
+        return 1
+    fi
+    printf 'selftest: PASS  %-44s findings printed, exit 0 always\n' \
+        '--scan-file hook'
+    return 0
+}
+
+# st_message_file — exercise the --message-file pre-commit gate, in the
+# same style as st_hook_smoke: a synthetic tripping message must produce
+# named findings and exit 1 — including a line that carries the
+# suppression marker, because UNCOMMITTED text cannot be annotated — and
+# a clean message must produce none and exit 0. The clean sample includes
+# the allowlisted commit-trailer address on purpose: the allowlist must
+# apply in message mode too, or every real trailer would trip the email
+# detector.
+st_message_file() {
+    if [ ! -x "$ROOT/scripts/audit.sh" ]; then
+        printf 'selftest: FAIL  %s is not executable (the --message-file gate must be runnable)\n' \
+            'scripts/audit.sh'
+        return 1
+    fi
+    cat >"$ST_WORK/msg-bad.txt" <<'EOF'
+fix: example change quoting the values it describes
+
+AWS_PROFILE=production
+secret_access_key = EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE # audit-allow:synthetic
+variable = "AKIAQRSTUVWXYZHIJKLMNOP"
+EOF
+    "$ROOT/scripts/audit.sh" --message-file "$ST_WORK/msg-bad.txt" \
+        >"$ST_WORK/msg-bad.out" 2>/dev/null
+    _mf_rc=$?
+    _mf_ok=yes
+    [ "$_mf_rc" -eq 1 ] || _mf_ok=no
+    for _mf_cls in aws-sso-profile aws-secret-access-key aws-access-key-id; do
+        grep -q ": ${_mf_cls}\$" "$ST_WORK/msg-bad.out" || _mf_ok=no
+    done
+    if [ "$_mf_ok" != yes ]; then
+        printf 'selftest: FAIL  --message-file gate: rc=%s (want 1) with named findings for the profile, secret-key and key-ID classes\n' \
+            "$_mf_rc"
+        sed 's/^/         /' "$ST_WORK/msg-bad.out" | head -n 4
+        return 1
+    fi
+    cat >"$ST_WORK/msg-good.txt" <<'EOF'
+fix: rotate the enrollment documentation
+
+Explains the activation flow without quoting any credential material.
+The noreply@anthropic.com trailer footer is allowlisted.
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>
+EOF
+    "$ROOT/scripts/audit.sh" --message-file "$ST_WORK/msg-good.txt" \
+        >"$ST_WORK/msg-good.out" 2>/dev/null
+    _mf_rc=$?
+    if [ "$_mf_rc" -ne 0 ] || grep -q '^FINDING' "$ST_WORK/msg-good.out"; then
+        printf 'selftest: FAIL  --message-file gate on clean message: rc=%s (want 0) and no FINDING records\n' \
+            "$_mf_rc"
+        sed 's/^/         /' "$ST_WORK/msg-good.out" | head -n 4
+        return 1
+    fi
+    printf 'selftest: PASS  %-44s tripping message fails, clean passes\n' \
+        '--message-file gate'
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Modes
 # ---------------------------------------------------------------------------
 
 usage() {
-    printf 'usage: scripts/%s [--selftest]\n' "$SCRIPT_NAME" >&2
+    printf 'usage: scripts/%s [--selftest] [--scan-file NAME PATH] [--message-file FILE]\n' \
+        "$SCRIPT_NAME" >&2
     exit 2
 }
 
@@ -899,6 +2054,18 @@ default_audit() {
     while IFS= read -r _f; do
         [ -n "$_f" ] || continue
         [ -f "$ROOT/$_f" ] || continue
+        # Path-level Terraform-state prohibition (SPEC §27 "Terraform
+        # state"; see header): state must never be tracked at all, so the
+        # path itself is the finding — .gitignore already excludes these,
+        # and this fails closed if one is ever added anyway. The marker
+        # cannot suppress it: a state file is never synthetic, and the
+        # finding names a path, not a line.
+        case "$_f" in
+        *.tfstate | *.tfstate.*)
+            printf 'FINDING %s: terraform-state-tracked (Terraform state is committed - SPEC §27; remove it from the index and purge history)\n' \
+                "$_f"
+            ;;
+        esac
         effective_scan_path "$ROOT/$_f" "$_f"
         _scan=$EFFECTIVE_PATH
         [ -n "$_scan" ] || continue
@@ -926,6 +2093,51 @@ default_audit() {
     fi
     printf 'audit: clean (tracked files and full history scanned)\n'
     rm -f "$_results"
+    exit 0
+}
+
+# message_file_audit FILE — run the full detection engine (every label and
+# shape detector) over a PROPOSED commit-message file, report findings,
+# exit 1 on any. This is the pre-commit gate for message text: the default
+# audit scans commit message bodies too, but only AFTER the commit exists,
+# when fixing means history surgery — twice already a commit quoted a
+# detector-tripping value in its body (synthetic or not) and the audit went
+# red only afterwards, leaving marker-annotated equivalence lines as the
+# cleanup. Checking the message BEFORE committing makes that class of
+# self-inflicted finding impossible to create. Two deliberate differences
+# from the default audit:
+#   * the marker and history-equivalence suppressions are OFF
+#     (MARKER_GATE_OFF in emit_hits): uncommitted text has no standing
+#     annotations, so a tripping line must be REWORDED, not annotated —
+#     including hard-rule classes and suppressible ones alike;
+#   * the runtime per-machine value checks are skipped: whoami/hostname/
+#     bucket/profile literals describe THIS machine, not text on its way
+#     into history, and the audit proper re-checks the committed message
+#     against them anyway.
+message_file_audit() {
+    _mf_file=$1
+    if [ ! -f "$_mf_file" ]; then
+        printf '%s: error: --message-file: no such file: %s\n' \
+            "$SCRIPT_NAME" "$_mf_file" >&2
+        exit 2
+    fi
+    _mf_out=$(mktemp "${TMPDIR:-/tmp}/audit-message.XXXXXXXX") || {
+        printf '%s: error: cannot create message temp file (TMPDIR writable? disk full?) - failing closed\n' \
+            "$SCRIPT_NAME" >&2
+        exit 2
+    }
+    MARKER_GATE_OFF=yes
+    scan_stream 'commit-message' "$_mf_file" >"$_mf_out"
+    MARKER_GATE_OFF=
+    if [ -s "$_mf_out" ]; then
+        printf 'message: FAIL - %s finding(s) in %s (reword the message; uncommitted text cannot be annotated)\n' \
+            "$(grep -c . "$_mf_out")" "$_mf_file"
+        cat "$_mf_out"
+        rm -f "$_mf_out"
+        exit 1
+    fi
+    printf 'message: clean (no detector findings in %s)\n' "$_mf_file"
+    rm -f "$_mf_out"
     exit 0
 }
 
@@ -1027,6 +2239,24 @@ selftest() {
         _status=1
     fi
 
+    # Generative spelling matrix, per-detector value must/must-not
+    # tables, and the SPEC §27 coverage map (see the harness section
+    # above). Scratch space first; allocation failure fails closed.
+    ST_WORK=$(mktemp -d "${TMPDIR:-/tmp}/audit-selftest.XXXXXXXX") || {
+        printf '%s: error: cannot create selftest scratch directory (TMPDIR writable? disk full?)\n' \
+            "$SCRIPT_NAME" >&2
+        exit 2
+    }
+    st_label_matrix || _status=1
+    st_shape_matrix || _status=1
+    st_value_tables || _status=1
+    st_spec27_map || _status=1
+    st_hook_smoke || _status=1
+    st_message_file || _status=1
+    rm -f "$ST_WORK"/* 2>/dev/null
+    rmdir "$ST_WORK" 2>/dev/null
+    ST_WORK=
+
     if [ "$_status" -eq 0 ]; then
         printf 'selftest: all classes detected (or suppressed) as expected\n'
     else
@@ -1038,8 +2268,27 @@ selftest() {
 case "${1-}" in
 '') default_audit ;;
 --selftest) selftest ;;
+--scan-file)
+    # Internal test hook (see header): full engine over one file, standard
+    # exclusions, FINDING lines on stdout, exit 0 regardless of findings.
+    [ "$#" -eq 3 ] || usage
+    if [ ! -f "$3" ]; then
+        printf '%s: error: --scan-file: no such file: %s\n' \
+            "$SCRIPT_NAME" "$3" >&2
+        exit 0
+    fi
+    scan_file "$3" "$2"
+    exit 0
+    ;;
+--message-file)
+    # Pre-commit gate for commit-message text (see header): full engine,
+    # no marker suppression, exit 1 on any finding.
+    [ "$#" -eq 2 ] || usage
+    message_file_audit "$2"
+    ;;
 -h | --help)
-    printf 'usage: scripts/%s [--selftest]\n' "$SCRIPT_NAME"
+    printf 'usage: scripts/%s [--selftest] [--scan-file NAME PATH] [--message-file FILE]\n' \
+        "$SCRIPT_NAME"
     exit 0
     ;;
 *)

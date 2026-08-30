@@ -1,14 +1,17 @@
 # Synthetic audit fixture: machine serial numbers (SPEC §27) in the serial
 # label spellings; a `machine` prefix word before the matched span needs no
 # handling of its own, because the label matches a span inside the
-# lowercased line. The value anchor keeps prose safe: a serial is ONE
-# unbroken run carrying both a letter and a digit, so free text
-# (`see the underside of the device`) never trips, and neither do pure-digit
-# runs (a Terraform state file's `"serial": 57` growth counter) nor
-# pure-letter words. Letters-then-digits serials (`ABC12345`) are covered
-# by a dedicated third alternative. Synthetic values.
+# lowercased line. The detector anchors on a PROPERTY, not a positional
+# pattern: one post-label token of 8-plus carrying BOTH a letter and a
+# digit, however sparse the interleaving (`ABCDEFG1` and `ABC1234Z` below
+# are the sparse-interleaving misses a positional grammar let through,
+# from review thread 3887950232). Free text, pure-digit runs (a Terraform
+# state file's growth counter) and pure-letter words carry no such token
+# and never trip. Synthetic values.
 Machine Serial Number: C02ZQ0ABC123
 Machine Serial Number: ABC12345
+Machine Serial Number: ABCDEFG1
+serial_number = "ABC1234Z"
 serial_number = "C02ZQ0ABC123"
 "SerialNumber": "1A2B3C4D5E"
 SERIAL-NUMBER: pf-2x9k1q
@@ -18,3 +21,8 @@ serial number: see the underside of the device
 Serial Number: unknown
 serial_number = each.value.serial
 "serial": 123456789
+# Letters-digits serial with the vendor hyphen spelling, and the
+# Makefile :=: assignment separator (both found by the selftest
+# spelling matrix). Synthetic values.
+serial_number = "ABC-12345"
+serial := CND1234567

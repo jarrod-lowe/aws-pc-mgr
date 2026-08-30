@@ -19,3 +19,7 @@ AWS_PROFILE=default
 aws_profile: "example"
 export AWS_PROFILE=<profile>
 # The AWS profile is selected externally after SSO login.
+# Dotted-key and Makefile :=: assignment spellings the label grammar
+# accepts (found by the selftest spelling matrix). Synthetic value.
+aws.profile = "corp-admin-prod"
+AWS_PROFILE := corp-admin-prod

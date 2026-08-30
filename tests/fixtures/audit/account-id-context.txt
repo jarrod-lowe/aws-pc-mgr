@@ -1,2 +1,7 @@
 # Synthetic audit fixture: 12-digit AWS account ID in an account-keyed line.
 account_id = "123456789012"
+# Dotted-key and Makefile :=: assignment spellings the label grammar
+# accepts (label word separators and the assignment separator; found by
+# the selftest spelling matrix). Synthetic value.
+account.id = "123456789012"
+account_id := 123456789012
