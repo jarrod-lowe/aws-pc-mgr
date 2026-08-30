@@ -664,7 +664,7 @@ tests cannot trip it —
 the SSO-profile label is aws-prefixed only (`AWS_PROFILE`, `aws_profile`,
 `AwsProfile`, spaced `AWS PROFILE = …`; the bare `profile` key of HCL
 documentation is deliberately not matched) and its value anchor is a single
-unbroken 4-plus run in any mix — letter-only profile names are real, so no
+unbroken run of any length — letter-only profile names are real, so no
 shape is required — with an explicit generic-value
 exclusion (default, example, examples, placeholder, value, name, profile,
 none, test: words that name the slot, not a profile anyone selected), so
@@ -673,7 +673,7 @@ none, test: words that name the slot, not a profile anyone selected), so
 Windows-identifier labels (`username` — as `Windows username:`,
 `win_username`, `UserName`, `user.name`; alternated `hostname` /
 `computer name` — as a Windows `hostname` or `ComputerName` key) anchored
-to a single 4-plus identifier run with doc-filler sets excluded after the
+to a single identifier run of any length with doc-filler sets excluded after the
 match (a labeled `root` or `Administrator` is a finding, not filler), so a
 labeled identifier on the Windows machine is caught as committed content
 even when the audit runs on the Unix CI runner whose runtime checks can

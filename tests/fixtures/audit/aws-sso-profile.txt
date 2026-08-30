@@ -14,6 +14,8 @@ $env:AWS_PROFILE = 'corp_admin_prod'
 AWS PROFILE = CorpAdmin-Prod2
 awsProfile=dev_profile
 AWS_PROFILE=production
+AWS_PROFILE=dev
+AWS_PROFILE=q
 # Generic, placeholder, short and prose forms that must stay silent.
 AWS_PROFILE=default
 aws_profile: "example"

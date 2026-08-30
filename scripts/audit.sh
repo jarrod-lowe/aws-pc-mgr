@@ -136,7 +136,9 @@
 # span, so `Windows username` needs no prefix handling of its own; the
 # bare `user` is deliberately not a label), the hostname label alternates
 # `host…name` and the Windows-UI `computer…name`, and each value anchor is
-# a single 4-plus run — spaces break the run, which is the prose brake —
+# a single identifier run of ANY length (one-character profile, account
+# and computer names are real; review round 29 removed the 4-plus floors)
+# — spaces break the run, which is the prose brake —
 # with doc-filler sets (GENERIC_LABELED_USERS / GENERIC_LABELED_HOSTS)
 # excluded after the match. A pre-flight walk over the tracked tree and
 # full history with maximally loosened anchors found zero label-adjacent
@@ -167,7 +169,8 @@
 # VALUE anchor rather than its label: profile names are short arbitrary
 # strings, and letter-only ones are real (`AWS_PROFILE=production`), so no
 # character-class shape can separate a name from an ordinary word. The value
-# run is therefore only length-floored — one unbroken 4-plus run, whose class
+# run is therefore unconstrained in length — one unbroken run (any length,
+# including a single character), whose class
 # the `<profile>` placeholder's angle bracket cannot enter — and the
 # documentation boilerplate a shape restriction used to keep out is excluded
 # by an explicit GENERIC_PROFILES set instead: a hit whose every captured
@@ -344,7 +347,8 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 #   profile     self-referential filler (`AWS_PROFILE=profile`)
 #   none        documentation/CI "leave unset" spelling
 #   test        CI example value
-# The aws-sso-profile value anchor is a shape-free 4-plus run (letter-only
+# The aws-sso-profile value anchor is a shape-free run of any length
+# (letter-only
 # names are real), so emit_hits's generic-value gate excludes these AFTER the
 # match, and default_audit's runtime AWS_PROFILE guard skips the same set.
 GENERIC_PROFILES=' default example examples placeholder value name profile none test '
@@ -503,11 +507,11 @@ LABEL_ASSIGN='([=:]|:=)'
 # detector ERE in LABEL_DETECTORS and the generic-value gate in emit_hits
 # (GENERIC_PROFILES), so the gate always re-anchors EXACTLY the value tokens
 # the detector matched and the two can never drift apart. The value anchor is
-# deliberately shape-free — one unbroken 4-plus run in any mix, because
+# deliberately shape-free — one unbroken run of any length, because
 # letter-only profile names (`production`) are real — so the prose/placeholder
 # safety lives in the gate, not here.
 AWS_PROFILE_LABEL="aws${LABEL_WORD_SEP}profile[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
-AWS_PROFILE_VALUE='[A-Za-z0-9][A-Za-z0-9._-]{3,}'
+AWS_PROFILE_VALUE='[A-Za-z0-9][A-Za-z0-9._-]*'
 # SERIAL_LABEL/SERIAL_VALUE are the machine-serial-number detector's label
 # and value anchors, shared between the detector ERE and the serial-property
 # gate in emit_hits for the same reason AWS_PROFILE_LABEL/AWS_PROFILE_VALUE
@@ -547,7 +551,7 @@ PERSONAL_NAME_VALUE="([A-Za-z][A-Za-z'.-]{4,}[[:space:]]+[A-Za-z][A-Za-z'.-]{2,}
 # `ComputerName` in every case and separator spelling. Values are single
 # unbroken runs (spaces break the run — the prose brake): usernames carry
 # dots/underscores/hyphens (alice.smith), hostnames dots/hyphens
-# (ALICE-PC, ci-host.example.internal), each 4-plus. Prose/boilerplate is
+# (ALICE-PC, ci-host.example.internal), of any length. Prose/boilerplate is
 # excluded AFTER the match by generic-value gates (eh_all_generic): these
 # are deliberately NOT the runtime GENERIC_USERS set — root/administrator
 # are REAL Windows accounts and stay findings — but doc-word sets
@@ -557,9 +561,9 @@ PERSONAL_NAME_VALUE="([A-Za-z][A-Za-z'.-]{4,}[[:space:]]+[A-Za-z][A-Za-z'.-]{2,}
 # values, so nothing in this repository gates on them; the sets exist for
 # future prose. Both classes are marker-suppressible label classes.
 WINUSER_LABEL="user${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
-WINUSER_VALUE='[A-Za-z0-9][A-Za-z0-9._-]{3,}'
+WINUSER_VALUE='[A-Za-z0-9][A-Za-z0-9._-]*'
 HOSTNAME_LABEL="(host|computer)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
-HOSTNAME_VALUE='[A-Za-z0-9][A-Za-z0-9.-]{3,}'
+HOSTNAME_VALUE='[A-Za-z0-9][A-Za-z0-9.-]*'
 LABEL_DETECTORS="aws-secret-access-key:(aws${LABEL_WORD_SEP})?secret${LABEL_WORD_SEP}access${LABEL_WORD_SEP}key[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
 aws-activation-code:activation${LABEL_WORD_SEP}code[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
 aws-session-token:(aws${LABEL_WORD_SEP})?(session|security)${LABEL_WORD_SEP}token[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}
@@ -576,7 +580,7 @@ uuid-literal:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-f
 sso-start-url:[hH][tT][tT][pP][sS]://[A-Za-z0-9-][A-Za-z0-9.-]*[aA][wW][sS][aA][pP][pP][sS][.][cC][oO][mM]/start
 email-address:[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]{2,}
 account-id-arn:[aA][rR][nN]:[aA][wW][sS][A-Za-z-]*:[A-Za-z0-9-]*(:[A-Za-z0-9-]*)?:[0-9]{12}
-user-home-path:(^|[^A-Za-z0-9/])([A-Za-z]:${PATH_SEP_CLASS}{1,2}|/)[Uu][sS][eE][rR][sS]${PATH_SEP_CLASS}{1,2}[A-Za-z0-9._-]{2,}|(^|[^A-Za-z0-9/])/home/[A-Za-z0-9._-]{2,}"
+user-home-path:(^|[^A-Za-z0-9/])([A-Za-z]:${PATH_SEP_CLASS}{1,2}|/)[Uu][sS][eE][rR][sS]${PATH_SEP_CLASS}{1,2}[A-Za-z0-9._-]+|(^|[^A-Za-z0-9/])/home/[A-Za-z0-9._-]+"
 
 # Suppression marker (see header): a raw line containing this string is
 # skipped by every suppressible detector, in file mode and in history mode.
@@ -1754,6 +1758,21 @@ EOF
         printf 'D://Users//mx.user1\n'
         printf '/Users/mx.user1\n/users/Mx.User_1\n/USERS/mxuser2\n'
         printf '/home/mx.user1\n/home/ec2-user/sub\n/home/mx_user-2\n'
+        # Short username segments: one-character names are real (review
+        # round 29 removed the {2,} floor). Length sweep, segments 1..4
+        # across all four path forms (Windows backslash, Windows slash,
+        # macOS /Users, Linux /home).
+        _sh_seg=
+        _sh_segp=wxyz
+        _sh_li=1
+        while [ "$_sh_li" -le 4 ]; do
+            _sh_seg=${_sh_seg}${_sh_segp%"${_sh_segp#?}"}
+            _sh_segp=${_sh_segp#?}
+            printf 'C:\\Users\\%s\nC:/Users/%s\n/Users/%s\n/home/%s\n' \
+                "$_sh_seg" "$_sh_seg" "$_sh_seg" "$_sh_seg" \
+                >>"$ST_WORK/shp-home-m"
+            _sh_li=$((_sh_li + 1))
+        done
     } >>"$ST_WORK/shp-home-m"
     : >"$ST_WORK/shp-home-x"
     cat >>"$ST_WORK/shp-home-x" <<'EOF'
@@ -1762,7 +1781,6 @@ copy "%USERPROFILE%\.aws\config" D:\
 ~/.aws/config and $HOME/.aws/config identify nobody
 https://example.com/home/page
 /Home/mxuser
-C:\Users\a
 EOF
     st_check 'shape user-home-path' user-home-path \
         "$ST_WORK/shp-home-m" "$ST_WORK/shp-home-x" || _sh_status=1
@@ -1911,7 +1929,9 @@ aws-sso-profile|X|export AWS_PROFILE=<profile>
 aws-sso-profile|X|aws_profile = "default."
 aws-sso-profile|X|aws_profile = "default,"
 aws-sso-profile|X|AWS_PROFILE=examples
-aws-sso-profile|X|AWS_PROFILE=abc
+aws-sso-profile|M|AWS_PROFILE=dev
+aws-sso-profile|M|AWS_PROFILE=abc
+aws-sso-profile|M|AWS_PROFILE=x
 aws-sso-profile|X|AWS_PROFILE=
 aws-sso-profile|X|the AWS profile is selected externally after SSO login.
 aws-sso-profile|X|profile = "some-profile"
@@ -1965,7 +1985,9 @@ windows-username-labeled|X|username: none
 windows-username-labeled|X|username: unknown
 windows-username-labeled|X|username: example
 windows-username-labeled|X|username = <username>
-windows-username-labeled|X|username: abc
+windows-username-labeled|M|username: bob
+windows-username-labeled|M|username: abc
+windows-username-labeled|M|username: q
 windows-username-labeled|X|username: …
 windows-username-labeled|X|User Name: name
 windows-username-labeled|X|username
@@ -1982,7 +2004,9 @@ hostname-labeled|X|hostname: name
 hostname-labeled|X|computer name: your
 hostname-labeled|X|hostname = "example.com"
 hostname-labeled|X|hostname = <hostname>
-hostname-labeled|X|hostname: abc
+hostname-labeled|M|hostname: PC1
+hostname-labeled|M|hostname: abc
+hostname-labeled|M|hostname: v
 hostname-labeled|X|hostname: …
 hostname-labeled|X|hostname
 EOF
@@ -2028,6 +2052,94 @@ EOF
         done
         st_serial_table_line "$_sv_len" 1 "$_sv_len" yes X
         st_serial_table_line "$_sv_len" 1 "$_sv_len" no X
+    done
+    # Length sweep (review round 29, the minimum-length-floor class): the
+    # value LENGTH dimension generated, not sampled. The floorless
+    # identifier classes (aws-sso-profile, windows-username-labeled,
+    # hostname-labeled — floors removed down to the grammatical minimum of
+    # one character) sweep 1..12 must-fire; the fixed-floor classes sweep
+    # their grammar's boundary (below the floor must stay silent, at and
+    # above must fire, including the substring over-run just past the
+    # ceiling where one exists); machine-serial-number additionally sweeps
+    # pure-digit and pure-letter tokens at, above the floor (the
+    # property gate's silent side); personal-name sweeps its two-run shape
+    # (run lengths 1..6 squared — must fire exactly when each run is
+    # 3-plus and the total is 8-plus). Values follow the SYNTHETIC-KEY
+    # CONVENTION: sequential pools, sliced by growing prefixes.
+    st_sweep_row() {
+        printf '%s|%s|%s "%s"\n' "$1" "$2" "$3" "$4" >>"$ST_WORK/vt-table"
+    }
+    # st_sweep_grow DET FLAG SPELL POOL FROM TO FLOOR — grow a prefix of
+    # POOL one character per length; emit a row per length FROM..TO. The
+    # row is X when FLAG is X (detector-side suppression: the serial
+    # property gate) or when the length is below FLOOR (FLOOR 0 = no
+    # floor); M otherwise.
+    st_sweep_grow() {
+        _sg_det=$1 _sg_flag_mode=$2 _sg_spell=$3 _sg_pool=$4
+        _sg_from=$5 _sg_to=$6 _sg_floor=$7
+        _sg_val=
+        _sg_i=1
+        _sg_full=$_sg_pool
+        while [ "$_sg_i" -lt "$_sg_from" ]; do
+            _sg_val=${_sg_val}${_sg_pool%"${_sg_pool#?}"}
+            _sg_pool=${_sg_pool#?}
+            [ -n "$_sg_pool" ] || _sg_pool=$_sg_full
+            _sg_i=$((_sg_i + 1))
+        done
+        while [ "$_sg_i" -le "$_sg_to" ]; do
+            _sg_val=${_sg_val}${_sg_pool%"${_sg_pool#?}"}
+            _sg_pool=${_sg_pool#?}
+            [ -n "$_sg_pool" ] || _sg_pool=$_sg_full
+            if [ "$_sg_flag_mode" = X ] ||
+                { [ "$_sg_floor" -gt 0 ] && [ "$_sg_i" -lt "$_sg_floor" ]; }; then
+                st_sweep_row "$_sg_det" X "$_sg_spell" "$_sg_val"
+            else
+                st_sweep_row "$_sg_det" M "$_sg_spell" "$_sg_val"
+            fi
+            _sg_i=$((_sg_i + 1))
+        done
+    }
+    st_sweep_grow aws-sso-profile M 'aws_profile =' abcdefghijkl 1 12 0
+    st_sweep_grow windows-username-labeled M 'username =' abcdefghijkl 1 12 0
+    st_sweep_grow hostname-labeled M 'hostname =' abcdefghijkl 1 12 0
+    st_sweep_grow aws-secret-access-key M 'secret_access_key =' \
+        EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE 33 46 35
+    st_sweep_grow aws-session-token M 'session_token =' \
+        SYNTHETICSESSIONTOKEN0123456789 14 17 16
+    st_sweep_grow aws-activation-code M 'activation_code =' \
+        SYNTHETICACTIVATIONCODE0123456789 6 9 8
+    st_sweep_grow account-id-context M 'account_id =' 1234567890123456 10 13 12
+    st_sweep_grow machine-serial-number M 'serial_number =' abc123abc123 6 10 8
+    # Pure-digit / pure-letter serial tokens at and above the 8-plus
+    # floor: the ERE matches but the serial-property gate must skip them
+    # (no digit, or no letter) — the sweep's silent side for the property.
+    st_sweep_grow machine-serial-number X 'serial_number =' 1234567890123 8 10 0
+    st_sweep_grow machine-serial-number X 'serial_number =' abcdefghijkl 8 10 0
+    # personal-name two-run shape: run lengths 1..6 squared, runs grown
+    # character by character (the outer run carries across its inner loop).
+    _sw_p1=ABCDEF
+    _sw_r1=
+    _sw_l1=1
+    while [ "$_sw_l1" -le 6 ]; do
+        _sw_r1=${_sw_r1}${_sw_p1%"${_sw_p1#?}"}
+        _sw_p1=${_sw_p1#?}
+        _sw_p2=GHIJKL
+        _sw_r2=
+        _sw_l2=1
+        while [ "$_sw_l2" -le 6 ]; do
+            _sw_r2=${_sw_r2}${_sw_p2%"${_sw_p2#?}"}
+            _sw_p2=${_sw_p2#?}
+            if [ "$_sw_l1" -ge 3 ] && [ "$_sw_l2" -ge 3 ] &&
+                [ "$((_sw_l1 + _sw_l2))" -ge 8 ]; then
+                st_sweep_row personal-name M 'Personal Name:' \
+                    "${_sw_r1} ${_sw_r2}"
+            else
+                st_sweep_row personal-name X 'Personal Name:' \
+                    "${_sw_r1} ${_sw_r2}"
+            fi
+            _sw_l2=$((_sw_l2 + 1))
+        done
+        _sw_l1=$((_sw_l1 + 1))
     done
     printf '%s\n' "$LABEL_DETECTORS" | sed 's/:.*//' >"$ST_WORK/vt-dets"
     while IFS= read -r _vt_det; do
@@ -2428,7 +2540,7 @@ default_audit() {
     # username: the literal scan substring-matches, so a value that is
     # exactly one of GENERIC_PROFILES (`default`, `test` — words naming the
     # slot, not a profile, and appearing in this repository's own prose) is
-    # skipped, while every other 4-plus name is scanned, letter-only or not
+    # skipped, while every other 2-plus name is scanned, letter-only or not
     # — the same rule and set the aws-sso-profile label detector's
     # generic-value gate applies.
     if [ -n "$_profile" ]; then
@@ -2439,7 +2551,13 @@ default_audit() {
             _profile=
             ;;
         esac
-        [ ${#_profile} -ge 4 ] 2>/dev/null || _profile=
+        # Minimum length for the RUNTIME scan is 2, not the label
+        # detector's 1: this is a fixed-substring scan over every file and
+        # every patch, and a 1-character needle matches essentially every
+        # line — that is not over-detection, it is breakage. A 1-character
+        # profile in COMMITTED content is still caught by the aws-sso-profile
+        # label detector, whose value floor is the grammatical minimum.
+        [ ${#_profile} -ge 2 ] 2>/dev/null || _profile=
     fi
 
     # 1. Tracked files. The list is captured BEFORE the loop and its failure

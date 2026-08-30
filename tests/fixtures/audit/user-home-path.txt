@@ -8,6 +8,8 @@
 C:\Users\alice.smith\.aws\config
 D:/Users/carol.dane/notes.txt
 "/Users/jarrod/.aws/config"
+C:\Users\w\.aws\config
+/home/x/tools
 home_dir = "/home/ec2-user"
 "C:\\Users\\bob.nguyen\\Documents\\report.pdf"
 # Placeholder and variable forms that must stay silent.
