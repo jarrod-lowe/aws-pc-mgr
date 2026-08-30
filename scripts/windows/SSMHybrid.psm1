@@ -19,13 +19,15 @@ $ErrorActionPreference = 'Stop'
 #
 # The functions below are thin fact-gatherers / runners for the Windows side
 # of enrollment. They are exported (setup.ps1 and check.ps1 call them
-# directly after Import-Module). With one exception they are NOT unit-tested
-# here: they call Windows-only cmdlets (Get-AuthenticodeSignature,
+# directly after Import-Module). With two exceptions they are NOT
+# unit-tested here: they call Windows-only cmdlets (Get-AuthenticodeSignature,
 # Invoke-WebRequest against Windows TLS settings, executing a .exe), which do
 # not exist in the Linux unit-test container. Windows-tier tests
 # (tests/windows/*.Tests.ps1) exercise them on the real machine. The
-# exception is Get-SsmServiceInfo, whose Get-CimInstance call is unit-tested
-# in tests/unit against a stub planted in this module's scope.
+# exceptions are Get-SsmServiceInfo, whose Get-CimInstance call is unit-tested
+# in tests/unit against a stub planted in this module's scope, and
+# Invoke-SsmEnrollment's temp-download cleanup, whose Remove-Item retry loop
+# is unit-tested in tests/unit with every Windows-only cmdlet mocked.
 #
 # Windows-only cmdlets appear only inside function bodies (never at module
 # scope) so importing this module on any OS succeeds.
@@ -126,7 +128,21 @@ Thin runner for the Register action:
      Test-SsmSignature and REFUSES to run anything that is not Valid and
      signed by Amazon.com Services LLC (SPEC 21 steps 6-8);
   4. registers with -region/-activation-id/-activation-code;
-  5. removes the temp executable.
+  5. removes the temp download directory (SPEC 21 step 16), retrying a
+     bounded number of times because antivirus software can still hold the
+     executable open for a few seconds after it runs.
+
+CLEANUP POSTCONDITION AND ITS FAILURE BEHAVIOR: removing the temp download is
+required, but a leftover after a SUCCESSFUL enrollment is deliberately NOT an
+error - throwing from the cleanup would mask the successful result and could
+push the operator toward a needless -ForceReregister. When the directory
+survives all attempts, the function (a) writes a warning naming the surviving
+path so the failure surfaces immediately, and (b) reports
+TempDownloadRemoved = $false on its result so the caller can phrase its own
+summary truthfully. The temp path is random and carries no secrets. When the
+enrollment itself failed, the cleanup still runs in finally and a surviving
+directory is warned about the same way, but the original failure - not the
+cleanup - is what propagates.
 
 SECURITY: the activation code is passed to the executable only. The command
 line is never echoed, written or logged, and the tool's stdout AND stderr are
@@ -149,7 +165,12 @@ Read-SsmSecret, never from command history.
 Override the download URL (testing seam). Defaults to Get-SsmSetupCliUrl.
 
 .OUTPUTS
-None. Throws on any failure, including an unacceptable signature.
+[PSCustomObject] on success, with TempDownloadPath ([string], the temp
+directory ssm-setup-cli was downloaded into) and TempDownloadRemoved
+([bool], whether that directory was gone when the function returned; $false
+means a warning naming the surviving path was written - see DESCRIPTION).
+Throws on any failure, including an unacceptable signature; nothing is
+returned when the function throws.
 #>
 function Invoke-SsmEnrollment {
     [CmdletBinding()]
@@ -188,6 +209,13 @@ function Invoke-SsmEnrollment {
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
     $exePath = Join-Path $tempDir 'ssm-setup-cli.exe'
 
+    # Cleanup retry knobs (see the finally block): antivirus locks on the
+    # executable are transient, so the removal is retried a small bounded
+    # number of times with a short delay between attempts.
+    $cleanupAttempts = 3
+    $cleanupRetryDelaySeconds = 2
+    $tempDownloadRemoved = $false
+
     try {
         Invoke-WebRequest -Uri $Url -OutFile $exePath -UseBasicParsing | Out-Null
 
@@ -217,9 +245,43 @@ function Invoke-SsmEnrollment {
             throw "Invoke-SsmEnrollment: ssm-setup-cli exited with code $LASTEXITCODE. Registration may have partially completed; inspect the SSM Agent log before re-running."
         }
     } finally {
-        if (Test-Path -LiteralPath $tempDir) {
-            Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        # SPEC 21 step 16: removing the temp download is a required
+        # postcondition, but a transient lock (typically antivirus still
+        # scanning the executable) must never turn a successful enrollment
+        # into a failure - throwing here would mask the successful result
+        # and could push the operator toward a needless -ForceReregister.
+        # So: retry a bounded number of times, and if the directory still
+        # survives, surface it loudly instead (a warning naming the path
+        # plus TempDownloadRemoved = $false on the result), never silently
+        # and never as a thrown error. The cleanup also runs when the try
+        # block threw; in that case the warning still fires but the original
+        # failure is what propagates.
+        if (-not (Test-Path -LiteralPath $tempDir)) {
+            $tempDownloadRemoved = $true
+        } else {
+            for ($attempt = 1; $attempt -le $cleanupAttempts; $attempt++) {
+                try {
+                    Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction Stop
+                } catch {
+                    # Locked; retry after a short wait (not after the last attempt).
+                }
+                if (-not (Test-Path -LiteralPath $tempDir)) {
+                    $tempDownloadRemoved = $true
+                    break
+                }
+                if ($attempt -lt $cleanupAttempts) {
+                    Start-Sleep -Seconds $cleanupRetryDelaySeconds
+                }
+            }
         }
+        if (-not $tempDownloadRemoved) {
+            Write-Warning ("Invoke-SsmEnrollment: the temporary download directory could not be removed after $cleanupAttempts attempts and is still on disk: $tempDir. Enrollment itself was not affected; delete the directory manually once any antivirus scan has released it.")
+        }
+    }
+
+    return [PSCustomObject]@{
+        TempDownloadPath    = $tempDir
+        TempDownloadRemoved = $tempDownloadRemoved
     }
 }
 

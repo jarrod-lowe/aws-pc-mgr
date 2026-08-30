@@ -347,9 +347,12 @@ if ($action -eq 'Register') {
         # forces TLS 1.2 where needed, downloads ssm-setup-cli to a temp file,
         # REFUSES to run any binary whose Authenticode signature is not Valid
         # and signed by Amazon.com Services LLC, runs the registration without
-        # ever echoing or logging the command line (SPEC 43), and deletes the
-        # temp file afterwards.
-        Invoke-SsmEnrollment -Region $Region -ActivationId $ActivationId -ActivationCode $activationCode
+        # ever echoing or logging the command line (SPEC 43), and removes the
+        # temp download directory afterwards (SPEC 21 step 16) with bounded
+        # retries. A leftover after a successful enrollment is NOT a failure:
+        # the module warns naming the path and reports it on this result, so
+        # the summary at the end can stay truthful.
+        $enrollmentResult = Invoke-SsmEnrollment -Region $Region -ActivationId $ActivationId -ActivationCode $activationCode
     } catch {
         Write-Fail ('Registration did not complete: ' + $_.Exception.Message)
         Write-Host 'Activation values were not logged. Registration may have partially'
@@ -413,7 +416,22 @@ if ($action -eq 'Register') {
     Write-Host ('Region          : ' + $registrationAfter.Region)
     Write-Host ('Service         : AmazonSSMAgent ' + $serviceAfter.Status + ' / startup ' + $serviceAfter.StartType)
     Write-Host 'It can take a few minutes before the node reports Online in AWS Systems Manager.'
-    Write-Step 'Temporary download removed; activation values cleared from memory.'
+    if ($enrollmentResult.TempDownloadRemoved) {
+        Write-Step 'Temporary download removed; activation values cleared from memory.'
+    } else {
+        # The module already warned when its removal retries ran out (SPEC 21
+        # step 16 is a postcondition, but a leftover is not a failed
+        # enrollment). The summary must not repeat the unconditional removal
+        # claim while the download is still on disk: nothing secret is in it -
+        # it is the AWS ssm-setup-cli executable - but the operator's mental
+        # model must match the filesystem, so name the path and the fix.
+        Write-Host ('WARNING: the temporary download could not be removed and is still on disk:') -ForegroundColor Yellow
+        Write-Host ('  ' + $enrollmentResult.TempDownloadPath)
+        Write-Host 'Nothing secret is in it (the AWS ssm-setup-cli executable); delete it manually'
+        Write-Host 'once any antivirus scan has released the lock, for example:'
+        Write-Host ("  Remove-Item -LiteralPath '" + $enrollmentResult.TempDownloadPath + "' -Recurse -Force")
+        Write-Step 'Activation values cleared from memory.'
+    }
     exit 0
 }
 

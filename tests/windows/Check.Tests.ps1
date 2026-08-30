@@ -246,6 +246,40 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
             Remove-Item -LiteralPath $tempLog -Force -ErrorAction SilentlyContinue
         }
     }
+
+    It 'withholds a bare activation-shaped UUID line even with no credential label' -Skip:(-not $script:IsWindowsOs) {
+        # AWS responses and agent error lines can echo the enrollment
+        # activation ID as a bare canonical UUID with no label on the line,
+        # so the credential pattern carries the UUID shape itself (the same
+        # 8-4-4-4-12 form Test-SsmActivationId documents) instead of relying
+        # on an 'ActivationId' label being present. Over-withholding is the
+        # safe direction: a line carrying some unrelated UUID becomes the
+        # placeholder and is counted, never lost silently. The fixture UUID
+        # is the repo's established synthetic value, so both lines carrying
+        # it bear the audit's synthetic marker.
+        $tempLog = Join-Path ([System.IO.Path]::GetTempPath()) ('ssm-check-uuid-redact-' + [System.IO.Path]::GetRandomFileName() + '.log')
+        try {
+            @(
+                '2026-08-29 00:00:20 WARN agent heartbeat ok before retry'
+                '2026-08-29 00:00:21 WARN registration attempt failed for 08e51e79-2c3f-4a5d-8f6e-9a7b0c1d2e3f' # audit-allow:synthetic
+                '2026-08-29 00:00:22 WARN agent heartbeat ok after retry'
+            ) | Set-Content -LiteralPath $tempLog
+
+            $result = Invoke-CheckScript -ExtraArguments @('-AgentLogPath', ('"' + $tempLog + '"'))
+
+            # Plain warning lines are still printed verbatim.
+            $result.Output | Should -Match ([Regex]::Escape('agent heartbeat ok before retry'))
+            $result.Output | Should -Match ([Regex]::Escape('agent heartbeat ok after retry'))
+            # The bare-UUID line is withheld behind the placeholder...
+            $result.Output | Should -Match ([Regex]::Escape('[line withheld: possible credential material]'))
+            # ...and the UUID itself never reaches the output.
+            $result.Output | Should -Not -Match ([Regex]::Escape('08e51e79-2c3f-4a5d-8f6e-9a7b0c1d2e3f')) # audit-allow:synthetic
+            # Exactly the one UUID-bearing line was withheld.
+            $result.Output | Should -Match '1 recent log warning/error line\(s\) withheld'
+        } finally {
+            Remove-Item -LiteralPath $tempLog -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 Describe 'check.ps1 read-failure reporting (SPEC 24)' {

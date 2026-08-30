@@ -106,6 +106,179 @@ Describe 'Get-SsmServiceInfo' {
     }
 }
 
+Describe 'Invoke-SsmEnrollment temp-download cleanup' {
+    # The enrollment runner is a Windows-only adapter, but its temp-download
+    # cleanup (SPEC 21 step 16) is pure cmdlet orchestration, so it IS
+    # unit-tested here: every Windows-only step is mocked, and the
+    # downloaded "executable" is a copy of the Unix 'true' binary, which
+    # keeps the native invocation and $LASTEXITCODE genuine. The suite's
+    # runner is the Linux container; on a host without 'true' these tests
+    # skip. Mocked Remove-Item failures simulate the transient antivirus
+    # lock the retry exists for; successful deletions inside the mock go
+    # through .NET so the mock cannot recurse into itself. Mock bodies that
+    # need a knob use $global: variables on purpose: a -ModuleName mock body
+    # runs in the module's session state and cannot see this file's scope.
+    BeforeAll {
+        # Get-AuthenticodeSignature does not exist in the Linux unit-test
+        # container, and Pester only mocks commands that resolve inside the
+        # target module's session state, so a stub is planted in SSMHybrid's
+        # scope for the Mock below to replace - the same pattern the
+        # Get-SsmServiceInfo Describe above uses for Get-CimInstance. It is
+        # unexported (explicit Export-ModuleMember list) and removed again in
+        # AfterAll so it never shadows the real cmdlet elsewhere.
+        $script:ssmHybridModule = Get-Module SSMHybrid
+        . $script:ssmHybridModule.NewBoundScriptBlock({
+            function Get-AuthenticodeSignature {
+                [CmdletBinding()]
+                param([string]$FilePath)
+            }
+        })
+        $script:TrueExe = (Get-Command -Name true -CommandType Application -ErrorAction SilentlyContinue).Source
+        $script:EnrollParams = @{
+            Region         = 'ap-southeast-2'
+            ActivationId   = '08e51e79-2c3f-4a5d-8f6e-9a7b0c1d2e3f' # audit-allow:synthetic
+            ActivationCode = 'not-a-real-activation-code' # audit-allow:synthetic
+            Url            = 'https://example.invalid/ssm-setup-cli.exe'
+        }
+    }
+
+    BeforeEach {
+        Mock Invoke-WebRequest -ModuleName SSMHybrid -MockWith {
+            # 'true' is resolved INSIDE the body: the body runs in the
+            # module's session state, not this file's.
+            $trueCmd = Get-Command -Name true -CommandType Application -ErrorAction Stop
+            Copy-Item -LiteralPath $trueCmd.Source -Destination $OutFile
+        }
+        # Valid Amazon signature, so the REAL Test-SsmSignature accepts the
+        # download and the runner reaches its executable and cleanup.
+        Mock Get-AuthenticodeSignature -ModuleName SSMHybrid -MockWith {
+            return [PSCustomObject]@{
+                Status            = 'Valid'
+                SignerCertificate = [PSCustomObject]@{
+                    Subject = 'CN=Amazon.com Services LLC, O=Amazon.com Services LLC, L=Seattle, S=Washington, C=US'
+                }
+            }
+        }
+        Mock Start-Sleep -ModuleName SSMHybrid -MockWith { }
+        Mock Write-Warning -ModuleName SSMHybrid -MockWith {
+            $global:EnrollCleanupWarnings = @($global:EnrollCleanupWarnings) + $Message
+        }
+        Mock Remove-Item -ModuleName SSMHybrid -MockWith {
+            if ($global:RemoveItemFailuresRemaining -gt 0) {
+                $global:RemoveItemFailuresRemaining--
+                throw 'simulated antivirus lock on the downloaded executable'
+            }
+            [System.IO.Directory]::Delete($LiteralPath, $true)
+        }
+        $global:EnrollCleanupWarnings = @()
+        $global:RemoveItemFailuresRemaining = 0
+    }
+
+    AfterEach {
+        Remove-Variable -Name EnrollCleanupWarnings, RemoveItemFailuresRemaining -Scope Global -ErrorAction SilentlyContinue
+    }
+
+    AfterAll {
+        . $script:ssmHybridModule.NewBoundScriptBlock({
+            Remove-Item -Path Function:\Get-AuthenticodeSignature -ErrorAction SilentlyContinue
+        })
+    }
+
+    It 'removes the temp download on the first attempt and reports it removed' {
+        if (-not $script:TrueExe) { Set-ItResult -Skipped -Because 'no exit-0 executable available on this host'; return }
+
+        $enrollmentResult = Invoke-SsmEnrollment @script:EnrollParams
+
+        $enrollmentResult.TempDownloadRemoved | Should -BeTrue
+        $enrollmentResult.TempDownloadPath | Should -Match 'ssm-setup'
+        Test-Path -LiteralPath $enrollmentResult.TempDownloadPath | Should -BeFalse
+        Should -Invoke Remove-Item -ModuleName SSMHybrid -Exactly 1
+        Should -Invoke Start-Sleep -ModuleName SSMHybrid -Exactly 0
+        $global:EnrollCleanupWarnings | Should -BeNullOrEmpty
+    }
+
+    It 'retries a locked temp download and succeeds on the second attempt' {
+        if (-not $script:TrueExe) { Set-ItResult -Skipped -Because 'no exit-0 executable available on this host'; return }
+        $global:RemoveItemFailuresRemaining = 1
+
+        $threw = $false
+        $enrollmentResult = $null
+        try {
+            $enrollmentResult = Invoke-SsmEnrollment @script:EnrollParams
+        } catch {
+            $threw = $true
+        }
+
+        $threw | Should -BeFalse
+        $enrollmentResult.TempDownloadRemoved | Should -BeTrue
+        Test-Path -LiteralPath $enrollmentResult.TempDownloadPath | Should -BeFalse
+        Should -Invoke Remove-Item -ModuleName SSMHybrid -Exactly 2
+        Should -Invoke Start-Sleep -ModuleName SSMHybrid -Exactly 1 -ParameterFilter { $Seconds -eq 2 }
+        $global:EnrollCleanupWarnings | Should -BeNullOrEmpty
+    }
+
+    It 'keeps enrollment a success when every removal attempt fails, warns naming the surviving path, and tries exactly three times' {
+        if (-not $script:TrueExe) { Set-ItResult -Skipped -Because 'no exit-0 executable available on this host'; return }
+        $global:RemoveItemFailuresRemaining = 99
+
+        $threw = $false
+        $enrollmentResult = $null
+        try {
+            $enrollmentResult = Invoke-SsmEnrollment @script:EnrollParams
+        } catch {
+            $threw = $true
+        }
+
+        $threw | Should -BeFalse
+        $enrollmentResult.TempDownloadRemoved | Should -BeFalse
+        $enrollmentResult.TempDownloadPath | Should -Match 'ssm-setup'
+        Test-Path -LiteralPath $enrollmentResult.TempDownloadPath | Should -BeTrue
+        Should -Invoke Remove-Item -ModuleName SSMHybrid -Exactly 3
+        Should -Invoke Start-Sleep -ModuleName SSMHybrid -Exactly 2
+        @($global:EnrollCleanupWarnings).Count | Should -Be 1
+        $global:EnrollCleanupWarnings[0] | Should -Match 'Invoke-SsmEnrollment'
+        $global:EnrollCleanupWarnings[0] | Should -Match ([Regex]::Escape($enrollmentResult.TempDownloadPath))
+
+        # Tidy: the surviving directory is this test's own doing, not the module's.
+        if ($enrollmentResult.TempDownloadPath) {
+            Remove-Item -LiteralPath $enrollmentResult.TempDownloadPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'still runs cleanup when enrollment itself fails, and lets the original failure propagate' {
+        if (-not $script:TrueExe) { Set-ItResult -Skipped -Because 'no exit-0 executable available on this host'; return }
+
+        # Force the signature gate to refuse, so the runner throws BEFORE
+        # the executable runs; the finally block must still attempt cleanup.
+        Mock Test-SsmSignature -ModuleName SSMHybrid -MockWith {
+            return [PSCustomObject]@{ Valid = $false; Reason = 'unit-test forced signature failure' }
+        }
+
+        $threw = $false
+        $failureMessage = ''
+        try {
+            Invoke-SsmEnrollment @script:EnrollParams | Out-Null
+        } catch {
+            $threw = $true
+            $failureMessage = $_.Exception.Message
+        }
+
+        $threw | Should -BeTrue
+        $failureMessage | Should -Match 'signature'
+        Should -Invoke Remove-Item -ModuleName SSMHybrid -Exactly 1
+        $global:EnrollCleanupWarnings | Should -BeNullOrEmpty
+    }
+
+    It 'exposes exactly TempDownloadPath and TempDownloadRemoved' {
+        if (-not $script:TrueExe) { Set-ItResult -Skipped -Because 'no exit-0 executable available on this host'; return }
+
+        $enrollmentResult = Invoke-SsmEnrollment @script:EnrollParams
+
+        $properties = @($enrollmentResult.PSObject.Properties | ForEach-Object { $_.Name })
+        $properties | Should -Be @('TempDownloadPath', 'TempDownloadRemoved')
+    }
+}
+
 Describe 'Module export surface' {
     It 'exports the eight contract functions plus the three Windows-only adapters (entry scripts call them after Import-Module)' {
         $exported = (Get-Module SSMHybrid).ExportedCommands.Keys | Sort-Object

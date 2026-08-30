@@ -86,9 +86,17 @@ $problems = New-Object -TypeName System.Collections.Generic.List[string]
 #                      secret/access/key above, kept as its own atom to match
 #                      the audit-side label exactly)
 # The non-label atoms appended to the alternation - the bare token\s*= (Token=
-# and unavoidably PaginationToken=-style keys) and the AKIA/ASIA key-ID shapes
-# - are not word lists and stay literal. Withholding too much is safe,
-# leaking is not.
+# and unavoidably PaginationToken=-style keys), the AKIA/ASIA key-ID shapes,
+# and the bare UUID shape - are not word lists and stay literal. The UUID
+# atom is withheld even UNlabeled: an activation ID IS a UUID (the canonical
+# 8-4-4-4-12 shape Test-SsmActivationId documents), and AWS responses and
+# agent error text can echo one with no label on the line, so the shape
+# itself - not only a labeled spelling - must withhold the line. This can
+# over-withhold a line carrying some unrelated UUID; that is the safe
+# direction (the line is replaced by the placeholder and counted, never
+# lost silently). The mi- managed-node-ID shape is deliberately NOT an
+# atom: the node ID is this script's intended output. Withholding too much
+# is safe, leaking is not.
 function Get-SsmCredentialLabelPattern {
     param([string[]]$Words)
     return ($Words -join '[\s_-]*')
@@ -106,6 +114,7 @@ $credentialLinePattern = '(?i)' + (@(
         'token\s*='
         'AKIA[0-9A-Z]{16}'
         'ASIA[0-9A-Z]{16}'
+        '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
     ) -join '|')
 $withheldLineCount = 0
 
