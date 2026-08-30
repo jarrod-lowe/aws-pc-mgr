@@ -13,6 +13,42 @@ run "invalid_bucket_name_rejected" {
   ]
 }
 
+run "reserved_prefix_bucket_names_rejected" {
+  command = plan
+
+  variables {
+    bucket_name = "sthree-example-state"
+  }
+
+  expect_failures = [
+    var.bucket_name,
+  ]
+}
+
+run "amzn_demo_prefix_bucket_name_rejected" {
+  command = plan
+
+  variables {
+    bucket_name = "amzn-s3-demo-example-state"
+  }
+
+  expect_failures = [
+    var.bucket_name,
+  ]
+}
+
+run "s3alias_suffix_bucket_name_rejected" {
+  command = plan
+
+  variables {
+    bucket_name = "win11-ssm-tfstate-example-s3alias"
+  }
+
+  expect_failures = [
+    var.bucket_name,
+  ]
+}
+
 run "bucket_from_variable" {
   command = apply
 

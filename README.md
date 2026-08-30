@@ -172,6 +172,8 @@ Naming rules (enforced by a variable validation):
 
 * 3–63 characters: lowercase letters, digits, hyphens;
 * must start and end with a letter or digit; no leading/trailing/double hyphen;
+* no S3-reserved forms: `sthree-` or `amzn-s3-demo-` prefixes, `-s3alias`
+  suffix (CreateBucket rejects these — validation catches them up front);
 * globally unique across all of AWS S3.
 
 The name **must not contain identifying information**: no person's name,
@@ -635,9 +637,10 @@ clone (git does not track `.git/hooks`):
 git config core.hooksPath scripts/hooks
 ```
 
-The default audit scans all tracked files — text directly, UTF-16 files
-(such as Windows PowerShell `>` redirection output) decoded to UTF-8 and
-scanned in decoded form — and the **full history of every commit** (message
+The default audit scans all tracked files — text directly, UTF-16 and
+BOM'd UTF-32 files (UTF-16 such as Windows PowerShell `>` redirection
+output) decoded to UTF-8 and scanned in decoded form — and the **full
+history of every commit** (message
 bodies, scanned for every commit independently of the path-filtered patches,
 plus the patches) for: AWS access-key IDs (`AKIA...`,
 `ASIA...`), secret-key, activation-code, session-token, account-ID,
@@ -751,11 +754,17 @@ need no history rewrite. Never use the marker to make a runtime-discovered
 value committable; that is not what it is for.
 
 **Binary content fails closed.** A tracked file with binary content that is
-not decodable UTF-16 (or when `iconv` is unavailable), and any commit whose
+not decodable UTF-16 or BOM'd UTF-32 (or when `iconv` is unavailable or
+lacks the encoding), and any commit whose
 patch shows only git's `Binary files ... differ` marker, each produce an
 explicit `unscannable-binary-content` finding: the audit never passes
 silently over content it could not scan — decode the file, commit text, or
-verify that history manually. The history scan fails closed the same way
+verify that history manually. A successful decode is re-verified too: when
+the decoded output still contains NUL bytes (`iconv` can read the wrong
+encoding — UTF-32 read as UTF-16 — "successfully" into NUL-interleaved
+garbage no detector can match), the file gets the same
+`unscannable-binary-content` finding rather than being scanned as text.
+The history scan fails closed the same way
 when it cannot even enumerate commits: a failing `git rev-list` (corrupt or
 unreadable history) exits with an error rather than reporting a clean
 zero-commit scan.

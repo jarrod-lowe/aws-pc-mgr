@@ -61,11 +61,12 @@
 #                                 for messages.
 #
 # What the default audit scans:
-#   * tracked files (git ls-files) — text files directly, UTF-16 files
-#     (BOM or NUL-interleaved bytes, e.g. Windows PowerShell `>` redirection
-#     output) decoded to UTF-8 and scanned in decoded form — by every
-#     detector AND by the runtime-value literal scans below, so a UTF-16
-#     file is not a blind spot for the bucket/username/hostname checks, and
+#   * tracked files (git ls-files) — text files directly, UTF-16 and
+#     BOM'd UTF-32 files (UTF-16 by BOM or NUL-interleaved bytes, e.g.
+#     Windows PowerShell `>` redirection output; UTF-32 by its 4-byte BOM)
+#     decoded to UTF-8 and scanned in decoded form — by every detector AND
+#     by the runtime-value literal scans below, so a UTF-16 or UTF-32 file
+#     is not a blind spot for the bucket/username/hostname checks, and
 #   * every commit, all refs: commit message body, changed-path list and
 #     patch. The message body is scanned for EVERY commit independently of
 #     the patch: the patch stream is path-filtered (audit script and
@@ -262,8 +263,9 @@
 #   random case and digit runs) are FORBIDDEN, even inside the harness's
 #   temp-file generators and even though this script itself is excluded
 #   from its own scan: the literals still get pushed. The value pools in
-#   MATRIX_LABEL_SETS, st_shape_matrix, st_value_tables, st_hook_smoke and
-#   st_message_file are the enforcement points of this rule.
+#   MATRIX_LABEL_SETS, st_shape_matrix, st_value_tables, st_hook_smoke,
+#   st_binary_decode and st_message_file are the enforcement points of
+#   this rule.
 #
 #   HARD RULE (no exception, by construction): the marker NEVER suppresses
 #   real AWS key material. A line matching an AKIA…/ASIA… access or session
@@ -297,13 +299,18 @@
 #   above never do.
 #
 # Binary content fails CLOSED — it is never silently skipped. A tracked file
-# with binary content that is not decodable UTF-16 (or when iconv is
-# unavailable), and any commit whose patch carries git's `Binary files ...
-# differ` marker (content not shown, so not content-scanned), each produce an
-# explicit `unscannable-binary-content` finding: decode the file, commit
-# text, or verify manually. The audit does not pass over content it could
-# not scan. (No binary files are tracked in this repository, so a clean
-# audit contains no such finding.)
+# with binary content that is not decodable UTF-16 or BOM'd UTF-32 (or when
+# iconv is unavailable or lacks the encoding), and any commit whose patch
+# carries git's `Binary files ... differ` marker (content not shown, so not
+# content-scanned), each produce an explicit `unscannable-binary-content`
+# finding: decode the file, commit text, or verify manually. Decode success
+# is not trusted either: every decoded output is re-verified, and a decode
+# that still leaves NUL bytes (iconv can read the wrong encoding — UTF-32
+# read as UTF-16 — "successfully" into NUL-interleaved garbage no detector
+# can match) is the same unscannable-binary-content finding, never a
+# scanned-as-text pass. The audit does not pass over content it could not
+# scan. (No binary files are tracked in this repository, so a clean audit
+# contains no such finding.)
 #
 # Failed reads fail CLOSED the same way. A `git show` that exits nonzero for
 # an individual commit — corrupt object or blob, an I/O error, a failing
@@ -928,18 +935,29 @@ has_nul_bytes() {
 # effective_scan_path FILE [LABEL] — decide ONCE per file which path holds
 # the content the detectors must grep, and set EFFECTIVE_PATH to it: FILE
 # itself when FILE is plain text, or a fresh temp file holding the UTF-8
-# decode when FILE is binary-looking and decodable UTF-16. LABEL, defaulting
-# to FILE, names FILE in findings. Binary-looking means NUL bytes or `grep
-# -I` calling it binary. The encoding is chosen from the first two bytes
-# (BOM, or a NUL interleaved with ASCII says the byte order) and the
-# head-derived guess is tried BEFORE the BOM-less default, because
+# decode when FILE is binary-looking and decodable UTF-16 or BOM'd UTF-32.
+# LABEL, defaulting to FILE, names FILE in findings. Binary-looking means
+# NUL bytes or `grep -I` calling it binary. The encoding is chosen from the
+# leading bytes (BOM, or a NUL interleaved with ASCII says the byte order)
+# and the head-derived guess is tried BEFORE the BOM-less default, because
 # `iconv -f UTF-16` on BOM-less input assumes an endianness and happily
-# decodes the wrong one into garbage. EFFECTIVE_PATH is empty when FILE is
-# empty (nothing to scan) or binary and not decodable — including when
-# iconv is unavailable — and the undecodable case fails closed with an
-# explicit finding instead of a silent pass (see header). A caller that
-# scans EFFECTIVE_PATH must afterwards drop_scan_temp EFFECTIVE_PATH FILE:
-# only a decoded temp is removed, never the tracked file itself.
+# decodes the wrong one into garbage. The 4-byte UTF-32 BOMs must be tested
+# BEFORE the 2-byte UTF-16 ones: a UTF-32LE file begins FF FE 00 00, whose
+# first two bytes ARE the UTF-16LE BOM, and reading UTF-32 as UTF-16 also
+# "succeeds" — iconv exits 0 and hands back NUL-interleaved garbage in
+# which no ASCII-shaped detector can match, a silent pass (any future
+# wider encoding whose BOM starts with a shorter one hides the same trap).
+# And because a decode succeeding is not proof it decoded the right
+# encoding, every decode is verified AFTER the fact: the decoded temp is
+# re-tested for NUL bytes, and output that still carries NULs was not
+# actually decoded to scannable text — the next candidate encoding is
+# tried, and none succeeding fails closed. EFFECTIVE_PATH is empty when
+# FILE is empty (nothing to scan) or binary and not decodable — including
+# when iconv is unavailable or lacks the encoding — and the undecodable
+# case fails closed with an explicit finding instead of a silent pass (see
+# header). A caller that scans EFFECTIVE_PATH must afterwards
+# drop_scan_temp EFFECTIVE_PATH FILE: only a decoded temp is removed, never
+# the tracked file itself.
 effective_scan_path() {
     _es_path=$1
     _es_label=${2-$_es_path}
@@ -949,22 +967,35 @@ effective_scan_path() {
         EFFECTIVE_PATH=$_es_path
         return 0
     fi
-    _es_head=$(od -An -N2 -t x1 -- "$_es_path" 2>/dev/null | tr -d ' \n')
+    _es_head=$(od -An -N4 -t x1 -- "$_es_path" 2>/dev/null | tr -d ' \n')
     _es_encs=
     case "$_es_head" in
-    fffe) _es_encs='UTF-16 UTF-16LE' ;;
-    feff) _es_encs='UTF-16 UTF-16BE' ;;
+    fffe0000) _es_encs='UTF-32 UTF-32LE' ;;
+    0000feff) _es_encs='UTF-32 UTF-32BE' ;;
+    fffe*) _es_encs='UTF-16 UTF-16LE' ;;
+    feff*) _es_encs='UTF-16 UTF-16BE' ;;
     00*) _es_encs='UTF-16BE UTF-16' ;;
-    ??00) _es_encs='UTF-16LE UTF-16' ;;
+    ??00*) _es_encs='UTF-16LE UTF-16' ;;
     esac
     if [ -n "$_es_encs" ] && command -v iconv >/dev/null 2>&1; then
-        _es_tmp=$(mktemp "${TMPDIR:-/tmp}/audit-utf16.XXXXXXXX") || _es_tmp=
+        _es_tmp=$(mktemp "${TMPDIR:-/tmp}/audit-decoded.XXXXXXXX") || _es_tmp=
         if [ -n "$_es_tmp" ]; then
             for _es_enc in $_es_encs; do
                 if iconv -f "$_es_enc" -t UTF-8 -- "$_es_path" \
                     >"$_es_tmp" 2>/dev/null; then
-                    EFFECTIVE_PATH=$_es_tmp
-                    return 0
+                    # Fail-closed backstop: iconv exiting 0 does not mean
+                    # the bytes became scannable text — the wrong encoding
+                    # decodes "successfully" into NUL-interleaved garbage
+                    # (UTF-32 read as UTF-16 does exactly that), which no
+                    # ASCII-shaped detector can match. A decoded temp that
+                    # still has NUL bytes was not actually scanned: try the
+                    # next candidate, and when none decodes to NUL-free
+                    # text fall through to the explicit unscannable finding
+                    # below instead of scanning garbage as if it were text.
+                    if ! has_nul_bytes "$_es_tmp"; then
+                        EFFECTIVE_PATH=$_es_tmp
+                        return 0
+                    fi
                 fi
             done
             rm -f "$_es_tmp"
@@ -992,9 +1023,10 @@ drop_scan_temp() {
 # Skips the audit script itself and the fixtures (also excluded at the
 # git-pathspec level; kept here so direct callers cannot bypass the
 # exclusion), and skips empty files. Binary-looking content (NUL bytes, a
-# UTF-16 BOM, or `grep -I` reporting binary) is handled fail-closed by
-# effective_scan_path: decoded and scanned when it is UTF-16, otherwise an
-# explicit unscannable-binary-content finding. PATH may itself be the path
+# UTF-16 or UTF-32 BOM, or `grep -I` reporting binary) is handled
+# fail-closed by effective_scan_path: decoded and scanned when it is
+# decodable (UTF-16, or BOM'd UTF-32 where iconv provides it), otherwise
+# an explicit unscannable-binary-content finding. PATH may itself be the path
 # effective_scan_path already produced for the file — its decoded temp —
 # which is plain text, so the decision re-runs as a no-op and no second
 # temp is created.
@@ -2406,6 +2438,174 @@ st_hook_smoke() {
     return 0
 }
 
+# st_wide_payload MODE WIDTH STRING — print STRING as fixed-width code units
+# for building UTF-16/UTF-32 test files without iconv (the test input must
+# be byte-identical on every platform, including ones whose iconv lacks the
+# encoding being tested): each byte of STRING becomes one code unit — WIDTH
+# 1 a 2-byte UTF-16 unit, WIDTH 2 a 4-byte UTF-32 unit — with the byte
+# first when MODE is le and last when MODE is be. The caller prepends the
+# BOM. NUL bytes cannot cross a command substitution and printf octal
+# escapes cannot be assembled in a variable, so each unit is printed with
+# one of four fixed formats; the strings here are ~50 bytes, so the
+# per-byte loop costs nothing.
+st_wide_payload() {
+    _wp_mode=$1
+    _wp_width=$2
+    _wp_rest=$3
+    while [ -n "$_wp_rest" ]; do
+        _wp_c=${_wp_rest%"${_wp_rest#?}"}
+        _wp_rest=${_wp_rest#?}
+        if [ "$_wp_mode" = be ]; then
+            if [ "$_wp_width" -eq 2 ]; then
+                printf '\0\0\0%s' "$_wp_c"
+            else
+                printf '\0%s' "$_wp_c"
+            fi
+        elif [ "$_wp_width" -eq 2 ]; then
+            printf '%s\0\0\0' "$_wp_c"
+        else
+            printf '%s\0' "$_wp_c"
+        fi
+    done
+    return 0
+}
+
+# st_decodable_nulfree FILE ENCS — succeed when iconv exists and SOME
+# encoding in ENCS decodes FILE to NUL-free text. This mirrors the candidate
+# lists effective_scan_path tries, but is probed HERE so the expectation
+# below is independent of the code under test: a platform whose iconv lacks
+# an encoding must still fail closed on such a file, and that outcome is
+# asserted rather than skipped.
+st_decodable_nulfree() {
+    command -v iconv >/dev/null 2>&1 || return 1
+    for _dn_enc in $2; do
+        if iconv -f "$_dn_enc" -t UTF-8 -- "$1" \
+            >"$ST_WORK/dn-probe" 2>/dev/null &&
+            ! has_nul_bytes "$ST_WORK/dn-probe"; then
+            rm -f "$ST_WORK/dn-probe"
+            return 0
+        fi
+    done
+    rm -f "$ST_WORK/dn-probe"
+    return 1
+}
+
+# st_bd_case FILE LABEL ENCS WHAT — scan a crafted wide-encoded FILE through
+# the real engine and assert exactly the outcome effective_scan_path owes:
+# the aws-access-key-id finding (the synthetic key is line 1 of every
+# crafted file) when st_decodable_nulfree says this platform's iconv can
+# decode FILE, else the explicit unscannable-binary-content finding — the
+# fail-closed rule. Both directions are strict: a decodable file whose key
+# is missed is the silent-pass bug this guards, and an undecodable file
+# scanned as text is the same bug wearing the decode's coat.
+st_bd_case() {
+    _bc_file=$1
+    _bc_label=$2
+    _bc_encs=$3
+    _bc_what=$4
+    scan_file "$_bc_file" "$_bc_label" >"$ST_WORK/bd-case.out"
+    if st_decodable_nulfree "$_bc_file" "$_bc_encs"; then
+        if grep -q "^FINDING $_bc_label:1: aws-access-key-id\$" \
+            "$ST_WORK/bd-case.out"; then
+            printf 'selftest: PASS  %-44s key detected in decoded text\n' \
+                "$_bc_what"
+            return 0
+        fi
+        printf 'selftest: FAIL  %s: decodes here, the key must be detected\n' \
+            "$_bc_what"
+    elif grep -q "^FINDING $_bc_label: unscannable-binary-content " \
+        "$ST_WORK/bd-case.out"; then
+        printf 'selftest: PASS  %-44s iconv lacks it here - fail closed\n' \
+            "$_bc_what"
+        return 0
+    else
+        printf 'selftest: FAIL  %s: not decodable here, must fail closed\n' \
+            "$_bc_what"
+    fi
+    sed 's/^/         /' "$ST_WORK/bd-case.out" | head -n 3
+    return 1
+}
+
+# st_binary_decode — the binary decode path of effective_scan_path (review
+# thread 3888358871): a UTF-32 file's BOM (FF FE 00 00 LE, 00 00 FE FF BE)
+# begins with the UTF-16 BOM bytes, so the UTF-16 decode attempt
+# "succeeded" and handed the detectors NUL-interleaved garbage in which no
+# ASCII-shaped detector can match — a tracked UTF-32 file holding an AWS
+# key ID produced NO finding at all, not even unscannable-binary-content.
+# Both layers of the fix are asserted: the 4-byte UTF-32 BOMs are tried
+# before the 2-byte UTF-16 ones (both UTF-32LE and UTF-32BE files decode
+# and their key is detected), and every decode is re-verified — output that
+# still contains NUL bytes is unscannable-binary-content, never
+# scanned-as-text (a UTF-16LE payload with an embedded U+0000 forces
+# exactly that: every candidate decode keeps the NUL). The UTF-16LE case
+# guards the pre-existing decode path, which no harness check exercised
+# before. Files are crafted with printf escapes via st_wide_payload, so no
+# committed fixture is needed — and none would work: the fixture loop in
+# selftest() scans raw file bytes via scan_stream and deliberately bypasses
+# effective_scan_path, which is exactly the layer under test here.
+st_binary_decode() {
+    _bd_keyline='variable = "AKIAQRSTUVWXYZHIJKLMNOP"'
+    _bd_tail='
+plain line'
+    _bd_text=$_bd_keyline$_bd_tail
+    _bd_status=0
+
+    # UTF-16LE BOM + key: decodes, key detected (or fail closed where
+    # iconv cannot decode UTF-16 at all).
+    {
+        printf '\377\376'
+        st_wide_payload le 1 "$_bd_text"
+    } >"$ST_WORK/bd-u16le.txt"
+    st_bd_case "$ST_WORK/bd-u16le.txt" harness-binary-utf16le \
+        'UTF-16 UTF-16LE' 'utf-16le decode' || _bd_status=1
+
+    # UTF-32LE BOM + key — the reviewer's shape: the BOM's first two bytes
+    # are the UTF-16LE BOM, so this is the file the old UTF-16-first order
+    # silently misdecoded.
+    {
+        printf '\377\376\0\0'
+        st_wide_payload le 2 "$_bd_text"
+    } >"$ST_WORK/bd-u32le.txt"
+    st_bd_case "$ST_WORK/bd-u32le.txt" harness-binary-utf32le \
+        'UTF-32 UTF-32LE' 'utf-32le decode' || _bd_status=1
+
+    # UTF-32BE BOM + key: the second 4-byte BOM, whose first two bytes say
+    # BOM-less UTF-16BE to the old 2-byte look.
+    {
+        printf '\0\0\376\377'
+        st_wide_payload be 2 "$_bd_text"
+    } >"$ST_WORK/bd-u32be.txt"
+    st_bd_case "$ST_WORK/bd-u32be.txt" harness-binary-utf32be \
+        'UTF-32 UTF-32BE' 'utf-32be decode' || _bd_status=1
+
+    # Decoded output still carrying NUL bytes: a UTF-16LE payload with an
+    # embedded U+0000 code unit after the key line. iconv exits 0 on every
+    # candidate encoding here — the success is a lie — so only the
+    # post-decode NUL re-verification stands between this file and a
+    # garbage scan. The expectation is unconditional: whatever iconv does,
+    # the outcome must be the explicit fail-closed finding, one line, and
+    # no detector output.
+    {
+        printf '\377\376'
+        st_wide_payload le 1 "$_bd_keyline"
+        printf '\0\0'
+        st_wide_payload le 1 "$_bd_tail"
+    } >"$ST_WORK/bd-nul.txt"
+    scan_file "$ST_WORK/bd-nul.txt" harness-binary-nul \
+        >"$ST_WORK/bd-nul.out"
+    if [ "$(grep -c . "$ST_WORK/bd-nul.out")" -eq 1 ] &&
+        grep -q '^FINDING harness-binary-nul: unscannable-binary-content ' \
+            "$ST_WORK/bd-nul.out"; then
+        printf 'selftest: PASS  %-44s NUL-bearing decode fails closed\n' \
+            'decode re-verification'
+    else
+        printf 'selftest: FAIL  decode re-verification: a decode that leaves NUL bytes must be exactly one unscannable-binary-content finding\n'
+        sed 's/^/         /' "$ST_WORK/bd-nul.out" | head -n 3
+        _bd_status=1
+    fi
+    return "$_bd_status"
+}
+
 # st_tfstate_checks — end-to-end scratch-repo test of BOTH Terraform-state
 # path checks (review threads 3887975424 and 3888113063): a scratch git
 # repository is built with (a) a MINIMAL state file still TRACKED — its
@@ -2651,9 +2851,10 @@ default_audit() {
     # Each file is opened via $ROOT/<path> so the audit works from any
     # cwd; findings keep the repo-relative name as their label. The literal
     # scans run over the SAME content the detectors scan: effective_scan_path
-    # decides once per file — plain text scans as itself, a UTF-16 file as
-    # its decoded form — so a decoded file is not a blind spot for the
-    # runtime values either; an undecodable file has already failed closed.
+    # decides once per file — plain text scans as itself, a UTF-16 or
+    # UTF-32 file as its decoded form — so a decoded file is not a blind
+    # spot for the runtime values either; an undecodable file has already
+    # failed closed.
     # _scan snapshots that one decision (scan_file re-runs it as a no-op on
     # the already-effective path) and the decoded temp is dropped after the
     # file's scans, never leaking across iterations.
@@ -2860,6 +3061,7 @@ selftest() {
     st_spec27_map || _status=1
     st_tfstate_checks || _status=1
     st_hook_smoke || _status=1
+    st_binary_decode || _status=1
     st_message_file || _status=1
     rm -f "$ST_WORK"/* 2>/dev/null
     rmdir "$ST_WORK" 2>/dev/null
