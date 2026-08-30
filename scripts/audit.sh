@@ -6,10 +6,13 @@
 #   scripts/audit.sh              audit repo; exit 1 on any finding, 0 if clean
 #   scripts/audit.sh --selftest   run the same detection engine over the
 #                                 synthetic fixtures in tests/fixtures/audit/
-#                                 AND over three generated checks (see the
+#                                 AND over the generated checks (see the
 #                                 harness section above selftest()): a
 #                                 generative spelling matrix, per-detector
-#                                 value must/must-not tables, and a SPEC §27
+#                                 value must/must-not tables, a character/
+#                                 word-structure sweep over the documented
+#                                 value alphabets, a generic-gate boundary
+#                                 sweep, and a SPEC §27
 #                                 coverage map. Exit 0 iff every fixture class
 #                                 is detected as expected, every generated
 #                                 variant fires (or stays silent) as expected,
@@ -263,9 +266,9 @@
 #   random case and digit runs) are FORBIDDEN, even inside the harness's
 #   temp-file generators and even though this script itself is excluded
 #   from its own scan: the literals still get pushed. The value pools in
-#   MATRIX_LABEL_SETS, st_shape_matrix, st_value_tables, st_hook_smoke,
-#   st_binary_decode and st_message_file are the enforcement points of
-#   this rule.
+#   MATRIX_LABEL_SETS, st_shape_matrix, st_value_tables, st_charsweep,
+#   st_gate_sweep, st_hook_smoke, st_binary_decode and st_message_file
+#   are the enforcement points of this rule.
 #
 #   HARD RULE (no exception, by construction): the marker NEVER suppresses
 #   real AWS key material. A line matching an AKIA…/ASIA… access or session
@@ -527,6 +530,25 @@ AWS_PROFILE_LABEL="aws${LABEL_WORD_SEP}profile[[:space:]]*${QUOTE_CLASS}[[:space
 # digits, and _+.,@-; `=` cannot appear because the label's assignment
 # separator is the first [=:] on the line), any position, any length.
 AWS_PROFILE_VALUE='[A-Za-z0-9_+.,@-]+'
+# AWS_PROFILE_ALPHABET_MEMBERS is the parallel member list of the class
+# above: EVERY character it accepts, one per token, in class order. This is
+# the list the selftest charsweep (st_charsweep) iterates — a must-fire
+# engine row per member at the FIRST, MIDDLE and LAST position of an
+# otherwise-fixed valid value — and the drift check re-asserts against the
+# class ERE itself, so a class narrowed without this list (or a list grown
+# without the class) fails the selftest instead of waiting for the next
+# review round. Letters and digits are enumerated one by one on purpose: a
+# range edited inside the ERE (`[A-Ya-z0-9_+.,@-]`) is invisible to any
+# hand-picked value-table row, while the member list catches it. The
+# alphabet itself is external-spec territory: AWS's documented profile-name
+# alphabet (letters, digits and `_+.,@-`, per the AWS_PROFILE_VALUE note
+# above; `=` is excluded because the label's assignment separator consumes
+# the first [=:] on the line). Drift direction: a member REMOVED from the
+# class but left here fails loudly (the dangerous direction — a narrowed
+# detector misses real values); a character ADDED to the class but not here
+# merely leaves the sweep under-approximating (safe direction), and the
+# charsweep's outside-class rows catch the common accidental additions.
+AWS_PROFILE_ALPHABET_MEMBERS='A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9 _ + . , @ -'
 # SERIAL_LABEL/SERIAL_VALUE are the machine-serial-number detector's label
 # and value anchors, shared between the detector ERE and the serial-property
 # gate in emit_hits for the same reason AWS_PROFILE_LABEL/AWS_PROFILE_VALUE
@@ -535,6 +557,21 @@ AWS_PROFILE_VALUE='[A-Za-z0-9_+.,@-]+'
 # letter-and-digit property is the gate's job (see header).
 SERIAL_LABEL="serial(${LABEL_WORD_SEP}number)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 SERIAL_VALUE='[A-Za-z0-9][A-Za-z0-9-]{7,}'
+# SERIAL_ALPHABET_MEMBERS — parallel member list of SERIAL_VALUE's bracket
+# classes, same contract as AWS_PROFILE_ALPHABET_MEMBERS (charsweep rows +
+# drift check; see that comment). SERIAL_VALUE is TWO-tier — the first
+# character is alnum only, `-` is legal from the second character on — so
+# the list is the any-position alphabet and the charsweep derives the
+# first-position subset by skipping `-`, pinning the tier with a dedicated
+# must-silent row for each first-position-excluded member.
+SERIAL_ALPHABET_MEMBERS='A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9 -'
+# ALPHABET_HIGH_SAMPLES — the 0x80-0xFF byte range (see _highrange below)
+# stands for 128 distinct bytes; enumerating all of them at every sweep
+# position is noise, so the charsweep exercises a four-byte representative
+# SAMPLE at each position: the range's floor (0x80), its ceiling (0xFF), a
+# UTF-8 lead byte (0xC3) and a UTF-8 continuation byte (0xA9). Octal codes,
+# expanded with printf at sweep time so this file stays pure ASCII.
+ALPHABET_HIGH_SAMPLES='200 303 251 377'
 # PERSONAL_NAME_LABEL/PERSONAL_NAME_VALUE are the personal-name detector's
 # anchors, shared with the generic-name gate in emit_hits. The label is the
 # genuinely identifying name-field family — `personal name`, `full name`,
@@ -565,6 +602,14 @@ _highrange=$(printf '\200-\377')
 NAME_RUN="[A-Za-z'${_highrange}.-]"
 PERSONAL_NAME_LABEL="(personal|full|real)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 PERSONAL_NAME_VALUE="(${NAME_RUN}{5,}([[:space:]]+|,[[:space:]]*)${NAME_RUN}{3,}|${NAME_RUN}{4,}([[:space:]]+|,[[:space:]]*)${NAME_RUN}{4,}|${NAME_RUN}{3,}([[:space:]]+|,[[:space:]]*)${NAME_RUN}{5,})"
+# NAME_ALPHABET_MEMBERS — parallel member list of the NAME_RUN bracket
+# class, same contract as AWS_PROFILE_ALPHABET_MEMBERS (charsweep rows +
+# drift check; see that comment). The high-byte range's four-byte sample
+# (ALPHABET_HIGH_SAMPLES above) rides along: the multibyte name characters
+# (`Élodie`) are exactly the byte-level members a hand-picked value list
+# forgets. The WORD separators (space, comma) are structure, not alphabet:
+# the charsweep builds them into its multi-word rows directly.
+NAME_ALPHABET_MEMBERS="A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c d e f g h i j k l m n o p q r s t u v w x y z ' . -"
 # WINUSER/HOSTNAME labels are the labeled-identifier detectors for SPEC §27's
 # "Windows username" and "hostname" bullets (review thread 3888208297: a
 # LABELED identifier on the Windows machine is committed content —
@@ -650,8 +695,28 @@ WINUSER_LABEL="((user|logon)${LABEL_WORD_SEP}name|(windows|win|local)${LABEL_WOR
 # spaces) and so does the profile class.
 WINUSER_WORD="[!#\$%&'().@^_{}~A-Za-z0-9${_highrange}-]+"
 WINUSER_VALUE="${WINUSER_WORD}([[:space:]]+${WINUSER_WORD})*"
+# WINUSER_ALPHABET_MEMBERS — parallel member list of WINUSER_WORD's bracket
+# class, same contract as AWS_PROFILE_ALPHABET_MEMBERS (charsweep rows +
+# drift check; see that comment). The alphabet is SAM's, an external spec:
+# Microsoft's account-naming conventions allow letters, digits and the
+# punctuation !#$%&'().@^_{}~- (the conventions' list minus backtick —
+# dropped for the label-adjacent quote-collision reason documented above —
+# and the `"/\[]:|<>+=;,?*` exclusions); the high-byte range widens it to
+# Windows' Unicode account names (ALPHABET_HIGH_SAMPLES samples it). Any
+# position accepts any member — `$svc` and `!svc` are as detectable as
+# `_svc` — which is precisely what the charsweep's per-position rows pin:
+# the leading-punctuation and SAM-alphabet-character misses were both
+# review-round findings against exactly this list.
+WINUSER_ALPHABET_MEMBERS="! # \$ % & ' ( ) . @ ^ _ { } ~ - A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9"
 HOSTNAME_LABEL="(host|computer|machine)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 HOSTNAME_VALUE='[A-Za-z0-9][A-Za-z0-9.-]*'
+# HOSTNAME_ALPHABET_MEMBERS — parallel member list of HOSTNAME_VALUE's
+# bracket classes, same contract as AWS_PROFILE_ALPHABET_MEMBERS (charsweep
+# rows + drift check; see that comment). Two-tier like SERIAL_VALUE: DNS
+# labels and Windows computer names forbid leading punctuation, so `.` and
+# `-` are legal only from the second character on and the charsweep pins
+# that tier with must-silent first-position rows.
+HOSTNAME_ALPHABET_MEMBERS='. - A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9'
 LABEL_DETECTORS="aws-secret-access-key:(aws${LABEL_WORD_SEP})?secret${LABEL_WORD_SEP}access${LABEL_WORD_SEP}key[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
 aws-activation-code:activation${LABEL_WORD_SEP}code[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
 aws-session-token:(aws${LABEL_WORD_SEP})?(session|security)${LABEL_WORD_SEP}token[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}
@@ -1385,6 +1450,25 @@ scan_history() {
 # Everything drives the REAL engine (scan_file / scan_stream) with the
 # standard exclusions; nothing re-implements a detector. POSIX sh only:
 # no arrays, no local, no process substitution, no GNU-only flags.
+#
+# A fourth regression class, retired the same way (character coverage and
+# word structure; gate boundary):
+#
+#   * st_charsweep — the CHARACTER and WORD-STRUCTURE dimensions of the
+#     value-class-bearing detectors, generated from documented parallel
+#     member lists (*_ALPHABET_MEMBERS, kept next to the class variables):
+#     every alphabet member fires at the FIRST, MIDDLE and LAST position of
+#     an otherwise-fixed valid value, multi-word structure where the class
+#     allows it (SAM internal spaces), and outside-class characters stay
+#     silent. Leading punctuation, a missing SAM-alphabet character, a
+#     multibyte first character and multi-word capture were four review
+#     rounds' instances of this class.
+#   * st_gate_sweep — the generic-value gates' boundary: for every member
+#     of every generic set, the unmuted member stays silent while EVERY
+#     mutation (appended, prepended, inserted, extra-word) fires, pinning
+#     by generation that a gate never suppresses more than the exact
+#     captured generic (the `default+` trim and the `unknown svc`
+#     word-split were this class's instances).
 
 # Work directory created by selftest() and removed by it; every harness
 # function below reads and writes its scratch files in here.
@@ -2236,7 +2320,10 @@ EOF
     # activation codes, {16,} session tokens, the exact 12-digit account
     # run — so hand-picked values crossing each floor suffice there; the
     # account detector additionally gained the 11-digit boundary line
-    # above (one short of the run).
+    # above (one short of the run). The value-class-bearing detectors'
+    # CHARACTER and WORD-STRUCTURE dimensions (which member, which
+    # position, single- vs multi-word) are generated separately by
+    # st_charsweep from the documented *_ALPHABET_MEMBERS lists.
     _sv_count=0
     for _sv_len in 8 9 10 11 12; do
         _sv_pos=1
@@ -2365,6 +2452,436 @@ EOF
             "$ST_WORK/vt-must" "$ST_WORK/vt-silent" || _vt_status=1
     done <"$ST_WORK/vt-dets"
     return "$_vt_status"
+}
+
+# st_run_table TABLE WHAT — the batched runner the two generated sweeps
+# below share. TABLE holds `detector|FLAG|line` rows (FLAG M = must fire,
+# X = must stay silent), exactly the vt-table format: all M rows go to one
+# file, all X rows to another, EACH file is scanned through the real engine
+# ONCE (one scan_file = one pass of every detector), and every detector
+# named in the table is asserted in both directions against that pair of
+# outputs. Batching matters: the charsweep alone adds ~1,300 rows, and
+# running st_check's two scans per detector would add ~18 engine passes
+# over them; two passes total keeps the sweep's runtime cost at a few
+# seconds. Cross-detector firing is harmless here — each assertion counts
+# only its own class's FINDING records, and grep -n reports a line at most
+# once per ERE. Assertions carry their OWN diagnostics (not st_assert_
+# all/none): the M rows of every detector share one file, so the
+# expectation compared against the engine's fired line numbers is the
+# detector's rows' POSITIONS in that file — a failure then names the exact
+# generated row of THAT detector that stayed silent, never another
+# detector's row that merely fired under a different class.
+st_run_table() {
+    _rt_table=$1
+    _rt_what=$2
+    _rt_status=0
+    sed -n 's/^[^|]*|M|//p' "$_rt_table" >"$ST_WORK/rt-must"
+    sed -n 's/^[^|]*|X|//p' "$_rt_table" >"$ST_WORK/rt-silent"
+    scan_file "$ST_WORK/rt-must" "harness-${_rt_what}-must" \
+        >"$ST_WORK/rt-must.out"
+    scan_file "$ST_WORK/rt-silent" "harness-${_rt_what}-silent" \
+        >"$ST_WORK/rt-silent.out"
+    cut -d'|' -f1 "$_rt_table" | LC_ALL=C sort -u >"$ST_WORK/rt-dets"
+    while IFS= read -r _rt_det; do
+        [ -n "$_rt_det" ] || continue
+        awk -F'|' -v d="$_rt_det" '$2 == "M" { n++; if (d == $1) print n }' \
+            "$_rt_table" >"$ST_WORK/rt-exp"
+        sed -n "s/^FINDING [^:]*:\\([0-9]*\\): ${_rt_det}\$/\\1/p" \
+            "$ST_WORK/rt-must.out" | LC_ALL=C sort -n >"$ST_WORK/rt-got"
+        if cmp -s "$ST_WORK/rt-exp" "$ST_WORK/rt-got"; then
+            printf 'selftest: PASS  %-44s %s variants fired\n' \
+                "$_rt_what $_rt_det" \
+                "$(wc -l <"$ST_WORK/rt-exp" | tr -d ' ')"
+        else
+            printf 'selftest: FAIL  %-44s %s of %s fired\n' \
+                "$_rt_what $_rt_det" \
+                "$(wc -l <"$ST_WORK/rt-got" | tr -d ' ')" \
+                "$(wc -l <"$ST_WORK/rt-exp" | tr -d ' ')"
+            comm -13 "$ST_WORK/rt-got" "$ST_WORK/rt-exp" | head -n 3 |
+                while IFS= read -r _rt_miss; do
+                    printf '         silent input line %s: %s\n' \
+                        "$_rt_miss" \
+                        "$(sed -n "${_rt_miss}p" "$ST_WORK/rt-must")"
+                done
+            _rt_status=1
+        fi
+        if grep -q "^${_rt_det}|X|" "$_rt_table"; then
+            if ! grep -q ": ${_rt_det}\$" "$ST_WORK/rt-silent.out"; then
+                printf 'selftest: PASS  %-44s %s lines silent\n' \
+                    "$_rt_what $_rt_det" \
+                    "$(grep -c "^${_rt_det}|X|" "$_rt_table")"
+            else
+                printf 'selftest: FAIL  %-44s fired on must-silent input\n' \
+                    "$_rt_what $_rt_det"
+                grep ": ${_rt_det}\$" "$ST_WORK/rt-silent.out" |
+                    head -n 3 | sed 's/^/         /'
+                _rt_status=1
+            fi
+        fi
+    done <"$ST_WORK/rt-dets"
+    return "$_rt_status"
+}
+
+# st_charsweep — the CHARACTER and WORD-STRUCTURE dimensions of every
+# value-class-bearing label detector, generated from the documented member
+# lists (*_ALPHABET_MEMBERS, defined next to the class variables they
+# parallel) instead of hand-picked values. The length and position
+# dimensions are already generated (st_value_tables / st_sweep_grow); this
+# closes the remaining two: (a) EVERY alphabet member fires at the FIRST,
+# MIDDLE and LAST position of an otherwise-fixed valid value — the
+# leading-punctuation, SAM-alphabet-character and multibyte-first-character
+# findings were all instances of one member missing at one position; (b)
+# multi-word structure where the value class allows it (WINUSER_VALUE's
+# SAM internal spaces); (c) characters OUTSIDE the class stay silent where
+# the grammar leaves nothing to capture (an outsider at the FIRST position
+# matches nothing at all; at later positions it merely ends the capture,
+# and the surviving prefix is an ordinary single-token value already
+# covered by the member rows — the ERE-level drift check below pins the
+# outsider's exclusion at every position instead). A drift check first
+# re-asserts each member list against its class ERE directly — probe
+# values built from the list must match the anchored class, outsiders must
+# not — so list and class cannot disagree in either direction, and the
+# engine rows then hold the engine to the same alphabet. The
+# user-home-path SHAPE detector shares WINUSER_WORD (one vocabulary, see
+# its note above), so its segment alphabet is swept here too.
+st_charsweep() {
+    _cs_status=0
+    : >"$ST_WORK/cs-table"
+    _cs_row() {
+        printf '%s|%s|%s\n' "$1" "$2" "$3" >>"$ST_WORK/cs-table"
+    }
+
+    # Drift check: members (left+member+right, fillers in-class) must
+    # FULLY match the anchored class ERE; outsiders must not match at all.
+    # One grep per side per class — no per-member subprocesses.
+    _cs_drift() {
+        _cd_ere=$1
+        _cd_list=$2
+        _cd_left=$3
+        _cd_right=$4
+        _cd_out=$5
+        _cd_what=$6
+        : >"$ST_WORK/cd-in"
+        : >"$ST_WORK/cd-out"
+        for _cd_m in $_cd_list; do
+            printf '%s%s%s\n' "$_cd_left" "$_cd_m" "$_cd_right" \
+                >>"$ST_WORK/cd-in"
+        done
+        for _cd_m in $_cd_out; do
+            printf '%s%s%s\n' "$_cd_left" "$_cd_m" "$_cd_right" \
+                >>"$ST_WORK/cd-out"
+        done
+        _cd_bad=0
+        if [ "$(grep -c . "$ST_WORK/cd-in")" -ne \
+            "$(grep -cE -- "^${_cd_ere}\$" "$ST_WORK/cd-in")" ]; then
+            _cd_bad=1
+        fi
+        # Any outsider fully matching the class is the other drift
+        # direction: a character added to the ERE (or dropped from the
+        # outsider set) must fail, not pass silently.
+        if grep -qE -- "^${_cd_ere}\$" "$ST_WORK/cd-out"; then
+            _cd_bad=1
+        fi
+        if [ "$_cd_bad" -ne 0 ]; then
+            printf 'selftest: FAIL  %-44s member list and class ERE disagree\n' \
+                "$_cd_what"
+            _cs_status=1
+            return 0
+        fi
+        printf 'selftest: PASS  %-44s %s members, %s outsiders hold\n' \
+            "$_cd_what" "$(grep -c . "$ST_WORK/cd-in")" \
+            "$(grep -c . "$ST_WORK/cd-out")"
+        return 0
+    }
+
+    # Expand the high-byte sample once; it is a member of the WINUSER and
+    # NAME alphabets (their classes embed ${_highrange}) and rides through
+    # the same drift and position machinery as the printable members.
+    _cs_high=
+    for _cs_code in $ALPHABET_HIGH_SAMPLES; do
+        _cs_high="$_cs_high$(printf '%b' "\\$_cs_code") "
+    done
+    # Outsiders per class: '<' and '>' everywhere (the placeholder brackets
+    # no value class admits), ',' where the class excludes it (the profile
+    # alphabet INCLUDES ',', so its third outsider is '=' — excluded
+    # because the label's assignment separator consumes the first [=:] on
+    # the line), and '1' for NAME_RUN (digits are not name characters — a
+    # digit inside a run ends it). Space cannot be probed at the first
+    # position through a label (the label's own separator eats leading
+    # spaces), so the single-token classes pin it with an engine row below
+    # instead.
+    _cs_drift "$AWS_PROFILE_VALUE" "$AWS_PROFILE_ALPHABET_MEMBERS" \
+        wu serna '< > =' 'charsweep drift aws-profile-value'
+    _cs_drift "$WINUSER_WORD" "$WINUSER_ALPHABET_MEMBERS $_cs_high" \
+        wu serna '< > ,' 'charsweep drift winuser-word'
+    _cs_drift "$HOSTNAME_VALUE" "$HOSTNAME_ALPHABET_MEMBERS" \
+        wu serna '< > ,' 'charsweep drift hostname-value'
+    _cs_drift "$SERIAL_VALUE" "$SERIAL_ALPHABET_MEMBERS" \
+        wuserna mx01 '< > ,' 'charsweep drift serial-value'
+    _cs_drift "${NAME_RUN}+" "$NAME_ALPHABET_MEMBERS $_cs_high" \
+        wu serna '< > , 1' 'charsweep drift name-run'
+
+    # Engine rows. Filler words are SYNTHETIC-KEY CONVENTION plain
+    # sequential letters/digits (`wuserna`, `mxsvc01`) — no member of any
+    # generic set, no key shape. Each member lands at the FIRST, MIDDLE and
+    # LAST position of an otherwise-fixed valid value by INSERTION (the
+    # value grows), so a row proves the character is accepted at that
+    # position regardless of what it replaces.
+
+    # windows-username-labeled: every SAM member at every position
+    # (leading punctuation included — `$svc` and `!svc` were misses), plus
+    # the multibyte samples.
+    for _cs_m in $WINUSER_ALPHABET_MEMBERS; do
+        _cs_row windows-username-labeled M "username = ${_cs_m}wuserna"
+        _cs_row windows-username-labeled M "username = wu${_cs_m}serna"
+        _cs_row windows-username-labeled M "username = wuserna${_cs_m}"
+    done
+    for _cs_m in $_cs_high; do
+        _cs_row windows-username-labeled M "username = ${_cs_m}wuserna"
+        _cs_row windows-username-labeled M "username = wu${_cs_m}serna"
+        _cs_row windows-username-labeled M "username = wuserna${_cs_m}"
+    done
+    # (b) multi-word structure: SAM internal spaces, at the one-character
+    # floor per word and above, two words and three.
+    _cs_row windows-username-labeled M 'username = a b'
+    _cs_row windows-username-labeled M 'username = wuserna b'
+    _cs_row windows-username-labeled M 'username = wuserna mxsvc01'
+    _cs_row windows-username-labeled M 'username = a b c'
+    _cs_row windows-username-labeled M 'username = wuserna mxsvc01 svc3'
+    # (c) outsiders at the first position leave nothing to capture.
+    _cs_row windows-username-labeled X 'username = <wuserna'
+    _cs_row windows-username-labeled X 'username = >wuserna'
+    _cs_row windows-username-labeled X 'username = ,wuserna'
+
+    # aws-sso-profile: AWS's documented profile alphabet at every position.
+    for _cs_m in $AWS_PROFILE_ALPHABET_MEMBERS; do
+        _cs_row aws-sso-profile M "aws_profile = ${_cs_m}wuserna"
+        _cs_row aws-sso-profile M "aws_profile = wu${_cs_m}serna"
+        _cs_row aws-sso-profile M "aws_profile = wuserna${_cs_m}"
+    done
+    # A space mid-value ends the run but never silences what precedes it
+    # (the captured run is an ordinary single-token value).
+    _cs_row aws-sso-profile M 'aws_profile = wuserna mxsvc01'
+    _cs_row aws-sso-profile X 'aws_profile = <wuserna'
+    _cs_row aws-sso-profile X 'aws_profile = >wuserna'
+    _cs_row aws-sso-profile X 'aws_profile = =wuserna'
+
+    # hostname-labeled: alnum at the first position (the DNS/Windows
+    # leading-punctuation ban is correctness, not a gap — pinned by the X
+    # rows), every member mid and last.
+    for _cs_m in $HOSTNAME_ALPHABET_MEMBERS; do
+        case $_cs_m in
+        . | -) ;;
+        *)
+            _cs_row hostname-labeled M "hostname: ${_cs_m}wuserna"
+            ;;
+        esac
+        _cs_row hostname-labeled M "hostname: wu${_cs_m}serna"
+        _cs_row hostname-labeled M "hostname: wuserna${_cs_m}"
+    done
+    _cs_row hostname-labeled M 'hostname: wuserna mxsvc01'
+    _cs_row hostname-labeled X 'hostname: .wuserna'
+    _cs_row hostname-labeled X 'hostname: -wuserna'
+    _cs_row hostname-labeled X 'hostname: <wuserna'
+    _cs_row hostname-labeled X 'hostname: ,wuserna'
+
+    # machine-serial-number: base token `mtx1aaaa` carries both a letter
+    # and a digit so every row clears the serial-property gate at both
+    # label tiers; insertion keeps the 8-plus floor comfortably cleared.
+    for _cs_m in $SERIAL_ALPHABET_MEMBERS; do
+        case $_cs_m in
+        -) ;;
+        *)
+            _cs_row machine-serial-number M \
+                "serial_number = ${_cs_m}mtx1aaaa"
+            ;;
+        esac
+        _cs_row machine-serial-number M "serial_number = mtx1${_cs_m}aaaa"
+        _cs_row machine-serial-number M "serial_number = mtx1aaaa${_cs_m}"
+    done
+    # Space mid-value with a sub-floor prefix is silent at the ERE itself.
+    _cs_row machine-serial-number X 'serial_number = mtx1 mx01'
+    _cs_row machine-serial-number X 'serial_number = -mtx1aaaa'
+    _cs_row machine-serial-number X 'serial_number = <mtx1aaaa'
+    _cs_row machine-serial-number X 'serial_number = ,mtx1aaaa'
+
+    # personal-name: every NAME_RUN member at the first and middle of the
+    # first run and the first and last of the second run (the run boundary
+    # is the structure; both runs stay above the 3-byte floor because
+    # insertion only grows them), both separator spellings, multibyte
+    # samples included.
+    for _cs_m in $NAME_ALPHABET_MEMBERS; do
+        _cs_row personal-name M "Personal Name: ${_cs_m}alicex smithy"
+        _cs_row personal-name M "Personal Name: al${_cs_m}icex smithy"
+        _cs_row personal-name M "Personal Name: alicex ${_cs_m}smithy"
+        _cs_row personal-name M "Personal Name: alicex smithy${_cs_m}"
+    done
+    for _cs_m in $_cs_high; do
+        _cs_row personal-name M "Personal Name: ${_cs_m}alicex smithy"
+        _cs_row personal-name M "Personal Name: al${_cs_m}icex smithy"
+        _cs_row personal-name M "Personal Name: alicex ${_cs_m}smithy"
+        _cs_row personal-name M "Personal Name: alicex smithy${_cs_m}"
+    done
+    _cs_row personal-name M 'Personal Name: alicex,smithy'
+    _cs_row personal-name M 'Personal Name: alicex,  smithy'
+    _cs_row personal-name X 'Personal Name: <alicex smithy'
+    _cs_row personal-name X 'Personal Name: ,alicex smithy'
+    # A digit ends a run: the second run drops below its floor and the
+    # whole value falls out of the grammar (prose brake, working).
+    _cs_row personal-name X 'Personal Name: alicex sm1thy'
+
+    # user-home-path shares WINUSER_WORD (one vocabulary, see its note at
+    # the class): the punctuation members and multibyte samples at every
+    # position of the username segment, in the Windows and Unix path forms,
+    # including the multi-word segment SAM spaces allow. Alnum members are
+    # skipped here — the labeled detector above already carries them, and
+    # this mirror exists to pin the SHARED vocabulary's special members
+    # through the second detector that uses it.
+    for _cs_m in $WINUSER_ALPHABET_MEMBERS $_cs_high; do
+        case $_cs_m in
+        [A-Za-z0-9]) continue ;;
+        esac
+        _cs_row user-home-path M "C:\\Users\\${_cs_m}wuserna"
+        _cs_row user-home-path M "C:\\Users\\wu${_cs_m}serna"
+        _cs_row user-home-path M "C:\\Users\\wuserna${_cs_m}"
+    done
+    _cs_row user-home-path M '/home/!wuserna'
+    _cs_row user-home-path M 'C:\Users\wuserna mxsvc01'
+
+    st_run_table "$ST_WORK/cs-table" charsweep || _cs_status=1
+    return "$_cs_status"
+}
+
+# st_gate_sweep — the generic-value gates' boundary, generated: for every
+# member of every generic set (GENERIC_PROFILES, GENERIC_LABELED_USERS,
+# GENERIC_LABELED_HOSTS, GENERIC_NAMES), the UNMUTED member stays silent
+# (the gate's exact-generic side) while EVERY mutation of it fires — one
+# legal punctuation character appended, one prepended, one inserted
+# mid-word, and, for the multi-word-capable value class (WINUSER_VALUE,
+# whose SAM internal spaces make the whole captured value multi-word), the
+# member plus one extra word. Together the two directions pin the whole-
+# value/no-trim lesson by generation: a gate that suppresses anything but
+# the exact captured generic (`default+` trimmed to `default`, `unknown
+# svc` word-split to `unknown`) fails these rows the moment it is written.
+# Legal characters are members of the same documented alphabets the
+# charsweep iterates. HOSTNAME's prepended character is an ALPHANUMERIC,
+# not punctuation: DNS labels and Windows computer names forbid leading
+# punctuation (HOSTNAME_VALUE's first tier), so a punctuation prefix is an
+# outside-class row, not a gate row. PERSONAL_NAME has no extra-word
+# must-fire row: its value anchor captures EXACTLY two runs, so the member
+# plus an extra word leaves the capture equal to the member (the extra
+# word rides outside it) and the correct expectation is silence — pinned
+# on the X side, with the boundary documented; the single-word members
+# never reach the gate at all (one run cannot match the two-run anchor),
+# so their mutations are X rows and only their extra-word form — which
+# DOES build two runs — is a must-fire row.
+st_gate_sweep() {
+    _gg_status=0
+    : >"$ST_WORK/gp-table"
+    _gg_row() {
+        printf '%s|%s|%s\n' "$1" "$2" "$3" >>"$ST_WORK/gp-table"
+    }
+    # _gg_run SET DET LABEL APPEND PREPEND INSERT EXTRA — the single-token
+    # set loop: SET is one of the space-delimited blobs, every member a
+    # single token, so word splitting iterates it directly (no parallel
+    # list, no drift possible). EXTRA, when non-empty, adds the
+    # member-plus-one-word must-fire row for the multi-word-capable class.
+    _gg_run() {
+        _gr_set=$1
+        _gr_det=$2
+        _gr_label=$3
+        _gr_app=$4
+        _gr_pre=$5
+        _gr_ins=$6
+        _gr_extra=$7
+        for _gr_m in $_gr_set; do
+            _gg_row "$_gr_det" M "${_gr_label}${_gr_m}${_gr_app}"
+            _gg_row "$_gr_det" M "${_gr_label}${_gr_pre}${_gr_m}"
+            _gg_head=${_gr_m%"${_gr_m#??}"}
+            _gg_row "$_gr_det" M \
+                "${_gr_label}${_gg_head}${_gr_ins}${_gr_m#??}"
+            if [ -n "$_gr_extra" ]; then
+                _gg_row "$_gr_det" M "${_gr_label}${_gr_m}${_gr_extra}"
+            fi
+            _gg_row "$_gr_det" X "${_gr_label}${_gr_m}"
+        done
+        return 0
+    }
+    _gg_run "$GENERIC_PROFILES" aws-sso-profile 'aws_profile = ' \
+        '-' '-' '.' ''
+    _gg_run "$GENERIC_LABELED_USERS" windows-username-labeled 'username: ' \
+        '_' '!' '.' ' svc'
+    _gg_run "$GENERIC_LABELED_HOSTS" hostname-labeled 'hostname: ' \
+        '-' 'x' '-' ''
+
+    # GENERIC_NAMES members are MULTI-WORD, so the blob cannot be word-
+    # split; the harness keeps its own newline-separated member list and a
+    # drift check asserts each entry really is a space-delimited member of
+    # the set — a GENERIC_NAMES edit that drops or renames a member fails
+    # here instead of silently narrowing the sweep.
+    _gg_names='not applicable
+not provided
+unknown
+anonymous
+test user
+sample user
+first last
+john doe
+jane doe
+your name'
+    _gg_nl='
+'
+    _gg_rest=$_gg_names
+    while [ -n "$_gg_rest" ]; do
+        _gg_m=${_gg_rest%%"$_gg_nl"*}
+        case $_gg_rest in
+        *"$_gg_nl"*) _gg_rest=${_gg_rest#*"$_gg_nl"} ;;
+        *) _gg_rest= ;;
+        esac
+        case "$GENERIC_NAMES" in
+        *" $_gg_m "*) ;;
+        *)
+            printf 'selftest: FAIL  %-44s member "%s" missing from GENERIC_NAMES\n' \
+                'gate sweep names drift' "$_gg_m"
+            _gg_status=1
+            continue
+            ;;
+        esac
+        case $_gg_m in
+        *" "*)
+            # Two-run member: mutations build values the two-run anchor
+            # still matches and the whole-value gate must not suppress.
+            # The prepended character is `.` (a NAME_RUN member that is
+            # NOT a quote): a leading `'` would be eaten by the label's
+            # QUOTE_CLASS, making the captured value exactly the member —
+            # suppression, correctly — which is not what this row is for.
+            _gg_row personal-name M "Full Name: ${_gg_m}-"
+            _gg_row personal-name M "Full Name: .${_gg_m}"
+            _gg_head=${_gg_m%"${_gg_m#??}"}
+            _gg_row personal-name M \
+                "Full Name: ${_gg_head}-${_gg_m#??}"
+            # The member plus an extra word: the capture stops at two runs
+            # and equals the member exactly — silence is CORRECT here, and
+            # pinning it X keeps any future capture-extension (or gate
+            # trim) from passing quietly.
+            _gg_row personal-name X "Full Name: ${_gg_m} svc"
+            _gg_row personal-name X "Full Name: ${_gg_m}"
+            ;;
+        *)
+            # Single-run member: no mutation can build the two-run shape,
+            # so every form stays silent at the anchor itself; only the
+            # extra-word form reaches the gate — and must fire there.
+            _gg_row personal-name X "Full Name: ${_gg_m}"
+            _gg_row personal-name X "Full Name: ${_gg_m}-"
+            _gg_row personal-name X "Full Name: .${_gg_m}"
+            _gg_head=${_gg_m%"${_gg_m#??}"}
+            _gg_row personal-name X "Full Name: ${_gg_head}-${_gg_m#??}"
+            _gg_row personal-name M "Full Name: ${_gg_m} svc"
+            ;;
+        esac
+    done
+    st_run_table "$ST_WORK/gp-table" 'gate sweep' || _gg_status=1
+    return "$_gg_status"
 }
 
 # SPEC §27 coverage map. The bullets are parsed out of SPEC.md at
@@ -3165,6 +3682,8 @@ selftest() {
     st_label_matrix || _status=1
     st_shape_matrix || _status=1
     st_value_tables || _status=1
+    st_charsweep || _status=1
+    st_gate_sweep || _status=1
     st_spec27_map || _status=1
     st_tfstate_checks || _status=1
     st_hook_smoke || _status=1
