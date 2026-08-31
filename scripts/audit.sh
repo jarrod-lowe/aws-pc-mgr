@@ -1353,7 +1353,19 @@ scan_history() {
         # naming the commit, never a silent skip; exit 0 with empty output
         # is a legitimate skip (a commit whose changed paths are all
         # excluded, or an empty commit).
-        git -C "$ROOT" show --no-color --name-only --format= "$_sh_sha" -- \
+        # core.quotePath=false: by default git C-quotes every path with a
+        # non-ASCII byte (a committed-then-deleted é.tfstate enumerates as
+        # "\303\251.tfstate", and that closing quote defeats the *.tfstate
+        # suffix case below — review thread 3891986876: the audit reported
+        # clean over such a history). The suffix check must see the literal
+        # bytes. A path carrying a quote, backslash or control byte (newline
+        # included) is still C-quoted with this knob off: -z would cover
+        # those too, but its NUL stream has to be re-split on newlines for
+        # this read loop, which mangles exactly the newline-bearing paths -z
+        # exists for — the limitation tracked_files already documents. The
+        # residual gap stays documented rather than traded for a new one.
+        git -C "$ROOT" -c core.quotePath=false show --no-color \
+            --name-only --format= "$_sh_sha" -- \
             ':(exclude)scripts/audit.sh' \
             ':(exclude)tests/fixtures/audit' \
             >"$_sh_paths" 2>/dev/null
@@ -1383,7 +1395,12 @@ scan_history() {
         # line of the file, which appears whole (annotated, or as a + line
         # in the commit that introduced it) elsewhere in the same history,
         # so dropping headers loses nothing scannable.
-        git -C "$ROOT" show --no-color --patch --format= "$_sh_sha" -- \
+        # Same core.quotePath=false as the changed-path list: the diff
+        # headers carry the changed paths, and an octal-escaped non-ASCII
+        # path would hide a runtime literal sitting inside it (an accented
+        # display name in a user-named directory) from the scans below.
+        git -C "$ROOT" -c core.quotePath=false show --no-color --patch \
+            --format= "$_sh_sha" -- \
             ':(exclude)scripts/audit.sh' \
             ':(exclude)tests/fixtures/audit' \
             >"$_sh_tmp" 2>/dev/null
@@ -3238,8 +3255,16 @@ plain line'
 # exit 1. This drives default_audit itself, not scan_file: the path-level
 # check lives in the audit's enumeration loops (the tracked-file loop and
 # scan_history), which is exactly why a content-only reproduction through
-# scan_file shows nothing. The scratch repo is cleaned without rm -rf
-# (files first, then directories deepest-first).
+# scan_file shows nothing. The same pair is repeated with NON-ASCII file
+# names (é = UTF-8 C3 A9, built byte-wise so no locale or keyboard is
+# involved): one still tracked, one committed then deleted (review thread
+# 3891986876 — git C-quotes such paths by default, and the quoted form
+# "\303\251.tfstate" ends in a quote, which used to defeat the *.tfstate
+# suffix case and report clean). The tracked one pins ls-files -z (never
+# quoted); the deleted one pins core.quotePath=false on the history
+# enumeration, asserted for BOTH the add and the remove commit. The
+# scratch repo is cleaned without rm -rf (files first, then directories
+# deepest-first).
 st_tfstate_checks() {
     if ! command -v git >/dev/null 2>&1; then
         printf 'selftest: FAIL  git unavailable: cannot build the tfstate scratch repo\n'
@@ -3277,10 +3302,21 @@ st_tfstate_checks() {
         >"$_ts_dir/old.tfstate"
     printf '{"version":4,"serial":1,"outputs":{},"resources":[]}\n' \
         >"$_ts_dir/minimal.tfstate"
+    # Non-ASCII pair, same shapes: é.tfstate is committed then deleted
+    # (history-only detection through the quoted-name enumeration),
+    # minimal-é.tfstate stays tracked (the ls-files -z path never quotes).
+    _ts_na=$(printf '\303\251')
+    printf '{"version":4,"serial":1,"outputs":{},"resources":[]}\n' \
+        >"$_ts_dir/$(printf '%s.tfstate' "$_ts_na")"
+    printf '{"version":4,"serial":1,"outputs":{},"resources":[]}\n' \
+        >"$_ts_dir/$(printf 'minimal-%s.tfstate' "$_ts_na")"
     _ts_git add -A note.txt scripts >/dev/null 2>&1
-    _ts_git add -f old.tfstate minimal.tfstate >/dev/null 2>&1
+    _ts_git add -f old.tfstate minimal.tfstate \
+        "$(printf '%s.tfstate' "$_ts_na")" \
+        "$(printf 'minimal-%s.tfstate' "$_ts_na")" >/dev/null 2>&1
     _ts_git commit -qm 'add minimal state' >/dev/null 2>&1
-    _ts_git rm -q old.tfstate >/dev/null 2>&1
+    _ts_git rm -q old.tfstate "$(printf '%s.tfstate' "$_ts_na")" \
+        >/dev/null 2>&1
     _ts_git commit -qm 'remove old state' >/dev/null 2>&1
     bash "$_ts_dir/scripts/audit.sh" >"$_ts_dir/audit.out" 2>&1
     _ts_rc=$?
@@ -3290,9 +3326,25 @@ st_tfstate_checks() {
         "$_ts_dir/audit.out" || _ts_ok=no
     grep -q 'old.tfstate: terraform-state-tracked' \
         "$_ts_dir/audit.out" || _ts_ok=no
+    # Tracked non-ASCII path: the tracked-file finding must carry the
+    # LITERAL name (fixed-string grep on the raw bytes), not an octal
+    # escape — this is the "would fire if present" side of the pair, and
+    # it fails loudly if ls-files ever loses -z.
+    grep -qF "$(printf 'FINDING minimal-%s.tfstate: terraform-state-tracked' \
+        "$_ts_na")" "$_ts_dir/audit.out" || _ts_ok=no
+    # Deleted non-ASCII path: the history finding must fire for BOTH the
+    # add and the remove commit — exactly two commits touch the file, so
+    # exactly two history findings must name it with the literal bytes.
+    # The [0-9a-f]* SHA column keeps the fixed suffix from also counting
+    # the tracked minimal-é.tfstate finding, and the escaped dot keeps the
+    # suffix anchored.
+    _ts_na_hits=$(grep -c \
+        "git-history [0-9a-f]* $(printf '%s' "$_ts_na")\.tfstate: terraform-state-tracked" \
+        "$_ts_dir/audit.out" 2>/dev/null) || _ts_na_hits=0
+    [ "$_ts_na_hits" -eq 2 ] || _ts_ok=no
     if [ "$_ts_ok" != yes ]; then
-        printf 'selftest: FAIL  tfstate path checks: rc=%s (want 1); tracked-path and history-path findings both expected\n' \
-            "$_ts_rc"
+        printf 'selftest: FAIL  tfstate path checks: rc=%s (want 1); tracked-path and history-path findings both expected (ASCII and non-ASCII; history hits for the deleted non-ASCII name: %s, want 2)\n' \
+            "$_ts_rc" "$_ts_na_hits"
         sed 's/^/         /' "$_ts_dir/audit.out" | head -n 5
         find "$_ts_dir" -type f -exec rm -f {} + 2>/dev/null
         find "$_ts_dir" -depth -type d -exec rmdir {} + 2>/dev/null
