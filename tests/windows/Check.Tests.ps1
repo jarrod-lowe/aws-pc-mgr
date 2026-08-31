@@ -561,10 +561,22 @@ Describe 'check.ps1 read-failure reporting (SPEC 24)' {
         #   -AgentLogPath     : param seam - broken below, missing
         #   module path       : derived from check.ps1's $PSScriptRoot - NOT
         #                       breakable from outside; absence is itself an
-        #                       Add-Problem in check.ps1
+        #                       Add-Problem in check.ps1, and so is a module
+        #                       that exists at the Test-Path but fails to
+        #                       import (the import is guarded; pre-fix an
+        #                       unguarded Import-Module terminated the whole
+        #                       report with a raw parse/load error)
         #   agent exe path    : derived from $env:ProgramFiles - NOT
         #                       breakable from outside; absence is an
-        #                       Add-Problem ('not installed') in check.ps1
+        #                       Add-Problem ('not installed') in check.ps1,
+        #                       and the version probe's fallback read of an
+        #                       exe that existed at the Test-Path but
+        #                       vanished or became unreadable before the
+        #                       read (antivirus quarantine) is guarded and
+        #                       records its own Add-Problem plus the
+        #                       'unknown' placeholder - the standing It
+        #                       below asserts that section-level property
+        #                       from a normal run
         #   OS query          : Get-CimInstance Win32_OperatingSystem - NOT
         #                       breakable from outside; its catch records an
         #                       Add-Problem in check.ps1, and so does a query
@@ -767,6 +779,55 @@ Describe 'check.ps1 read-failure reporting (SPEC 24)' {
                 $queryFailed = $normalized -match 'Could not query the AmazonSSMAgent service'
                 $serviceAbsent = $normalized -match '(?m)^  - .*AmazonSSMAgent service does not exist'
                 ($queryFailed -or $serviceAbsent) | Should -BeTrue
+            }
+            Assert-SummaryListsEveryProblem -Output $result.Output
+            Assert-AnnouncedSectionSet -Output $result.Output
+        }
+
+        It 'the SSM Agent installation section always reports the version, a problem naming it, or the agent absence - never a silent skip' {
+            # Standing coverage for the vanished-after-check variant of the
+            # version diagnostic (PR #1 thread 3892092973): the agent
+            # executable exists at the section Test-Path but disappears or
+            # becomes unreadable before the --version launch completes and
+            # the file-version-resource fallback reads it (antivirus
+            # quarantine is the observed shape), and the pre-fix script let
+            # the fallback read - alone of the section reads, outside any
+            # catch - terminate the whole report with a raw error: no
+            # Version line, no problem, no Summary. That exact state cannot
+            # be driven from outside a child process (no external input
+            # decides whether the file survives between the Test-Path and
+            # the read, the same reason the agent exe path is listed as NOT
+            # breakable in the inventory above), so, like the service
+            # section standing test, this asserts the SECTION-level property
+            # from a normal run instead: whatever the filesystem does, the
+            # section must end in a visible terminal state. If the agent
+            # was found, the version diagnostic owes a result - its report
+            # line (the 'unknown' placeholder included: the placeholder is
+            # a reported outcome, not a silent one), or a Summary bullet
+            # naming the version read failure; if it was not found, the
+            # agent absence must itself be a recorded problem. The
+            # state-specific proof is the red/green demo against a scratch
+            # copy with the fallback read redirected to a vanished path,
+            # documented with the fix.
+            $missingRegistration = Join-Path ([System.IO.Path]::GetTempPath()) ('ssm-check-invariant-ver-reg-' + [System.IO.Path]::GetRandomFileName())
+            $missingLog = Join-Path ([System.IO.Path]::GetTempPath()) ('ssm-check-invariant-ver-log-' + [System.IO.Path]::GetRandomFileName() + '.log')
+
+            $result = Invoke-CheckScriptViaLauncher -RegistrationPath $missingRegistration -AgentLogPath $missingLog
+
+            $normalized = $result.Output -replace "`r", ''
+            if ($normalized -match '(?m)^  Path    : ') {
+                # The agent was found, so the version diagnostic ran or
+                # failed to run; either way its outcome must be visible -
+                # never a bare Path line over an undetermined version.
+                $versionReported = $normalized -match '(?m)^  Version : '
+                $versionProblem = $normalized -match '(?m)^  - .*could not be read for its version'
+                ($versionReported -or $versionProblem) | Should -BeTrue
+            } else {
+                # The agent was not found at the conventional path: that
+                # outcome must be recorded too - never silence (this
+                # container: no ProgramFiles variable, so the not-installed
+                # report).
+                $normalized | Should -Match '(?m)^  - .*SSM Agent does not appear to be installed'
             }
             Assert-SummaryListsEveryProblem -Output $result.Output
             Assert-AnnouncedSectionSet -Output $result.Output
