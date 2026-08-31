@@ -133,8 +133,16 @@ function Add-Problem {
 $modulePath = Join-Path -Path $PSScriptRoot -ChildPath 'SSMHybrid.psm1'
 $moduleLoaded = $false
 if (Test-Path -LiteralPath $modulePath -PathType Leaf) {
-    Import-Module -Name $modulePath -Force
-    $moduleLoaded = $true
+    # Guarded like every other diagnostic read: a module file that exists
+    # but fails to import (unreadable, corrupt) would terminate the whole
+    # report with a raw error under EAP=Stop instead of recording a problem
+    # and completing the remaining sections.
+    try {
+        Import-Module -Name $modulePath -Force
+        $moduleLoaded = $true
+    } catch {
+        Add-Problem ("SSMHybrid.psm1 was found but could not be imported: " + $modulePath)
+    }
 } else {
     Add-Problem ("SSMHybrid.psm1 was not found next to this script: " + $modulePath)
 }
@@ -203,11 +211,22 @@ if ($agentInstalled) {
         $ErrorActionPreference = $previousEap
     }
     if ([string]::IsNullOrEmpty($versionText)) {
-        # Fall back to the file's version resource.
-        $versionInfo = (Get-Item -LiteralPath $agentExePath).VersionInfo
-        $versionText = $versionInfo.ProductVersion
-        if ([string]::IsNullOrEmpty($versionText)) {
-            $versionText = $versionInfo.FileVersion
+        # Fall back to the file's version resource. Guarded like every other
+        # diagnostic: the executable can vanish or become unreadable between
+        # the existence check above and this read (antivirus quarantine is
+        # the observed shape), and under the script's EAP=Stop an unguarded
+        # Get-Item would terminate the whole diagnostic with a raw error
+        # instead of recording a problem and completing the remaining
+        # sections - the unperformed-diagnostic-is-a-problem invariant.
+        try {
+            $versionInfo = (Get-Item -LiteralPath $agentExePath).VersionInfo
+            $versionText = $versionInfo.ProductVersion
+            if ([string]::IsNullOrEmpty($versionText)) {
+                $versionText = $versionInfo.FileVersion
+            }
+        } catch {
+            Add-Problem 'The SSM Agent executable could not be read for its version (it disappeared or is unreadable since the existence check).'
+            $versionText = ''
         }
     }
     if ([string]::IsNullOrEmpty($versionText)) {
