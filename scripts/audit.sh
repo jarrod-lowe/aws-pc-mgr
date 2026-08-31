@@ -1358,12 +1358,19 @@ scan_history() {
         # "\303\251.tfstate", and that closing quote defeats the *.tfstate
         # suffix case below — review thread 3891986876: the audit reported
         # clean over such a history). The suffix check must see the literal
-        # bytes. A path carrying a quote, backslash or control byte (newline
-        # included) is still C-quoted with this knob off: -z would cover
-        # those too, but its NUL stream has to be re-split on newlines for
-        # this read loop, which mangles exactly the newline-bearing paths -z
-        # exists for — the limitation tracked_files already documents. The
-        # residual gap stays documented rather than traded for a new one.
+        # bytes. With the knob off, a path carrying a quote, backslash or
+        # control byte is STILL C-quoted — so the read loop DECODES the
+        # quoted representation (review thread 3892092968: a
+        # committed-then-deleted old\name.tfstate enumerates as
+        # "old\\name.tfstate" and defeated the suffix case the same way).
+        # A C-quoted line starts and ends with a double quote; stripping
+        # them and printf-ing with %b interprets git's octal \NNN escapes
+        # and collapses the doubled backslash to the literal byte. -z was
+        # weighed and rejected: its NUL stream must be re-split on
+        # newlines for this read loop, which mangles exactly the
+        # newline-bearing paths -z exists for — the limitation
+        # tracked_files already documents; decoding covers everything
+        # except a newline inside a path, which -z+tr would mangle anyway.
         git -C "$ROOT" -c core.quotePath=false show --no-color \
             --name-only --format= "$_sh_sha" -- \
             ':(exclude)scripts/audit.sh' \
@@ -1376,6 +1383,20 @@ scan_history() {
         else
             while IFS= read -r _sh_path; do
                 [ -n "$_sh_path" ] || continue
+                case "$_sh_path" in
+                '"'*)
+                    # Strip the outer quotes and interpret git's escapes;
+                    # the case guard already proved the leading quote, and a
+                    # C-quoted line always ends with one. %b covers the octal
+                    # \NNN escapes and the doubled backslash; git's inner
+                    # quote escape \" is not a %b escape, so it is folded in
+                    # afterwards.
+                    _sh_path=$(printf '%b' "${_sh_path#?}" | sed 's/\\"/"/g')
+                    case "$_sh_path" in
+                    *'"') _sh_path=${_sh_path%?} ;;
+                    esac
+                    ;;
+                esac
                 case "$_sh_path" in
                 *.tfstate | *.tfstate.*)
                     printf 'FINDING %s %s: terraform-state-tracked (Terraform state path changed in history - SPEC §27; purge the history)\n' \
@@ -3310,13 +3331,19 @@ st_tfstate_checks() {
         >"$_ts_dir/$(printf '%s.tfstate' "$_ts_na")"
     printf '{"version":4,"serial":1,"outputs":{},"resources":[]}\n' \
         >"$_ts_dir/$(printf 'minimal-%s.tfstate' "$_ts_na")"
+    # Backslash pair: quotePath=false still C-quotes these, so the deleted
+    # one pins the DECODER (octal %b plus the inner-quote fold) on the
+    # history enumeration.
+    printf '{"version":4,"serial":1,"outputs":{},"resources":[]}\n' \
+        >"$_ts_dir/$(printf 'old\\name.tfstate')"
     _ts_git add -A note.txt scripts >/dev/null 2>&1
     _ts_git add -f old.tfstate minimal.tfstate \
         "$(printf '%s.tfstate' "$_ts_na")" \
-        "$(printf 'minimal-%s.tfstate' "$_ts_na")" >/dev/null 2>&1
+        "$(printf 'minimal-%s.tfstate' "$_ts_na")" \
+        "$(printf 'old\\name.tfstate')" >/dev/null 2>&1
     _ts_git commit -qm 'add minimal state' >/dev/null 2>&1
     _ts_git rm -q old.tfstate "$(printf '%s.tfstate' "$_ts_na")" \
-        >/dev/null 2>&1
+        "$(printf 'old\\name.tfstate')" >/dev/null 2>&1
     _ts_git commit -qm 'remove old state' >/dev/null 2>&1
     bash "$_ts_dir/scripts/audit.sh" >"$_ts_dir/audit.out" 2>&1
     _ts_rc=$?
@@ -3342,9 +3369,16 @@ st_tfstate_checks() {
         "git-history [0-9a-f]* $(printf '%s' "$_ts_na")\.tfstate: terraform-state-tracked" \
         "$_ts_dir/audit.out" 2>/dev/null) || _ts_na_hits=0
     [ "$_ts_na_hits" -eq 2 ] || _ts_ok=no
+    # Deleted backslash path: exactly two history findings naming the
+    # literal decoded form — the decoder's pin. Fixed-string count is safe
+    # here: the name appears in no other finding shape (the file is deleted,
+    # so no tracked-path finding exists for it).
+    _ts_bs_hits=$(grep -cF 'old\name.tfstate: terraform-state-tracked' \
+        "$_ts_dir/audit.out" 2>/dev/null) || _ts_bs_hits=0
+    [ "$_ts_bs_hits" -eq 2 ] || _ts_ok=no
     if [ "$_ts_ok" != yes ]; then
-        printf 'selftest: FAIL  tfstate path checks: rc=%s (want 1); tracked-path and history-path findings both expected (ASCII and non-ASCII; history hits for the deleted non-ASCII name: %s, want 2)\n' \
-            "$_ts_rc" "$_ts_na_hits"
+        printf 'selftest: FAIL  tfstate path checks: rc=%s (want 1); tracked-path and history-path findings both expected (ASCII, non-ASCII, backslash; history hits non-ASCII: %s want 2, backslash: %s want 2)\n' \
+            "$_ts_rc" "$_ts_na_hits" "$_ts_bs_hits"
         sed 's/^/         /' "$_ts_dir/audit.out" | head -n 5
         find "$_ts_dir" -type f -exec rm -f {} + 2>/dev/null
         find "$_ts_dir" -depth -type d -exec rmdir {} + 2>/dev/null
