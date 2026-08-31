@@ -222,24 +222,32 @@
 #
 # The machine-serial-number detector anchors on a PROPERTY, not a
 # positional pattern: after the serial label and assignment anchor, the
-# value must be a single post-label token of 8-plus characters
-# (SERIAL_VALUE), and emit_hits's serial-property gate then requires that
-# token to contain BOTH at least one letter and at least one digit. The
-# detector ERE deliberately only proves "one 8-plus token after the
-# label" — earlier revisions enumerated positional alternatives
-# (letters-then-digits, digit-then-letter-plus-tail, ...) and each new
-# hardware-serial interleaving (`ABCDEFG1`, `ABC1234Z`) found in review
-# was another miss; a property cannot be misspelled. What the property
-# keeps out: free text (`serial number: see the underside of the device`
-# — no single 8-plus token after the separator at all), pure-digit runs
-# (a Terraform state file's `"serial": 123456789` growth counter — a
-# digit-only token has no letter), and pure-letter words (`serial:
-# rotation` — no digit). A token that carries both, however sparse the
-# interleaving (`9mtxaaaaaa`, `ABC-12345`, `1A2B3C4D5E`), is a finding.
-# The gate follows the profile gate's empty-capture rule: an empty
-# re-anchored capture keeps the finding — over-detection remains the
-# safe direction — and only a capture in which NO token holds both a
-# letter and a digit is skipped.
+# value must be a single post-label token whose FLOOR is tiered by label
+# form (round 44: `Machine Serial Number: A1B2C3`, 6 mixed characters,
+# stayed silent when one 8-plus floor applied to both tiers) — 4-plus
+# behind the explicit `serial number` label (hardware serials have no
+# formal minimum; 4 keeps single-/double-digit enumerations and
+# three-character ordinals out while every plausible short serial fires),
+# 8-plus behind the bare `serial` label (its prose brake) — and
+# emit_hits's serial-property gate then requires that token to contain a
+# digit at both tiers, plus a letter behind the bare label. The detector
+# ERE deliberately only proves "one post-label token of at least the
+# label form's floor" — earlier revisions enumerated positional
+# alternatives (letters-then-digits, digit-then-letter-plus-tail, ...) and
+# each new hardware-serial interleaving (`ABCDEFG1`, `ABC1234Z`) found in
+# review was another miss; a property cannot be misspelled. What the
+# property keeps out: free text (`serial number: see the underside of the
+# device` — no single post-separator token of either floor's length),
+# pure-letter words (`serial: rotation` — no digit), and — behind the
+# BARE label only — pure-digit runs (a Terraform state file's `"serial":
+# 123456789` growth counter; behind the explicit label an all-numeric
+# serial is real and fires). A token that carries the tier's property,
+# however sparse the interleaving (`9mtxaaaaaa`, `ABC-12345`,
+# `1A2B3C4D5E`, and now the short explicit `A1B2C3`), is a finding. The
+# gate follows the profile gate's empty-capture rule: an empty re-anchored
+# capture keeps the finding — over-detection remains the safe direction —
+# and only a capture in which NO token holds the tier's property is
+# skipped.
 #
 # The user-home-path shape detector (Windows drive-letter form, macOS
 # /Users form, Linux /home form) anchors on the ORIGINAL line: the username
@@ -531,8 +539,9 @@ GENERIC_LABELED_HOSTS=' localhost hostname computer name your the example.com ex
 # with value anchors chosen for values that are SHORT arbitrary strings —
 # there, prose safety cannot come from value length alone: a serial value
 # is a PROPERTY, not a positional pattern (see the header notes: one
-# post-label token of 8-plus carrying both a letter and a digit, enforced
-# by the serial-property gate in emit_hits), while a profile value cannot
+# post-label token of the label form's floor — 4-plus explicit, 8-plus
+# bare — carrying the tier's digit/letter property, enforced by the
+# serial-property gate in emit_hits), while a profile value cannot
 # be shaped at all (letter-only names are real), so it is only
 # length-floored (AWS_PROFILE_VALUE) and the prose safety lives in the
 # generic-value gate emit_hits applies to that detector (GENERIC_PROFILES;
@@ -598,21 +607,50 @@ AWS_PROFILE_VALUE='[A-Za-z0-9_+.,@-]+'
 # merely leaves the sweep under-approximating (safe direction), and the
 # charsweep's outside-class rows catch the common accidental additions.
 AWS_PROFILE_ALPHABET_MEMBERS='A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9 _ + . , @ -'
-# SERIAL_LABEL/SERIAL_VALUE are the machine-serial-number detector's label
-# and value anchors, shared between the detector ERE and the serial-property
-# gate in emit_hits for the same reason AWS_PROFILE_LABEL/AWS_PROFILE_VALUE
-# are shared: the gate re-anchors exactly the tokens the detector matched.
-# The value anchor proves only "one 8-plus token after the label" — the
-# letter-and-digit property is the gate's job (see header).
+# SERIAL_LABEL/SERIAL_VALUE_* are the machine-serial-number detector's
+# label and value anchors, shared between the detector ERE and the
+# serial-property gate in emit_hits for the same reason
+# AWS_PROFILE_LABEL/AWS_PROFILE_VALUE are shared: the gate re-anchors
+# exactly the tokens the detector matched. The value anchors prove only
+# "one post-label token of at least the label form's floor" — the
+# letter-and-digit property is the gate's job (see header). The FLOOR is
+# tiered like the gate's numeric rule (round 44, thread 3892241746: `Machine
+# Serial Number: A1B2C3` — 6 characters, mixed — stayed silent because the
+# 8-plus tail applied at both tiers): hardware serials have no formal
+# minimum and short ones are real, so the EXPLICIT `serial number` label,
+# which is unambiguous, drops the floor to 4-plus; the BARE `serial` label
+# keeps the 8-plus floor as its prose brake (`serial = rotation`-class
+# keyed data). Why 4 and not 2 or 3: the explicit tier requires a digit but
+# NOT a letter (round 39's rule), so the floor is the only brake on short
+# NUMERIC prose there — 4 keeps single- and double-digit enumerations
+# (`serial number: 4`, `serial number: 42`) and three-character ordinals
+# (`serial number: 4th`) out, while every plausible serial (four-plus
+# alphanumeric characters carrying a digit — `A1B2`, `AB12`, `A1B2C3`)
+# fires. The two value anchors share one alphabet and differ only in the
+# tail, and the charsweep drift-checks both against SERIAL_ALPHABET_MEMBERS
+# so neither tier's bracket class can drift.
 SERIAL_LABEL="serial(${LABEL_WORD_SEP}number)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
-SERIAL_VALUE='[A-Za-z0-9][A-Za-z0-9-]{7,}'
-# SERIAL_ALPHABET_MEMBERS — parallel member list of SERIAL_VALUE's bracket
-# classes, same contract as AWS_PROFILE_ALPHABET_MEMBERS (charsweep rows +
-# drift check; see that comment). SERIAL_VALUE is TWO-tier — the first
-# character is alnum only, `-` is legal from the second character on — so
-# the list is the any-position alphabet and the charsweep derives the
-# first-position subset by skipping `-`, pinning the tier with a dedicated
-# must-silent row for each first-position-excluded member.
+SERIAL_LABEL_EXPLICIT="serial${LABEL_WORD_SEP}number[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
+SERIAL_VALUE_EXPLICIT='[A-Za-z0-9][A-Za-z0-9-]{3,}'
+SERIAL_VALUE_BARE='[A-Za-z0-9][A-Za-z0-9-]{7,}'
+# SERIAL_ANCHOR — the composed detector-and-gate anchor: a SHORT (4-plus)
+# value is admissible ONLY behind the number-bearing label branch, while
+# the any-form label branch keeps the 8-plus floor. One alternation, used
+# verbatim by the LABEL_DETECTORS registration AND by the gate's re-anchor
+# grep, so the detector and the gate cannot drift apart — and the gate's
+# tier test (`*number*` on the matched span) keys off the same branch
+# difference the floors do: a span that matched through the explicit
+# branch (or through the any-form branch on a number-bearing label, which
+# POSIX longest-match prefers, yielding the same span) reads explicit.
+SERIAL_ANCHOR="(${SERIAL_LABEL_EXPLICIT}${SERIAL_VALUE_EXPLICIT}|${SERIAL_LABEL}${SERIAL_VALUE_BARE})"
+# SERIAL_ALPHABET_MEMBERS — parallel member list of the SERIAL_VALUE_*
+# bracket classes, same contract as AWS_PROFILE_ALPHABET_MEMBERS (charsweep
+# rows + drift check; see that comment). Both tiers are TWO-tier in the
+# positional sense — the first character is alnum only, `-` is legal from
+# the second character on — so the list is the any-position alphabet and
+# the charsweep derives the first-position subset by skipping `-`, pinning
+# the tier with a dedicated must-silent row for each first-position-excluded
+# member.
 SERIAL_ALPHABET_MEMBERS='A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9 -'
 # ALPHABET_HIGH_SAMPLES — the 0x80-0xFF byte range (see _highrange below)
 # stands for 128 distinct bytes; enumerating all of them at every sweep
@@ -771,7 +809,7 @@ aws-activation-code:activation${LABEL_WORD_SEP}code[[:space:]]*${QUOTE_CLASS}[[:
 aws-session-token:(aws${LABEL_WORD_SEP})?(session|security)${LABEL_WORD_SEP}token[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}
 account-id-context:account(${LABEL_WORD_SEP}(id|number))?[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[[:space:]]*[0-9]{12}
 aws-sso-profile:${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}
-machine-serial-number:${SERIAL_LABEL}${SERIAL_VALUE}
+machine-serial-number:${SERIAL_ANCHOR}
 personal-name:${PERSONAL_NAME_LABEL}${PERSONAL_NAME_VALUE}
 windows-username-labeled:${WINUSER_LABEL}${WINUSER_VALUE}
 hostname-labeled:${HOSTNAME_LABEL}${HOSTNAME_VALUE}"
@@ -921,26 +959,32 @@ emit_hits() {
             fi
             # Serial-property gate (machine-serial-number only), mirroring
             # the generic-value gate's structure: the detector's value
-            # anchor deliberately proves only "one 8-plus token after the
-            # serial label" (SERIAL_LABEL + SERIAL_VALUE), because serials
-            # have no positional grammar — every positional pattern so far
-            # (letters-then-digits, digit-then-letter, hyphenated) missed
-            # the next interleaving someone found in review. The gate is
-            # TWO-TIER by label form: both tiers require at least one
-            # DIGIT in a captured token (pure-letter words name nothing
-            # serial), and the tiers differ on the LETTER requirement —
-            # the EXPLICIT `serial number` label is unambiguous, so
-            # digits-only tokens keep the finding (all-numeric hardware
-            # serials are real), while the BARE `serial` label is
-            # ambiguous with ordinary keyed data (a Terraform state
-            # file's numeric growth counter), so there a token must
-            # contain BOTH a letter and a digit. An empty capture keeps the finding
-            # (over-detection stays the safe direction); the marker and
-            # history rules above are untouched.
+            # anchor deliberately proves only "one post-label token of at
+            # least the label form's floor" (SERIAL_ANCHOR — 4-plus behind
+            # the explicit `serial number` branch, 8-plus behind the bare
+            # `serial` one; see the SERIAL_VALUE_* definitions), because
+            # serials have no positional grammar — every positional
+            # pattern so far (letters-then-digits, digit-then-letter,
+            # hyphenated) missed the next interleaving someone found in
+            # review. The gate is TWO-TIER by label form: both tiers
+            # require at least one DIGIT in a captured token (pure-letter
+            # words name nothing serial), and the tiers differ on the
+            # LETTER requirement — the EXPLICIT `serial number` label is
+            # unambiguous, so digits-only tokens keep the finding
+            # (all-numeric hardware serials are real), while the BARE
+            # `serial` label is ambiguous with ordinary keyed data (a
+            # Terraform state file's numeric growth counter), so there a
+            # token must contain BOTH a letter and a digit. The gate
+            # re-anchors with the SAME SERIAL_ANCHOR the detector
+            # registered, so the two floors cannot drift apart, and the
+            # tier test below (the span carrying `number`) reads exactly
+            # the branch difference the floors key on. An empty capture
+            # keeps the finding (over-detection stays the safe direction);
+            # the marker and history rules above are untouched.
             if [ "$_eh_name" = 'machine-serial-number' ]; then
                 _eh_span=$(printf '%s\n' "${_eh_hit#*:}" |
                     tr '[:upper:]' '[:lower:]' |
-                    grep -oE -- "${SERIAL_LABEL}${SERIAL_VALUE}")
+                    grep -oE -- "$SERIAL_ANCHOR")
                 _eh_vals=$(printf '%s\n' "$_eh_span" |
                     sed -e 's/^[^=:]*:=//' -e 's/^[^=:]*[=:][[:space:]]*//' \
                         -e "s/^[\"']*//")
@@ -2366,6 +2410,14 @@ machine-serial-number|M|SERIAL-NUMBER: pf-2x9k1q
 machine-serial-number|M|serial:CND1234567
 machine-serial-number|M|machine-serial = abc-123456
 machine-serial-number|M|device.serial.number = 9mtxaaaaaa
+machine-serial-number|M|Machine Serial Number: A1B2C3
+machine-serial-number|M|Serial Number: AB12
+machine-serial-number|M|Serial Number: 123456
+machine-serial-number|X|serial = A1B2C3
+machine-serial-number|X|Machine Serial Number: A1B
+machine-serial-number|X|Machine Serial Number: 4
+machine-serial-number|X|Machine Serial Number: 42
+machine-serial-number|X|Serial Number: 4th
 machine-serial-number|X|serial number: see the underside of the device
 machine-serial-number|X|Serial Number: unknown
 machine-serial-number|X|Machine Serial Number: ABCDEFGH
@@ -2498,9 +2550,11 @@ EOF
     # one character) sweep 1..12 must-fire; the fixed-floor classes sweep
     # their grammar's boundary (below the floor must stay silent, at and
     # above must fire, including the substring over-run just past the
-    # ceiling where one exists); machine-serial-number additionally sweeps
-    # pure-digit and pure-letter tokens at, above the floor (the
-    # property gate's silent side); personal-name sweeps its two-run shape
+    # ceiling where one exists); machine-serial-number's floor is TIERED
+    # (round 44), so it sweeps BOTH boundaries, each behind its tier's own
+    # label spelling (4-plus explicit, 8-plus bare), and additionally sweeps
+    # pure-digit and pure-letter tokens at, above the floors (the
+    # property gate's tiered silent side); personal-name sweeps its two-run shape
     # (run lengths 1..6 squared — must fire exactly when each run is
     # 3-plus and the total is 8-plus). Values follow the SYNTHETIC-KEY
     # CONVENTION: sequential pools, sliced by growing prefixes.
@@ -2547,15 +2601,23 @@ EOF
     st_sweep_grow aws-activation-code M 'activation_code =' \
         SYNTHETICACTIVATIONCODE0123456789 6 9 8
     st_sweep_grow account-id-context M 'account_id =' 1234567890123456 10 13 12
-    st_sweep_grow machine-serial-number M 'serial_number =' abc123abc123 6 10 8
-    # Pure-digit / pure-letter serial tokens at and above the 8-plus
-    # floor: the ERE matches but the serial-property gate must skip them.
-    # Digit-only silence is pinned behind the BARE label only (the
-    # two-tier rule: an explicit serial-number label makes digit-only
-    # tokens real serials and findings); pure letters are silent behind
-    # the explicit spelling — the stronger assertion.
+    # Tiered serial floor (round 44): each spelling sweeps its OWN tier's
+    # boundary — the explicit `serial_number` spelling the 4-plus floor
+    # (1..3 silent, 4..10 fire), the bare `serial` spelling the 8-plus
+    # prose brake (6..7 silent, 8..10 fire; the boundary one floor used
+    # to sweep behind the explicit spelling only).
+    st_sweep_grow machine-serial-number M 'serial_number =' abc123abc123 1 10 4
+    st_sweep_grow machine-serial-number M 'serial =' abc123abc123 6 10 8
+    # Pure-digit / pure-letter serial tokens: the ERE matches and the
+    # serial-property gate decides by tier. Digit-only silence is pinned
+    # behind the BARE label only (the two-tier rule: an explicit
+    # serial-number label makes digit-only tokens real serials and
+    # findings — swept from 4 up, crossing the new explicit floor in the
+    # same rows); pure letters are silent behind the explicit spelling —
+    # the stronger assertion — swept from that floor up.
     st_sweep_grow machine-serial-number X 'serial =' 1234567890123 8 10 0
-    st_sweep_grow machine-serial-number X 'serial_number =' abcdefghijkl 8 10 0
+    st_sweep_grow machine-serial-number X 'serial_number =' abcdefghijkl 4 10 0
+    st_sweep_grow machine-serial-number M 'serial_number =' 1234567890123 4 10 0
     # personal-name two-run shape: run lengths 1..6 squared, runs grown
     # character by character (the outer run carries across its inner loop).
     _sw_p1=ABCDEF
@@ -2763,8 +2825,14 @@ st_charsweep() {
         wu serna '< > ,' 'charsweep drift winuser-word'
     _cs_drift "$HOSTNAME_VALUE" "$HOSTNAME_ALPHABET_MEMBERS" \
         wu serna '< > ,' 'charsweep drift hostname-value'
-    _cs_drift "$SERIAL_VALUE" "$SERIAL_ALPHABET_MEMBERS" \
+    # Serial value drift runs per TIER (round 44): the two floors share one
+    # alphabet, and each tier's ERE is drift-checked with fillers that
+    # clear that tier's own floor, so a bracket-class edit to either the
+    # 4-plus explicit or the 8-plus bare anchor fails its own check.
+    _cs_drift "$SERIAL_VALUE_BARE" "$SERIAL_ALPHABET_MEMBERS" \
         wuserna mx01 '< > ,' 'charsweep drift serial-value'
+    _cs_drift "$SERIAL_VALUE_EXPLICIT" "$SERIAL_ALPHABET_MEMBERS" \
+        wu 01 '< > ,' 'charsweep drift serial-value-explicit'
     _cs_drift "${NAME_RUN}+" "$NAME_ALPHABET_MEMBERS $_cs_high" \
         wu serna '< > , 1' 'charsweep drift name-run'
 
@@ -2834,7 +2902,8 @@ st_charsweep() {
 
     # machine-serial-number: base token `mtx1aaaa` carries both a letter
     # and a digit so every row clears the serial-property gate at both
-    # label tiers; insertion keeps the 8-plus floor comfortably cleared.
+    # label tiers, and its 8 characters clear both tiers' floors (4-plus
+    # explicit, 8-plus bare); insertion only grows it.
     for _cs_m in $SERIAL_ALPHABET_MEMBERS; do
         case $_cs_m in
         -) ;;
@@ -2846,8 +2915,12 @@ st_charsweep() {
         _cs_row machine-serial-number M "serial_number = mtx1${_cs_m}aaaa"
         _cs_row machine-serial-number M "serial_number = mtx1aaaa${_cs_m}"
     done
-    # Space mid-value with a sub-floor prefix is silent at the ERE itself.
-    _cs_row machine-serial-number X 'serial_number = mtx1 mx01'
+    # Space mid-value with a prefix sub-floor at the spelling's own tier:
+    # behind the explicit spelling (4-plus), `mx1` is one short of the
+    # floor and mixed — the row is silent at the ERE itself, pinning the
+    # explicit floor's boundary through the word-structure dimension (a
+    # longer prefix would be a real token the space merely ends).
+    _cs_row machine-serial-number X 'serial_number = mx1 mx01'
     _cs_row machine-serial-number X 'serial_number = -mtx1aaaa'
     _cs_row machine-serial-number X 'serial_number = <mtx1aaaa'
     _cs_row machine-serial-number X 'serial_number = ,mtx1aaaa'
