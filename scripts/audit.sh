@@ -43,6 +43,35 @@
 #                                 PATH prints an error and exits 0 with no
 #                                 findings (the caller's own count asserts
 #                                 then fail, loudly).
+#   scripts/audit.sh --scan-tracked-batch PATH...
+#                              [INTERNAL] NUL-safe tracked-file driver: the
+#                                 default audit enumerates tracked files with
+#                                 `git ls-files -z` and iterates that stream
+#                                 with `xargs -0` into this mode, which runs
+#                                 scan_tracked_one (the audit's full per-file
+#                                 body) over each repo-relative PATH argument.
+#                                 Paths arrive as argv entries, so filenames
+#                                 containing newlines reach the engine whole —
+#                                 a `read`-loop split on newlines used to
+#                                 shred them into fragments no existence
+#                                 check accepted, silently skipping the file
+#                                 (review thread 3892177088). Runtime literal
+#                                 values come from the AUDIT_SCAN_* variables
+#                                 the default audit exports on its xargs
+#                                 command; without them (a bare invocation)
+#                                 those literal scans are inert, as in
+#                                 --scan-file. FINDING lines on stdout, exit
+#                                 0 regardless of findings.
+#   scripts/audit.sh --marker-lines PATH...
+#                              [INTERNAL] NUL-safe marker collection for the
+#                                 history-equivalence set: prints every line
+#                                 of each given tracked path that carries the
+#                                 suppression marker (annotated_current_lines
+#                                 pipes the same `git ls-files -z` stream
+#                                 here through `xargs -0`), so an annotated
+#                                 line in a newline-named file reaches the
+#                                 set like any other. Exit 0 regardless of
+#                                 matches.
 #   scripts/audit.sh --message-file FILE
 #                              PRE-COMMIT GATE for commit-message text:
 #                                 the full engine (label + shape detectors)
@@ -64,7 +93,10 @@
 #                                 for messages.
 #
 # What the default audit scans:
-#   * tracked files (git ls-files) — text files directly, UTF-16 and
+#   * tracked files (git ls-files) — enumerated NUL-delimited end to end
+#     (`git ls-files -z` piped through `xargs -0` into the internal
+#     --scan-tracked-batch mode), so a filename containing a newline is
+#     scanned like any other; text files directly, UTF-16 and
 #     BOM'd UTF-32 files (UTF-16 by BOM or NUL-interleaved bytes, e.g.
 #     Windows PowerShell `>` redirection output; UTF-32 by its 4-byte BOM)
 #     decoded to UTF-8 and scanned in decoded form — by every detector AND
@@ -325,7 +357,17 @@
 # list) and every temp allocation abort the audit with an error instead of
 # letting it report clean over zero commits or zero files.
 #
-# Limitation: file paths containing newline characters are not supported.
+# Path-name limitations, stated precisely: the TRACKED-file enumeration is
+# NUL-safe end to end — `git ls-files -z` through `xargs -0` (available with
+# -0 and -r on both BSD and GNU, an assumption documented here the same way
+# the iconv/sed ones are) into the internal --scan-tracked-batch /
+# --marker-lines modes — so a filename containing a newline is scanned, and
+# its marker lines reach the history-equivalence set, like any other. The
+# HISTORY changed-path enumeration is not: it decodes git's C-quoting (see
+# scan_history), but a newline inside a history path name remains unmatched
+# there — that read loop must split its input on newlines, and the -z form
+# it would need cannot be re-split without mangling exactly the
+# newline-bearing names -z exists for.
 
 LC_ALL=C
 export LC_ALL
@@ -337,6 +379,13 @@ ROOT=$(CDPATH=; cd -- "$SELF_DIR/.." && pwd) || {
     printf '%s: error: cannot locate repository root\n' "$SCRIPT_NAME" >&2
     exit 2
 }
+# Absolute path to this script itself, for the internal re-invocation modes
+# (--scan-tracked-batch, --marker-lines): the tracked-file enumeration pipes
+# NUL-delimited names through `xargs -0` back into THIS script, because POSIX
+# sh cannot hold a NUL in a variable or split a stream on it (see
+# tracked_files_z). Re-executing $SCRIPT keeps the per-file work in the one
+# real engine instead of an inline copy of it.
+SCRIPT=$(CDPATH=; cd -- "$SELF_DIR" && pwd)/${0##*/}
 
 FIXTURE_DIR=tests/fixtures/audit
 # Fixtures (paths relative to the repository root) that must produce NO
@@ -997,11 +1046,20 @@ scan_matches() {
     _sm_ere2=${5-}
     _sm_mode=${6-}
     if [ "$_sm_mode" = 'lower' ]; then
+        # The file path crosses to awk through the environment, not
+        # `awk -v f=`: -v processes escape sequences and fatally rejects a
+        # literal newline in the value, which a legal tracked filename may
+        # now carry end to end (tracked_files_z) — that failure mode
+        # silently dropped every label-detector hit for the file. ENVIRON
+        # hands over the raw bytes; the export sits before the pipeline so
+        # the assignment is not part of it.
+        export AUDIT_SM_FILE="$_sm_file"
         _sm_hits=$(
             tr '[:upper:]' '[:lower:]' <"$_sm_file" 2>/dev/null |
                 grep -nE -- "$_sm_ere" 2>/dev/null |
-                awk -v f="$_sm_file" '
+                awk '
                     BEGIN {
+                        f = ENVIRON["AUDIT_SM_FILE"]
                         while ((getline _sm_line < f) > 0) _sm_orig[++_sm_n] = _sm_line
                     }
                     {
@@ -1189,49 +1247,97 @@ scan_file() {
     return 0
 }
 
-# tracked_files FILE — write to FILE the tracked files, one per line,
-# excluding the audit script and the fixtures. (Paths containing newlines are
-# not supported.) Fails closed: returns nonzero when `git ls-files` itself
-# fails, because a caller that swallowed that would iterate over ZERO files
-# while the audit still reported "tracked files and full history scanned" —
-# a false clean over an unreadable index or a failing git. git's -z output is
-# captured to its own temp first: piping it straight through `tr` would hide
-# git's exit status, since the pipe reports tr's.
-tracked_files() {
-    _tf_z=$(mktemp "${TMPDIR:-/tmp}/audit-lsfiles.XXXXXXXX") || return 1
+# tracked_files_z FILE — write to FILE the tracked files, NUL-delimited
+# (git ls-files -z verbatim), excluding the audit script and the fixtures.
+# The stream stays NUL-delimited end to end: a legal filename may contain
+# newlines, and re-splitting on newlines (`tr '\0' '\n'` plus a `read` loop)
+# shreds such a name into fragments that every downstream existence check
+# then rejects — the file is never scanned while the audit still reports
+# "tracked files and full history scanned" (review thread 3892177088). POSIX
+# sh cannot hold a NUL in a variable, split on one, or `read -d ''` it, so
+# the consumers iterate this stream with `xargs -0` (available with -0 and
+# -r on both BSD and GNU, like the iconv/sed assumptions elsewhere here),
+# re-invoking this script per batch — see scan_tracked_one and the
+# --scan-tracked-batch / --marker-lines modes. Fails closed: returns nonzero
+# when `git ls-files` itself fails, because a caller that swallowed that
+# would iterate over ZERO files while the audit still reported "tracked files
+# and full history scanned" — a false clean over an unreadable index or a
+# failing git.
+tracked_files_z() {
     if ! git -C "$ROOT" ls-files -z -- \
         ':(exclude)scripts/audit.sh' \
-        ':(exclude)tests/fixtures/audit' >"$_tf_z"; then
-        rm -f "$_tf_z"
+        ':(exclude)tests/fixtures/audit' >"$1" 2>/dev/null; then
         return 1
     fi
-    tr '\0' '\n' <"$_tf_z" >"$1"
-    _tf_rc=$?
-    rm -f "$_tf_z"
-    return "$_tf_rc"
+    return 0
+}
+
+# scan_tracked_one NAME — the complete per-file body of the default audit's
+# tracked-file pass, as ONE function so the default loop and the
+# --scan-tracked-batch child run it identically (the child exists only
+# because the NUL-delimited enumeration needs `xargs -0` to iterate; the
+# per-file semantics live here, once). NAME is the repo-relative tracked
+# path, reported verbatim in findings — newlines included. The runtime
+# literals (_bucket, _user, _host, _host_short, _profile, _display) arrive
+# as globals: the default audit computes them itself, the batch child reads
+# them from the AUDIT_SCAN_* environment it sets. Skips list entries that
+# vanished mid-run; a *.tfstate / *.tfstate.* path is a finding before any
+# content is read; content is scanned through effective_scan_path (decode
+# decided once) by every detector and every runtime literal.
+scan_tracked_one() {
+    _f=$1
+    [ -n "$_f" ] || return 0
+    [ -f "$ROOT/$_f" ] || return 0
+    # Path-level Terraform-state prohibition (SPEC §27 "Terraform
+    # state"; see header): state must never be tracked at all, so the
+    # path itself is the finding — .gitignore already excludes these,
+    # and this fails closed if one is ever added anyway. The marker
+    # cannot suppress it: a state file is never synthetic, and the
+    # finding names a path, not a line.
+    case "$_f" in
+    *.tfstate | *.tfstate.*)
+        printf 'FINDING %s: terraform-state-tracked (Terraform state is committed - SPEC §27; remove it from the index and purge history)\n' \
+            "$_f"
+        ;;
+    esac
+    effective_scan_path "$ROOT/$_f" "$_f"
+    _scan=$EFFECTIVE_PATH
+    [ -n "$_scan" ] || return 0
+    scan_file "$_scan" "$_f"
+    scan_literal state-bucket-name "$_f" "$_scan" "$_bucket"
+    scan_literal username "$_f" "$_scan" "$_user"
+    scan_literal hostname "$_f" "$_scan" "$_host" ic
+    scan_literal hostname "$_f" "$_scan" "$_host_short" ic
+    scan_literal aws-profile-name "$_f" "$_scan" "$_profile"
+    scan_literal display-name "$_f" "$_scan" "$_display" ic
+    drop_scan_temp "$_scan" "$ROOT/$_f"
+    return 0
 }
 
 # annotated_current_lines FILE — fill FILE with the content of every line in
 # the current tracked tree that carries the suppression marker, with the
 # marker and trailing whitespace removed. One entry per annotated line; used
-# for the history-equivalence rule (see header). Returns nonzero only when
-# the tracked-file enumeration itself fails (tracked_files), which the caller
-# treats as fatal: an empty-but-successful run merely means no annotated
-# lines exist, while a failed one means the equivalence set could not be
-# built at all.
+# for the history-equivalence rule (see header). The enumeration is
+# NUL-delimited (tracked_files_z) and iterated by `xargs -0` driving this
+# script's --marker-lines mode — a marker line in a newline-named file is as
+# legitimate as any other and must reach the equivalence set, where a
+# newline-split `read` loop would have shredded the name and dropped the
+# file. Returns nonzero only when the tracked-file enumeration itself fails
+# (tracked_files_z), which the caller treats as fatal: an empty-but-
+# successful run merely means no annotated lines exist, while a failed one
+# means the equivalence set could not be built at all. A --marker-lines child
+# failing mid-run behaves exactly like the per-file grep it replaced: that
+# file's lines are absent, which can only OVER-report history findings,
+# never silence one.
 annotated_current_lines() {
     _acl_file=$1
     _acl_list=$(mktemp "${TMPDIR:-/tmp}/audit-annotated-src.XXXXXXXX") ||
         return 1
-    if ! tracked_files "$_acl_list"; then
+    if ! tracked_files_z "$_acl_list"; then
         rm -f "$_acl_list"
         return 1
     fi
-    while IFS= read -r _acl_f; do
-        [ -n "$_acl_f" ] || continue
-        [ -f "$ROOT/$_acl_f" ] || continue
-        grep -hF -- "$MARKER" "$ROOT/$_acl_f" 2>/dev/null
-    done <"$_acl_list" |
+    xargs -0 -r "$SCRIPT" --marker-lines <"$_acl_list" 2>/dev/null |
         sed -e 's/[[:space:]]*'"$MARKER"'[[:space:]]*$//' \
             -e 's/[[:space:]]*$//' |
         grep -v '^$' >"$_acl_file" 2>/dev/null
@@ -1251,13 +1357,14 @@ annotated_current_lines() {
 # nonzero — empty output is a legitimate skip, a failed read never is (see
 # the loop). The runtime values (bucket name, username, hostname including
 # its short form, AWS profile name, display name) are scanned against BOTH
-# streams, with the same scan_literal calls the tracked-file loop makes —
-# same needles, hostname and display name case-insensitive as there — so a
-# value that only ever reached history (a file later removed, a commit
+# streams, with the same scan_literal calls the tracked-file pass
+# (scan_tracked_one) makes — same needles, hostname and display name
+# case-insensitive as there — so a value that only ever reached history (a
+# file later removed, a commit
 # message naming the machine) is still a finding. The values arrive
 # already carrying default_audit's guards (generic-user skip,
 # short-hostname minimum, generic-profile skip, name-shape skip), the same
-# guarded forms the tracked-file loop scans.
+# guarded forms the tracked-file pass scans.
 scan_history() {
     _sh_bucket=${1-}
     _sh_user=${2-}
@@ -1368,9 +1475,11 @@ scan_history() {
         # and collapses the doubled backslash to the literal byte. -z was
         # weighed and rejected: its NUL stream must be re-split on
         # newlines for this read loop, which mangles exactly the
-        # newline-bearing paths -z exists for — the limitation
-        # tracked_files already documents; decoding covers everything
-        # except a newline inside a path, which -z+tr would mangle anyway.
+        # newline-bearing paths -z exists for. This is the one remaining
+        # newline boundary — the tracked enumeration is NUL-safe end to
+        # end (tracked_files_z), while a newline inside a HISTORY path
+        # name stays unmatched here, which -z+tr cannot fix without
+        # mangling; decoding covers every other C-quoted shape.
         git -C "$ROOT" -c core.quotePath=false show --no-color \
             --name-only --format= "$_sh_sha" -- \
             ':(exclude)scripts/audit.sh' \
@@ -3274,7 +3383,7 @@ plain line'
 # the history changed-path check can catch it. The full default audit is
 # run in the scratch repo; both findings must appear and the audit must
 # exit 1. This drives default_audit itself, not scan_file: the path-level
-# check lives in the audit's enumeration loops (the tracked-file loop and
+# check lives in the audit's enumeration paths (scan_tracked_one and
 # scan_history), which is exactly why a content-only reproduction through
 # scan_file shows nothing. The same pair is repeated with NON-ASCII file
 # names (é = UTF-8 C3 A9, built byte-wise so no locale or keyboard is
@@ -3283,8 +3392,17 @@ plain line'
 # "\303\251.tfstate" ends in a quote, which used to defeat the *.tfstate
 # suffix case and report clean). The tracked one pins ls-files -z (never
 # quoted); the deleted one pins core.quotePath=false on the history
-# enumeration, asserted for BOTH the add and the remove commit. The
-# scratch repo is cleaned without rm -rf (files first, then directories
+# enumeration, asserted for BOTH the add and the remove commit. A final
+# NEWLINE-named file (review thread 3892177088) is staged but never
+# committed, exactly like the reviewer's reproduction: `git ls-files -z`
+# emits its name with the raw newline inside, the enumeration must carry
+# it WHOLE to the engine, and nothing in history can produce these
+# findings — so both assert the tracked pass alone. Its *.tfstate name
+# pins the PATH-level check on a newline-bearing name, and its synthetic
+# sequential AWS key shape pins the CONTENT scan; the assertions flatten
+# newlines to '~' first, because a finding whose label embeds the newline
+# spans two physical lines no line-based grep pattern could pin.
+# The scratch repo is cleaned without rm -rf (files first, then directories
 # deepest-first).
 st_tfstate_checks() {
     if ! command -v git >/dev/null 2>&1; then
@@ -3345,6 +3463,12 @@ st_tfstate_checks() {
     _ts_git rm -q old.tfstate "$(printf '%s.tfstate' "$_ts_na")" \
         "$(printf 'old\\name.tfstate')" >/dev/null 2>&1
     _ts_git commit -qm 'remove old state' >/dev/null 2>&1
+    # Newline-named tracked file, staged only (see the comment above): the
+    # name reaches ls-files -z with the raw newline inside, and the audit
+    # must scan the file under that whole name.
+    printf 'key = AKIAABCDEFGHIJKLMNOP\n' \
+        >"$(printf '%s/weird\nname.tfstate' "$_ts_dir")"
+    _ts_git add -f -- "$(printf 'weird\nname.tfstate')" >/dev/null 2>&1
     bash "$_ts_dir/scripts/audit.sh" >"$_ts_dir/audit.out" 2>&1
     _ts_rc=$?
     _ts_ok=yes
@@ -3376,15 +3500,27 @@ st_tfstate_checks() {
     _ts_bs_hits=$(grep -cF 'old\name.tfstate: terraform-state-tracked' \
         "$_ts_dir/audit.out" 2>/dev/null) || _ts_bs_hits=0
     [ "$_ts_bs_hits" -eq 2 ] || _ts_ok=no
+    # Newline-named tracked file: BOTH findings must carry the WHOLE name —
+    # the path-level state finding and the content finding for the synthetic
+    # key on line 1. Flattening the output's newlines to '~' makes the
+    # embedded newline itself part of the fixed-string pattern: a shred into
+    # fragments (the old tr '\0' '\n' behavior) produces neither adjacency
+    # nor these strings.
+    tr '\n' '~' <"$_ts_dir/audit.out" | grep -qF \
+        "$(printf 'FINDING weird~name.tfstate: terraform-state-tracked')" ||
+        _ts_ok=no
+    tr '\n' '~' <"$_ts_dir/audit.out" | grep -qF \
+        "$(printf 'FINDING weird~name.tfstate:1: aws-access-key-id')" ||
+        _ts_ok=no
     if [ "$_ts_ok" != yes ]; then
-        printf 'selftest: FAIL  tfstate path checks: rc=%s (want 1); tracked-path and history-path findings both expected (ASCII, non-ASCII, backslash; history hits non-ASCII: %s want 2, backslash: %s want 2)\n' \
+        printf 'selftest: FAIL  tfstate path checks: rc=%s (want 1); tracked-path and history-path findings both expected (ASCII, non-ASCII, backslash, newline-named; history hits non-ASCII: %s want 2, backslash: %s want 2)\n' \
             "$_ts_rc" "$_ts_na_hits" "$_ts_bs_hits"
         sed 's/^/         /' "$_ts_dir/audit.out" | head -n 5
         find "$_ts_dir" -type f -exec rm -f {} + 2>/dev/null
         find "$_ts_dir" -depth -type d -exec rmdir {} + 2>/dev/null
         return 1
     fi
-    printf 'selftest: PASS  %-44s tracked + history minimal-state paths\n' \
+    printf 'selftest: PASS  %-44s tracked + history state paths (incl. newline-named tracked file)\n' \
         'terraform-state-tracked'
     find "$_ts_dir" -type f -exec rm -f {} + 2>/dev/null
     find "$_ts_dir" -depth -type d -exec rmdir {} + 2>/dev/null
@@ -3455,12 +3591,23 @@ EOF
 usage() {
     printf 'usage: scripts/%s [--selftest] [--scan-file NAME PATH] [--message-file FILE]\n' \
         "$SCRIPT_NAME" >&2
+    printf '       (internal, driven by the audit itself: --scan-tracked-batch PATH... --marker-lines PATH...)\n' \
+        >&2
     exit 2
 }
 
 default_audit() {
     git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || {
         printf '%s: error: not a git repository: %s\n' "$SCRIPT_NAME" "$ROOT" >&2
+        exit 2
+    }
+    # xargs (with -0 and -r, BSD and GNU alike) is the NUL-safe driver for
+    # both tracked-file consumers (scan_tracked_one, --marker-lines); the
+    # audit fails closed rather than fall back to a newline-split loop that
+    # shreds newline-bearing filenames (see tracked_files_z).
+    command -v xargs >/dev/null 2>&1 || {
+        printf '%s: error: xargs unavailable: cannot enumerate tracked files NUL-safely - failing closed, no clean result\n' \
+            "$SCRIPT_NAME" >&2
         exit 2
     }
 
@@ -3552,7 +3699,7 @@ default_audit() {
             "$SCRIPT_NAME" >&2
         exit 2
     }
-    if ! tracked_files "$_files"; then
+    if ! tracked_files_z "$_files"; then
         rm -f "$_files" "$_results"
         printf '%s: error: git ls-files failed (unreadable index or failing git?) - failing closed, no clean result\n' \
             "$SCRIPT_NAME" >&2
@@ -3564,42 +3711,45 @@ default_audit() {
     # decides once per file — plain text scans as itself, a UTF-16 or
     # UTF-32 file as its decoded form — so a decoded file is not a blind
     # spot for the runtime values either; an undecodable file has already
-    # failed closed.
-    # _scan snapshots that one decision (scan_file re-runs it as a no-op on
-    # the already-effective path) and the decoded temp is dropped after the
-    # file's scans, never leaking across iterations.
-    while IFS= read -r _f; do
-        [ -n "$_f" ] || continue
-        [ -f "$ROOT/$_f" ] || continue
-        # Path-level Terraform-state prohibition (SPEC §27 "Terraform
-        # state"; see header): state must never be tracked at all, so the
-        # path itself is the finding — .gitignore already excludes these,
-        # and this fails closed if one is ever added anyway. The marker
-        # cannot suppress it: a state file is never synthetic, and the
-        # finding names a path, not a line.
-        case "$_f" in
-        *.tfstate | *.tfstate.*)
-            printf 'FINDING %s: terraform-state-tracked (Terraform state is committed - SPEC §27; remove it from the index and purge history)\n' \
-                "$_f"
-            ;;
-        esac
-        effective_scan_path "$ROOT/$_f" "$_f"
-        _scan=$EFFECTIVE_PATH
-        [ -n "$_scan" ] || continue
-        scan_file "$_scan" "$_f"
-        scan_literal state-bucket-name "$_f" "$_scan" "$_bucket"
-        scan_literal username "$_f" "$_scan" "$_user"
-        scan_literal hostname "$_f" "$_scan" "$_host" ic
-        scan_literal hostname "$_f" "$_scan" "$_host_short" ic
-        scan_literal aws-profile-name "$_f" "$_scan" "$_profile"
-        scan_literal display-name "$_f" "$_scan" "$_display" ic
-        drop_scan_temp "$_scan" "$ROOT/$_f"
-    done <"$_files" >"$_results"
+    # failed closed. _scan snapshots that one decision (scan_file re-runs it
+    # as a no-op on the already-effective path) and the decoded temp is
+    # dropped after the file's scans, never leaking across iterations. All
+    # of that lives in scan_tracked_one now.
+    # The NUL-delimited list is iterated by `xargs -0` re-invoking this
+    # script as --scan-tracked-batch: POSIX sh cannot split a stream on NUL,
+    # and re-splitting on newlines (the old `tr '\0' '\n'` plus `read` loop)
+    # shredded a legal newline-bearing filename into fragments that the
+    # existence check then rejected — the file was never scanned while the
+    # audit reported "tracked files and full history scanned" (review thread
+    # 3892177088: a staged newline-named file with an AWS key shape audited
+    # clean). xargs packs WHOLE NUL-delimited names into argv (one
+    # invocation at this repository's file count, size-split only beyond
+    # that). The batch child always exits 0 — findings are its stdout, not
+    # its status — so a nonzero xargs status is a real failure and fails
+    # closed like the enumerations above. The guarded runtime literals
+    # cross as AUDIT_SCAN_* assignments scoped to this one command, becoming
+    # the same _bucket/_user/_host/_host_short/_profile/_display the history
+    # pass receives below.
+    AUDIT_SCAN_BUCKET="$_bucket" \
+        AUDIT_SCAN_USER="$_user" \
+        AUDIT_SCAN_HOST="$_host" \
+        AUDIT_SCAN_HOST_SHORT="$_host_short" \
+        AUDIT_SCAN_PROFILE="$_profile" \
+        AUDIT_SCAN_DISPLAY="$_display" \
+        xargs -0 -r "$SCRIPT" --scan-tracked-batch \
+        <"$_files" >>"$_results"
+    _xs_rc=$?
     rm -f "$_files"
+    if [ "$_xs_rc" -ne 0 ]; then
+        rm -f "$_results"
+        printf '%s: error: tracked-file scan failed (xargs exit %s - invocation or tool failure?) - failing closed, no clean result\n' \
+            "$SCRIPT_NAME" "$_xs_rc" >&2
+        exit 1
+    fi
 
     # 2. Full history (message bodies and patches). The guarded runtime
     # values pass through so history gets the same literal scans the
-    # tracked-file loop above applies.
+    # tracked-file pass above applies.
     scan_history "$_bucket" "$_user" "$_host" "$_host_short" "$_profile" \
         "$_display" >>"$_results"
 
@@ -3802,6 +3952,45 @@ case "${1-}" in
     scan_file "$3" "$2"
     exit 0
     ;;
+--scan-tracked-batch)
+    # [INTERNAL] NUL-safe tracked-file driver (see header and
+    # tracked_files_z): the default audit pipes `git ls-files -z` through
+    # `xargs -0` into this mode, which runs scan_tracked_one over every
+    # repo-relative path argument — the same function the audit's own loop
+    # semantics live in. Runtime literals arrive through the AUDIT_SCAN_*
+    # environment the default audit sets on its xargs command; a bare
+    # invocation has none set, so those literal scans are inert, exactly as
+    # in --scan-file. The paths are argv entries, so a newline-bearing name
+    # arrives whole. FINDING lines on stdout, exit 0 regardless of findings;
+    # a zero-path invocation (empty index, or xargs -r on empty input)
+    # scans nothing.
+    shift
+    _bucket=${AUDIT_SCAN_BUCKET-}
+    _user=${AUDIT_SCAN_USER-}
+    _host=${AUDIT_SCAN_HOST-}
+    _host_short=${AUDIT_SCAN_HOST_SHORT-}
+    _profile=${AUDIT_SCAN_PROFILE-}
+    _display=${AUDIT_SCAN_DISPLAY-}
+    for _f in "$@"; do
+        scan_tracked_one "$_f"
+    done
+    exit 0
+    ;;
+--marker-lines)
+    # [INTERNAL] NUL-safe marker collection for the history-equivalence set
+    # (see annotated_current_lines): print every marker-carrying line of
+    # each given tracked path — one grep per existing file, errors swallowed
+    # and iteration continued exactly like the per-file loop it replaced,
+    # because a missing line can only over-report history findings, never
+    # silence one. Exit 0 regardless of matches.
+    shift
+    for _f in "$@"; do
+        [ -n "$_f" ] || continue
+        [ -f "$ROOT/$_f" ] || continue
+        grep -hF -- "$MARKER" "$ROOT/$_f" 2>/dev/null
+    done
+    exit 0
+    ;;
 --message-file)
     # Pre-commit gate for commit-message text (see header): full engine,
     # no marker suppression, exit 1 on any finding.
@@ -3811,6 +4000,7 @@ case "${1-}" in
 -h | --help)
     printf 'usage: scripts/%s [--selftest] [--scan-file NAME PATH] [--message-file FILE]\n' \
         "$SCRIPT_NAME"
+    printf '       (internal, driven by the audit itself: --scan-tracked-batch PATH... --marker-lines PATH...)\n'
     exit 0
     ;;
 *)
