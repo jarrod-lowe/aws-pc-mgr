@@ -13,6 +13,26 @@
 # No activation code or other secret is ever passed to, or expected from,
 # anything in this file.
 #
+# Not drivable from a child process: the Reregister clear's launch-failure
+# path (amazon-ssm-agent.exe quarantined or removed between the existence
+# check and the invocation, while the service is being stopped). No path
+# seam decides it, so the proof was a red/green demonstration against a
+# scratch copy of setup.ps1 - elevation check stubbed, a global
+# Get-CimInstance stub, registration/agent fixtures under temp ProgramData/
+# ProgramFiles, the copy run as the -File entry script with a prior native
+# call planting a stale exit code 0 (the same scratch-copy approach the
+# revalidation block below documents). Pre-fix, every launch-failure mode
+# let the raw invocation error kill the script (exit 1); in the contained
+# mode a non-terminating Windows PowerShell 5.1 invocation error produces,
+# the stale 0 is read as success and 'Local registration cleared.' prints
+# over a clear that never ran. Post-fix, the $LASTEXITCODE sentinel plus a
+# catch around the invocation make every launch-failure mode report the
+# launch failure with a nothing-was-cleared message and exit 3, while a
+# genuinely launched exit 0 still prints the success line and a launched
+# nonzero exit code still takes the exit-code branch. The module's mirror
+# of the same discipline (Invoke-SsmEnrollment) IS drivable and is covered
+# by a committed unit test.
+#
 # Pester 5 scoping: the file-load block below runs during discovery and is
 # visible ONLY to the -Skip conditions (bound at that time). It bodies run
 # later in a scope of Pester's own, where file-load variables and functions
@@ -233,6 +253,25 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       re-verified after the start (it can be flipped back between the
     #       pre-start Set-Service and the post-start query), and both facts
     #       are required for success
+    #   Register pre-enrollment re-classification - as the LAST statement
+    #       before Invoke-SsmEnrollment, the service and registration are
+    #       re-read (fail-closed wrapper; a failed registration re-read
+    #       exits 3 like classification's own) and Get-SsmNodeState is
+    #       re-run with them; any state other than Absent/
+    #       InstalledUnregistered - the file present in ANY form,
+    #       Ambiguous, or an unreadable re-read - aborts exit 3 with
+    #       nothing changed and no activation consumed, because the
+    #       prompts above gave another setup process time to complete a
+    #       registration. Check-then-act: the window shrinks to the
+    #       statements between the guard and the enrollment, not to zero -
+    #       the enrollment is the destructive act, so the last
+    #       pre-enrollment point is the correct bound. Not drivable from a
+    #       child process (same lack of seams as above); proven red/green
+    #       against a scratch copy whose stateful module readers flip to
+    #       'a foreign registration appeared' on their second call, the
+    #       enrollment stubbed to a sentinel that the pre-fix run wrote
+    #       (exit 0, 'Registration complete.' over the other process's
+    #       identity) and the fixed run did not reach
     #   Register post-enrollment registration read + service checks -
     #       fail-closed (exit 1) on unparseable/absent registration and on
     #       not Running/Automatic after the repairs, both re-verified

@@ -29,6 +29,14 @@
     an activation, so a parameterless re-run on an already-enrolled machine
     asks for nothing at all and simply reports health (SPEC 20/22/36).
 
+    Inside the Register branch, immediately before ssm-setup-cli runs, the
+    registration file is re-read and the state re-classified one last time:
+    the prompts (and the CLI download they precede) happen after the
+    original classification, and if another process completed a
+    registration in that window this run aborts with exit 3 - nothing
+    changed, no activation consumed - instead of silently replacing the
+    new identity (SPEC 22/23).
+
     The activation code is never a parameter and never appears on a command
     line (SPEC 20): it is read with a masked prompt via Read-SsmSecret, and
     only when a registration is actually about to run. It is never printed
@@ -200,6 +208,67 @@ function Get-ServiceInfoOrFail {
         Write-Host 'Nothing further was changed. Inspect the error and re-run.'
         exit 1
     }
+}
+
+# Registration-ABSENCE re-validation for the Register action: the mirror
+# image of Get-SsmRegistrationOrAmbiguousExit above. That guard serves the
+# actions that RELY on a registration; this one serves the action that
+# relies on there being NONE. The Register branch spends unbounded
+# wall-clock time between the classification reads and the enrollment
+# invocation (three interactive prompts, then the setup-CLI URL build), and
+# another setup process can complete a whole registration inside that
+# window; the locally selected Register action is then stale, and running
+# ssm-setup-cli anyway would silently replace the newly created identity
+# and consume another activation (SPEC 22/23). So the machine is re-read
+# and re-CLASSIFIED here through the same inputs classification itself
+# used, and the full Get-SsmNodeState verdict - not a bare file-existence
+# probe - decides: a registration file present in ANY form (parseable,
+# unparseable, or unreadable) classifies as something other than the two
+# registration-less states, and the Register plan is stale. The service
+# facts are re-read only because classification consumed them too; a
+# service appearing WITHOUT a registration does not abort here (Absent and
+# InstalledUnregistered both map to Register - that drift was the
+# classified state's own business, and the re-classification mirrors the
+# original inputs faithfully). Returns normally only when the machine
+# still classifies registration-less, or never returns.
+function Assert-SsmRegistrationStillAbsent {
+    param([string]$ClassifiedState)
+
+    # Service first, through the same fail-closed wrapper every
+    # post-classification service query uses: the re-classification below
+    # needs the fact, and a query that fails must exit 1, never be read as
+    # any particular service shape.
+    $currentService = Get-ServiceInfoOrFail
+
+    # Registration re-read, mirroring the classification read's own failure
+    # verdict: a read that fails NOW can no longer prove the absence the
+    # Register plan depends on (the file may have appeared and be locked
+    # mid-write by the competing enrollment), so it earns classification's
+    # exit 3, not a pass.
+    $currentRegistrationJson = $null
+    try {
+        $currentRegistrationJson = Get-SsmRegistrationFileJson
+    } catch {
+        Write-Fail ("Could not re-read the local SSM registration file before enrolling. Nothing was changed and no activation was consumed. Inspect the error: " + $_.Exception.Message)
+        Write-Host 'Registration may be partially complete or appearing right now. Resolve the read'
+        Write-Host 'problem manually, then re-run this script: it classifies the machine afresh.'
+        exit 3
+    }
+
+    $currentState = Get-SsmNodeState -RegistrationJson $currentRegistrationJson -ServiceExists $currentService.Exists -ServiceStatus $currentService.Status -ServiceStartType $currentService.StartType
+    if (($currentState -eq 'Absent') -or ($currentState -eq 'InstalledUnregistered')) {
+        return
+    }
+
+    Write-Fail 'Another process completed a registration while this run was waiting.'
+    Write-Host ("This run classified the machine as '" + $ClassifiedState + "' (no registration file) and planned")
+    Write-Host 'Register from that fact. A registration file is present NOW, so that plan is stale: enrolling'
+    Write-Host 'would silently replace the newly created identity and consume another activation (SPEC 22/23).'
+    Write-Host 'Nothing was changed, nothing was deleted, and no activation was consumed. Inspect the'
+    Write-Host ('registration that appeared (the file under ' + $env:ProgramData + '\Amazon\SSM\InstanceData) and')
+    Write-Host 'Get-Service AmazonSSMAgent, then re-run this script: it will classify the now-registered'
+    Write-Host 'machine and take the appropriate action.'
+    exit 3
 }
 
 # --- 1. elevation (SPEC 21 step 1) ------------------------------------------
@@ -410,6 +479,25 @@ if ($action -eq 'Register') {
     $setupCliUrl = Get-SsmSetupCliUrl -Region $Region
     Write-Step ("Downloading and verifying the AWS setup CLI for region " + $Region + ".")
     Write-Step ("URL: " + $setupCliUrl)
+
+    # Final pre-enrollment revalidation (SPEC 22/23): the Register plan was
+    # chosen from a registration-less classification, but the interactive
+    # prompts above sit between that classification and this point, and each
+    # can wait on a human indefinitely - long enough for another setup
+    # process to complete a whole registration on this machine. The guard
+    # re-reads and re-classifies, and refuses while refusal is still free
+    # (before any download, command execution, or activation consumption).
+    # RACE WINDOW, stated plainly: this is check-then-act, so the guard
+    # SHRINKS the window - from everything since the classification reads
+    # down to the statements between the guard and the invocation - but
+    # cannot eliminate it; a registration completing inside those last few
+    # statements would still be overwritten. That is the correct bound
+    # regardless: the enrollment invocation is the destructive act being
+    # guarded, so the last point that can still refuse is the point
+    # immediately before it - any earlier placement only widens the window,
+    # and Invoke-SsmEnrollment offers no seam this script could check
+    # through once it has started.
+    Assert-SsmRegistrationStillAbsent -ClassifiedState $nodeState
 
     try {
         # Invoke-SsmEnrollment (SSMHybrid.psm1) performs SPEC 21 steps 6-9:
