@@ -723,7 +723,9 @@ a specific-enough name — your `AWS_PROFILE`
 value, the SSO profile this machine selects (generic values such as
 `default` are skipped, like generic CI usernames). Tracked and historical
 `*.tfstate`/`*.tfstate.*` PATHS are findings too — in the worktree and in
-every commit's changed-path list — so even a minimal
+every commit's changed-path list, the suffix matched case-insensitively
+(Terraform treats it so; `.gitignore`'s pattern does not, so a tracked
+`terraform.TFSTATE` reaches the index unignored) — so even a minimal
 `{"version":4,...}` state file, or one committed and later deleted, is
 caught independently of its content. `--selftest` runs the same engine over the synthetic fixtures in
 `tests/fixtures/audit/` (each constructed to trip a detector) and exits 0 only

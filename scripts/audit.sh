@@ -113,7 +113,11 @@
 #     every other per-commit git call) carries the path-level
 #     Terraform-state check into HISTORY: a *.tfstate / *.tfstate.* path
 #     touched by any commit is a finding even when the file's content is
-#     minimal and even when the file was later deleted from the tree.
+#     minimal and even when the file was later deleted from the tree. In
+#     BOTH passes the suffix is matched case-insensitively (a lowercased
+#     copy of the name is tested, the original is reported): Terraform
+#     treats the suffix case-insensitively, while neither a POSIX sh glob
+#     nor .gitignore's own pattern does.
 #   * the values `whoami` and `hostname` return locally (tracked files and
 #     history — both the message-body and the patch stream),
 #   * this account's display name — the GECOS/full-name field, via
@@ -131,9 +135,12 @@
 #     check fires on the PATH alone, so even a minimal state file
 #     (`{"version":4,...}`) with no detector-tripping content is caught.
 #     The history pass carries the same check over every commit's
-#     changed-path list (see above). The marker never applies to it — a
-#     state file is never synthetic, and the finding is about the path,
-#     not a line. History is ALSO covered content-wise: a state file's
+#     changed-path list (see above). The suffix matches case-
+#     insensitively in both passes: gitignore's own pattern does not, so
+#     a tracked terraform.TFSTATE reaches the index unignored and this
+#     check is the only thing that names it. The marker never applies to
+#     it — a state file is never synthetic, and the finding is about the
+#     path, not a line. History is ALSO covered content-wise: a state file's
 #     patch text goes through every detector like any other patch, so
 #     its ARNs, account IDs and credentials still fire there.
 #   * the value of AWS_PROFILE, when it is set to a specific-enough profile
@@ -1281,6 +1288,13 @@ drop_scan_temp() {
 scan_file() {
     _sf_path=$1
     _sf_label=${2-$_sf_path}
+    # Case-SENSITIVE on purpose, unlike the *.tfstate suffix tests: these
+    # are exact repository-internal paths (same literals as the pathspec
+    # excludes in tracked_files_z and scan_history, and as the
+    # terraform/bootstrap/terraform.tfvars probe in default_audit), where
+    # a differently-cased spelling names a DIFFERENT file — an extension
+    # whose ecosystem ignores case needs normalization, an exact path does
+    # not.
     case "$_sf_label" in
     scripts/audit.sh | tests/fixtures/audit | tests/fixtures/audit/*) return 0 ;;
     esac
@@ -1326,7 +1340,9 @@ tracked_files_z() {
 # as globals: the default audit computes them itself, the batch child reads
 # them from the AUDIT_SCAN_* environment it sets. Skips list entries that
 # vanished mid-run; a *.tfstate / *.tfstate.* path is a finding before any
-# content is read; content is scanned through effective_scan_path (decode
+# content is read, the suffix matched case-insensitively through a
+# lowercased copy of the name (see the body); content is scanned through
+# effective_scan_path (decode
 # decided once) by every detector and every runtime literal.
 scan_tracked_one() {
     _f=$1
@@ -1338,7 +1354,23 @@ scan_tracked_one() {
     # and this fails closed if one is ever added anyway. The marker
     # cannot suppress it: a state file is never synthetic, and the
     # finding names a path, not a line.
-    case "$_f" in
+    #
+    # The suffix is matched CASE-INSENSITIVELY, by normalization rather
+    # than by the glob: a POSIX sh `case` pattern cannot match
+    # case-insensitively, while Terraform itself treats the suffix
+    # case-insensitively where it matters — a tracked terraform.TFSTATE
+    # is a state file whatever case its name carries, and .gitignore's
+    # own `*.tfstate` pattern is case-sensitive, so the audit is the
+    # only thing that catches it (review thread 3892737537: such a file
+    # audited clean). tr maps the ASCII letters only — the engine runs
+    # under LC_ALL=C, so the non-ASCII bytes of é.tfstate pass through
+    # untouched — into a variable used for the TEST alone; the finding
+    # still prints the ORIGINAL name. The trailing sentinel keeps the
+    # name whole: $( ) strips trailing newlines, a tracked name may
+    # legally end with one, and a stripped one would make `x.tfstate\n`
+    # look like a match it is not.
+    _f_lc=$(printf '%s_' "$_f" | tr '[:upper:]' '[:lower:]')
+    case "${_f_lc%_}" in
     *.tfstate | *.tfstate.*)
         printf 'FINDING %s: terraform-state-tracked (Terraform state is committed - SPEC §27; remove it from the index and purge history)\n' \
             "$_f"
@@ -1550,7 +1582,19 @@ scan_history() {
                     esac
                     ;;
                 esac
-                case "$_sh_path" in
+                # Same case normalization as the tracked pass (see
+                # scan_tracked_one): the suffix test runs against a
+                # lowercased COPY — POSIX sh globs cannot match case-
+                # insensitively, Terraform treats the suffix case-
+                # insensitively, and a gone.TFSTATE.backup committed
+                # then deleted is a state file in history whatever case
+                # its name carries — while the finding prints the
+                # decoded ORIGINAL. No trailing sentinel is needed here:
+                # this read loop splits its input on newlines, so the
+                # path cannot carry one (the boundary documented above).
+                _sh_path_lc=$(printf '%s' "$_sh_path" |
+                    tr '[:upper:]' '[:lower:]')
+                case "$_sh_path_lc" in
                 *.tfstate | *.tfstate.*)
                     printf 'FINDING %s %s: terraform-state-tracked (Terraform state path changed in history - SPEC §27; purge the history)\n' \
                         "$_sh_label" "$_sh_path"
@@ -3142,7 +3186,10 @@ your name'
 #     check, in both passes — any tracked *.tfstate / *.tfstate.* path in
 #     the worktree, and any commit whose changed-path list (git show
 #     --name-only with the standard exclusions, fail-closed) touches one,
-#     so state committed then deleted still fires. account-id-arn and
+#     so state committed then deleted still fires. The suffix matches
+#     case-insensitively in both passes (a lowercased copy is tested, the
+#     original name reported), because Terraform treats it so while a
+#     POSIX sh glob — and .gitignore's pattern — cannot. account-id-arn and
 #     uuid-literal ride along as the content-level backstop: a state
 #     file's JSON carries ARNs, account IDs and UUIDs, which catches
 #     content even under renamed paths.
@@ -3465,9 +3512,17 @@ plain line'
 # "\303\251.tfstate" ends in a quote, which used to defeat the *.tfstate
 # suffix case and report clean). The tracked one pins ls-files -z (never
 # quoted); the deleted one pins core.quotePath=false on the history
-# enumeration, asserted for BOTH the add and the remove commit. A final
-# NEWLINE-named file (review thread 3892177088) is staged but never
-# committed, exactly like the reviewer's reproduction: `git ls-files -z`
+# enumeration, asserted for BOTH the add and the remove commit. An
+# UPPERCASE-SUFFIX pair (review thread 3892737537) is built the same way —
+# terraform.TFSTATE tracked, gone.TFSTATE.backup committed then deleted —
+# because Terraform treats the suffix case-insensitively while a POSIX sh
+# glob cannot: both path checks normalize the name for the test and must
+# still report the ORIGINAL case, which is exactly what these two
+# assertions pin (and .gitignore's case-sensitive `*.tfstate` lets the
+# pair into the index unignored, so the audit is the only thing that
+# catches either). A final NEWLINE-named file (review thread 3892177088)
+# is staged but never committed, exactly like the reviewer's
+# reproduction: `git ls-files -z`
 # emits its name with the raw newline inside, the enumeration must carry
 # it WHOLE to the engine, and nothing in history can produce these
 # findings — so both assert the tracked pass alone. Its *.tfstate name
@@ -3475,6 +3530,10 @@ plain line'
 # sequential AWS key shape pins the CONTENT scan; the assertions flatten
 # newlines to '~' first, because a finding whose label embeds the newline
 # spans two physical lines no line-based grep pattern could pin.
+# Every git step that BUILDS the scratch repo is checked and fails this
+# check loudly, naming the step (see _ts_step): a host gitconfig that
+# breaks headless commits otherwise fails the build silently and turns
+# the assertions into misleading numbers.
 # The scratch repo is cleaned without rm -rf (files first, then directories
 # deepest-first).
 st_tfstate_checks() {
@@ -3503,12 +3562,35 @@ st_tfstate_checks() {
         git -C "$_ts_dir" -c user.email=selftest@invalid \
             -c user.name='Self Test' "$@"
     }
-    _ts_git init -q >/dev/null 2>&1 || {
-        printf 'selftest: FAIL  git init failed in the scratch repo\n'
-        find "$_ts_dir" -type f -exec rm -f {} + 2>/dev/null
-        rmdir "$_ts_dir" 2>/dev/null
-        return 1
+    # _ts_step WHAT GIT-ARGS... — run ONE scratch-repo git step and make
+    # its failure fail this check locally, naming the step. Every git call
+    # below goes through here: on a host whose gitconfig breaks headless
+    # commits (commit.gpgsign with a key the signing agent cannot reach —
+    # this machine signs via 1Password and dies with `error: failed to
+    # write commit object`), BOTH commits used to fail silently, the
+    # scratch repo then had no history at all, and the check reported
+    # misleading assertion failures ("history hits: 0 want 2") instead of
+    # "could not build the scratch repo". Same per-step discipline as the
+    # mktemp/cp branches above; git's own stderr is shown because it is
+    # the only thing that names the actual cause, and it lands inside the
+    # scratch dir (never tracked — the adds below are pathspec-limited —
+    # so it cannot perturb the audit this check is about to run).
+    _ts_step() {
+        _ts_what=$1
+        shift
+        if ! _ts_git "$@" >/dev/null 2>"$_ts_dir/ts-step.err"; then
+            printf 'selftest: FAIL  could not build the tfstate scratch repo: git %s failed\n' \
+                "$_ts_what"
+            sed 's/^/         /' "$_ts_dir/ts-step.err" 2>/dev/null |
+                head -n 3
+            printf '         (host gitconfig breaking headless commits? commit signing or identity — retry with GIT_CONFIG_GLOBAL=/dev/null scripts/audit.sh --selftest)\n'
+            find "$_ts_dir" -type f -exec rm -f {} + 2>/dev/null
+            find "$_ts_dir" -depth -type d -exec rmdir {} + 2>/dev/null
+            return 1
+        fi
+        return 0
     }
+    _ts_step init init -q || return 1
     printf 'note\n' >"$_ts_dir/note.txt"
     printf '{"version":4,"serial":1,"outputs":{},"resources":[]}\n' \
         >"$_ts_dir/old.tfstate"
@@ -3527,21 +3609,38 @@ st_tfstate_checks() {
     # history enumeration.
     printf '{"version":4,"serial":1,"outputs":{},"resources":[]}\n' \
         >"$_ts_dir/$(printf 'old\\name.tfstate')"
-    _ts_git add -A note.txt scripts >/dev/null 2>&1
-    _ts_git add -f old.tfstate minimal.tfstate \
+    # Uppercase-suffix pair (review thread 3892737537): terraform.TFSTATE
+    # stays tracked, gone.TFSTATE.backup is committed then deleted.
+    # Terraform treats the suffix case-insensitively while a POSIX sh glob
+    # — and .gitignore's own `*.tfstate` pattern — cannot, so these names
+    # reach the index UNIGNORED and only the audit's two path checks can
+    # catch them. Both findings must print the ORIGINAL-case name: the
+    # lowercased copy exists for the test alone.
+    printf '{"version":4,"serial":1,"outputs":{},"resources":[]}\n' \
+        >"$_ts_dir/terraform.TFSTATE"
+    printf '{"version":4,"serial":1,"outputs":{},"resources":[]}\n' \
+        >"$_ts_dir/gone.TFSTATE.backup"
+    _ts_step 'add (note and audit script)' add -A note.txt scripts ||
+        return 1
+    _ts_step 'add -f (state files)' add -f old.tfstate minimal.tfstate \
+        terraform.TFSTATE gone.TFSTATE.backup \
         "$(printf '%s.tfstate' "$_ts_na")" \
         "$(printf 'minimal-%s.tfstate' "$_ts_na")" \
-        "$(printf 'old\\name.tfstate')" >/dev/null 2>&1
-    _ts_git commit -qm 'add minimal state' >/dev/null 2>&1
-    _ts_git rm -q old.tfstate "$(printf '%s.tfstate' "$_ts_na")" \
-        "$(printf 'old\\name.tfstate')" >/dev/null 2>&1
-    _ts_git commit -qm 'remove old state' >/dev/null 2>&1
+        "$(printf 'old\\name.tfstate')" || return 1
+    _ts_step "commit 'add minimal state'" commit -qm 'add minimal state' ||
+        return 1
+    _ts_step 'rm (old state files)' rm -q old.tfstate gone.TFSTATE.backup \
+        "$(printf '%s.tfstate' "$_ts_na")" \
+        "$(printf 'old\\name.tfstate')" || return 1
+    _ts_step "commit 'remove old state'" commit -qm 'remove old state' ||
+        return 1
     # Newline-named tracked file, staged only (see the comment above): the
     # name reaches ls-files -z with the raw newline inside, and the audit
     # must scan the file under that whole name.
     printf 'key = AKIAABCDEFGHIJKLMNOP\n' \
         >"$(printf '%s/weird\nname.tfstate' "$_ts_dir")"
-    _ts_git add -f -- "$(printf 'weird\nname.tfstate')" >/dev/null 2>&1
+    _ts_step 'add (newline-named file)' add -f -- \
+        "$(printf 'weird\nname.tfstate')" || return 1
     bash "$_ts_dir/scripts/audit.sh" >"$_ts_dir/audit.out" 2>&1
     _ts_rc=$?
     _ts_ok=yes
@@ -3550,6 +3649,19 @@ st_tfstate_checks() {
         "$_ts_dir/audit.out" || _ts_ok=no
     grep -q 'old.tfstate: terraform-state-tracked' \
         "$_ts_dir/audit.out" || _ts_ok=no
+    # Uppercase-suffix pair (review thread 3892737537): the tracked
+    # terraform.TFSTATE must be named with its ORIGINAL case — a
+    # lowercased-only report would mean the normalization leaked into the
+    # finding — and the deleted gone.TFSTATE.backup must produce exactly
+    # two history findings (add commit and remove commit) that also carry
+    # the original case. Fixed strings throughout: the dot in a
+    # case-mixed name is a literal, and the uppercase spelling cannot
+    # collide with any lowercase finding shape.
+    grep -qF 'FINDING terraform.TFSTATE: terraform-state-tracked' \
+        "$_ts_dir/audit.out" || _ts_ok=no
+    _ts_uc_hits=$(grep -cF 'gone.TFSTATE.backup: terraform-state-tracked' \
+        "$_ts_dir/audit.out" 2>/dev/null) || _ts_uc_hits=0
+    [ "$_ts_uc_hits" -eq 2 ] || _ts_ok=no
     # Tracked non-ASCII path: the tracked-file finding must carry the
     # LITERAL name (fixed-string grep on the raw bytes), not an octal
     # escape — this is the "would fire if present" side of the pair, and
@@ -3586,14 +3698,14 @@ st_tfstate_checks() {
         "$(printf 'FINDING weird~name.tfstate:1: aws-access-key-id')" ||
         _ts_ok=no
     if [ "$_ts_ok" != yes ]; then
-        printf 'selftest: FAIL  tfstate path checks: rc=%s (want 1); tracked-path and history-path findings both expected (ASCII, non-ASCII, backslash, newline-named; history hits non-ASCII: %s want 2, backslash: %s want 2)\n' \
-            "$_ts_rc" "$_ts_na_hits" "$_ts_bs_hits"
+        printf 'selftest: FAIL  tfstate path checks: rc=%s (want 1); tracked-path and history-path findings both expected (ASCII, non-ASCII, backslash, uppercase-suffix, newline-named; history hits non-ASCII: %s want 2, backslash: %s want 2, uppercase: %s want 2)\n' \
+            "$_ts_rc" "$_ts_na_hits" "$_ts_bs_hits" "$_ts_uc_hits"
         sed 's/^/         /' "$_ts_dir/audit.out" | head -n 5
         find "$_ts_dir" -type f -exec rm -f {} + 2>/dev/null
         find "$_ts_dir" -depth -type d -exec rmdir {} + 2>/dev/null
         return 1
     fi
-    printf 'selftest: PASS  %-44s tracked + history state paths (incl. newline-named tracked file)\n' \
+    printf 'selftest: PASS  %-44s tracked + history state paths (incl. uppercase-suffix and newline-named)\n' \
         'terraform-state-tracked'
     find "$_ts_dir" -type f -exec rm -f {} + 2>/dev/null
     find "$_ts_dir" -depth -type d -exec rmdir {} + 2>/dev/null
