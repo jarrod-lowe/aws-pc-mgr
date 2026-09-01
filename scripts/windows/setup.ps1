@@ -29,13 +29,18 @@
     an activation, so a parameterless re-run on an already-enrolled machine
     asks for nothing at all and simply reports health (SPEC 20/22/36).
 
-    Inside the Register branch, immediately before ssm-setup-cli runs, the
-    registration file is re-read and the state re-classified one last time:
-    the prompts (and the CLI download they precede) happen after the
-    original classification, and if another process completed a
-    registration in that window this run aborts with exit 3 - nothing
-    changed, no activation consumed - instead of silently replacing the
-    new identity (SPEC 22/23).
+    Inside the Register branch the registration absence is revalidated at
+    TWO points, because the slow steps sit in different windows (SPEC
+    22/23): once in this script immediately before the enrollment runner
+    is invoked - after the interactive prompts, before any download - and
+    once INSIDE the runner, because the setup-CLI download and signature
+    verification run there: Invoke-SsmEnrollment re-reads the registration
+    record immediately before launching ssm-setup-cli and refuses to
+    launch when a registration appeared in that window. Either refusal
+    aborts with exit 3 - nothing changed, no activation consumed -
+    instead of silently replacing the new identity. The script-side guard
+    is defense in depth where refusal is still free; the module-side one
+    is the last point that can still refuse.
 
     The activation code is never a parameter and never appears on a command
     line (SPEC 20): it is read with a masked prompt via Read-SsmSecret, and
@@ -210,6 +215,30 @@ function Get-ServiceInfoOrFail {
     }
 }
 
+# Race report shared by BOTH last-moment registration guards (SPEC 22/23):
+# the script-side pre-enrollment revalidation (Assert-SsmRegistrationStillAbsent
+# below) and the enrollment runner's own post-verification refusal
+# (Invoke-SsmEnrollment's RegistrationAppeared outcome, handled in the
+# Register branch) end in the same verdict - a competing process completed a
+# registration inside this run's check-then-act window - so they share ONE
+# report and can never drift apart in what they tell the operator. The abort
+# is the already-registered handling, not a failure: report and re-run
+# guidance, exit 3; nothing was changed, nothing was deleted, and no
+# activation was consumed. Never returns.
+function Write-SsmRegistrationRaceAndExit {
+    param([string]$StalePlan)
+
+    Write-Fail 'Another process completed a registration while this run was waiting.'
+    Write-Host $StalePlan
+    Write-Host 'A registration file is present NOW, so that plan is stale: enrolling would silently'
+    Write-Host 'replace the newly created identity and consume another activation (SPEC 22/23).'
+    Write-Host 'Nothing was changed, nothing was deleted, and no activation was consumed. Inspect the'
+    Write-Host ('registration that appeared (the file under ' + $env:ProgramData + '\Amazon\SSM\InstanceData) and')
+    Write-Host 'Get-Service AmazonSSMAgent, then re-run this script: it will classify the now-registered'
+    Write-Host 'machine and take the appropriate action.'
+    exit 3
+}
+
 # Registration-ABSENCE re-validation for the Register action: the mirror
 # image of Get-SsmRegistrationOrAmbiguousExit above. That guard serves the
 # actions that RELY on a registration; this one serves the action that
@@ -230,7 +259,15 @@ function Get-ServiceInfoOrFail {
 # InstalledUnregistered both map to Register - that drift was the
 # classified state's own business, and the re-classification mirrors the
 # original inputs faithfully). Returns normally only when the machine
-# still classifies registration-less, or never returns.
+# still classifies registration-less, or never returns. This guard is the
+# FREE refusal - it runs before any download, command execution, or
+# activation consumption - and covers the window the interactive prompts
+# opened; the slow steps that follow (the setup-CLI download and its
+# signature verification) run INSIDE Invoke-SsmEnrollment, past what any
+# script-side check can see, so the runner revalidates the registration
+# absence itself immediately before the native launch and reports a
+# refusal as a distinct outcome the Register branch maps to the same
+# shared race report.
 function Assert-SsmRegistrationStillAbsent {
     param([string]$ClassifiedState)
 
@@ -260,15 +297,8 @@ function Assert-SsmRegistrationStillAbsent {
         return
     }
 
-    Write-Fail 'Another process completed a registration while this run was waiting.'
-    Write-Host ("This run classified the machine as '" + $ClassifiedState + "' (no registration file) and planned")
-    Write-Host 'Register from that fact. A registration file is present NOW, so that plan is stale: enrolling'
-    Write-Host 'would silently replace the newly created identity and consume another activation (SPEC 22/23).'
-    Write-Host 'Nothing was changed, nothing was deleted, and no activation was consumed. Inspect the'
-    Write-Host ('registration that appeared (the file under ' + $env:ProgramData + '\Amazon\SSM\InstanceData) and')
-    Write-Host 'Get-Service AmazonSSMAgent, then re-run this script: it will classify the now-registered'
-    Write-Host 'machine and take the appropriate action.'
-    exit 3
+    Write-SsmRegistrationRaceAndExit -StalePlan ("This run classified the machine as '" + $ClassifiedState +
+        "' (no registration file) and planned Register from that fact.")
 }
 
 # --- 1. elevation (SPEC 21 step 1) ------------------------------------------
@@ -487,28 +517,34 @@ if ($action -eq 'Register') {
     # process to complete a whole registration on this machine. The guard
     # re-reads and re-classifies, and refuses while refusal is still free
     # (before any download, command execution, or activation consumption).
-    # RACE WINDOW, stated plainly: this is check-then-act, so the guard
-    # SHRINKS the window - from everything since the classification reads
-    # down to the statements between the guard and the invocation - but
-    # cannot eliminate it; a registration completing inside those last few
-    # statements would still be overwritten. That is the correct bound
-    # regardless: the enrollment invocation is the destructive act being
-    # guarded, so the last point that can still refuse is the point
-    # immediately before it - any earlier placement only widens the window,
-    # and Invoke-SsmEnrollment offers no seam this script could check
-    # through once it has started.
+    # RACE WINDOW, stated plainly: this script-side guard covers everything
+    # up to the enrollment invocation, but the SLOW steps - the setup-CLI
+    # download and its signature verification - run INSIDE
+    # Invoke-SsmEnrollment, past what any script-side check can see. The
+    # class rule is that a state revalidation sits adjacent to the side
+    # effect it guards, so the last check lives in the runner: it re-reads
+    # the registration record after verification and immediately before the
+    # native launch, and reports a refusal as a distinct outcome
+    # (RegistrationAppeared) that this script maps, right after the call
+    # below, to the same already-registered handling this guard's own
+    # refusal uses. What remains is check-then-act at irreducible scale: the
+    # statements between that re-read and the native command itself.
     Assert-SsmRegistrationStillAbsent -ClassifiedState $nodeState
 
     try {
         # Invoke-SsmEnrollment (SSMHybrid.psm1) performs SPEC 21 steps 6-9:
         # forces TLS 1.2 where needed, downloads ssm-setup-cli to a temp file,
         # REFUSES to run any binary whose Authenticode signature is not Valid
-        # and signed by Amazon.com Services LLC, runs the registration without
-        # ever echoing or logging the command line (SPEC 43), and removes the
-        # temp download directory afterwards (SPEC 21 step 16) with bounded
-        # retries. A leftover after a successful enrollment is NOT a failure:
-        # the module warns naming the path and reports it on this result, so
-        # the summary at the end can stay truthful.
+        # and signed by Amazon.com Services LLC, REFUSES likewise to launch
+        # at all when its pre-launch re-read finds a local registration
+        # present in any form (SPEC 22/23 - reported as RegistrationAppeared
+        # on the result and handled right after this call), runs the
+        # registration without ever echoing or logging the command line
+        # (SPEC 43), and removes the temp download directory afterwards
+        # (SPEC 21 step 16) with bounded retries. A leftover after a
+        # successful enrollment is NOT a failure: the module warns naming
+        # the path and reports it on this result, so the summary at the end
+        # can stay truthful.
         $enrollmentResult = Invoke-SsmEnrollment -Region $Region -ActivationId $ActivationId -ActivationCode $activationCode
     } catch {
         Write-Fail ('Registration did not complete: ' + $_.Exception.Message)
@@ -520,6 +556,21 @@ if ($action -eq 'Register') {
         # Clear bootstrap secrets from memory as soon as possible (SPEC 21 step 17).
         $activationCode = $null
         Remove-Variable -Name activationCode -ErrorAction SilentlyContinue
+    }
+
+    # Last-moment race outcome from the enrollment runner (SPEC 22/23): the
+    # download and signature verification ran inside Invoke-SsmEnrollment
+    # AFTER the script-side guard above, and the runner found a local
+    # registration present (or unreadable) when it re-read the record
+    # immediately before launching ssm-setup-cli - so it refused to launch,
+    # cleaned up its temp download, and reported the refusal here. This is
+    # the already-registered handling, not the failure dump in the catch
+    # above: nothing was enrolled, the executable never ran, and no
+    # activation was consumed - the shared race report says the rest.
+    if ($enrollmentResult.RegistrationAppeared) {
+        Write-SsmRegistrationRaceAndExit -StalePlan ('This run passed the revalidation above, but the setup-CLI download and' +
+            ' signature verification that followed gave another process time to complete a registration' +
+            ' first; the enrollment runner refused to launch, so the download was never executed.')
     }
 
     Write-Step 'Registration command finished. Verifying the local result...'

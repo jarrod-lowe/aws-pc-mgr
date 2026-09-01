@@ -253,8 +253,8 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       re-verified after the start (it can be flipped back between the
     #       pre-start Set-Service and the post-start query), and both facts
     #       are required for success
-    #   Register pre-enrollment re-classification - as the LAST statement
-    #       before Invoke-SsmEnrollment, the service and registration are
+    #   Register pre-enrollment re-classification - the LAST statement
+    #       before Invoke-SsmEnrollment: the service and registration are
     #       re-read (fail-closed wrapper; a failed registration re-read
     #       exits 3 like classification's own) and Get-SsmNodeState is
     #       re-run with them; any state other than Absent/
@@ -262,16 +262,36 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       Ambiguous, or an unreadable re-read - aborts exit 3 with
     #       nothing changed and no activation consumed, because the
     #       prompts above gave another setup process time to complete a
-    #       registration. Check-then-act: the window shrinks to the
-    #       statements between the guard and the enrollment, not to zero -
-    #       the enrollment is the destructive act, so the last
-    #       pre-enrollment point is the correct bound. Not drivable from a
-    #       child process (same lack of seams as above); proven red/green
-    #       against a scratch copy whose stateful module readers flip to
-    #       'a foreign registration appeared' on their second call, the
-    #       enrollment stubbed to a sentinel that the pre-fix run wrote
-    #       (exit 0, 'Registration complete.' over the other process's
-    #       identity) and the fixed run did not reach
+    #       registration. This is the FREE refusal, before any download;
+    #       the slow steps it cannot see through are the next entry.
+    #       Not drivable from a child process (same lack of seams as
+    #       above); proven red/green against a scratch copy whose
+    #       stateful module readers flip to 'a foreign registration
+    #       appeared' on their second call, the enrollment stubbed to a
+    #       sentinel that the pre-fix run wrote (exit 0, 'Registration
+    #       complete.' over the other process's identity) and the fixed
+    #       run did not reach
+    #   Register pre-LAUNCH revalidation (inside Invoke-SsmEnrollment) -
+    #       the download and the signature verification run INSIDE the
+    #       enrollment runner, after every script-side check, so the class
+    #       rule (a state revalidation sits adjacent to the side effect it
+    #       guards) puts the last check there: after verification and
+    #       immediately before the native launch, the runner re-reads the
+    #       local registration record and refuses to launch when the file
+    #       is present in ANY form or cannot be re-read (fail closed),
+    #       reporting the refusal as RegistrationAppeared on its result.
+    #       The caller maps that outcome to the same shared race report
+    #       the script-side guard uses (already-registered handling:
+    #       report, exit 3, nothing changed, no activation consumed,
+    #       executable never run), never the catch-all failure dump. The
+    #       runner's abort branch IS drivable and is covered by committed
+    #       unit tests (tests/unit/SSMHybrid.Tests.ps1: a registration
+    #       planted after verification aborts before the launch, a failed
+    #       re-read aborts the same way, and the temp download is cleaned
+    #       up on both); the caller's mapping over that tested result is
+    #       not child-process-drivable - the activation-code prompt blocks
+    #       on closed stdin before the enrollment call - the same seamless
+    #       shape as every entry above
     #   Register post-enrollment registration read + service checks -
     #       fail-closed (exit 1) on unparseable/absent registration and on
     #       not Running/Automatic after the repairs, both re-verified

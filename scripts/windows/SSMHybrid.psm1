@@ -26,8 +26,9 @@ $ErrorActionPreference = 'Stop'
 # (tests/windows/*.Tests.ps1) exercise them on the real machine. The
 # exceptions are Get-SsmServiceInfo, whose Get-CimInstance call is unit-tested
 # in tests/unit against a stub planted in this module's scope, and
-# Invoke-SsmEnrollment's temp-download cleanup, whose Remove-Item retry loop
-# is unit-tested in tests/unit with every Windows-only cmdlet mocked.
+# Invoke-SsmEnrollment's temp-download cleanup and pre-launch registration
+# revalidation, whose Remove-Item retry loop and race-abort branch are
+# unit-tested in tests/unit with every Windows-only cmdlet mocked.
 #
 # Windows-only cmdlets appear only inside function bodies (never at module
 # scope) so importing this module on any OS succeeds.
@@ -127,10 +128,35 @@ Thin runner for the Register action:
   3. verifies the Authenticode signature with Get-AuthenticodeSignature and
      Test-SsmSignature and REFUSES to run anything that is not Valid and
      signed by Amazon.com Services LLC (SPEC 21 steps 6-8);
-  4. registers with -region/-activation-id/-activation-code;
-  5. removes the temp download directory (SPEC 21 step 16), retrying a
+  4. re-reads the local registration record and REFUSES to launch when a
+     registration file is present in ANY form, or when the re-read itself
+     fails (SPEC 22/23, see the RACE paragraph below);
+  5. registers with -region/-activation-id/-activation-code;
+  6. removes the temp download directory (SPEC 21 step 16), retrying a
      bounded number of times because antivirus software can still hold the
      executable open for a few seconds after it runs.
+
+RACE, STATED PLAINLY: the download and signature verification above are slow
+steps, and the caller's own pre-enrollment absence check ran BEFORE this
+function was invoked - it cannot see through them. Another setup process can
+complete a whole registration inside that window, and launching anyway would
+silently replace the newly created identity and consume another activation
+(SPEC 22/23). The class rule is that a state revalidation must be adjacent to
+the side effect it guards, so this function re-reads the local registration
+record AFTER verification and immediately BEFORE the native launch - the last
+point that can still refuse - and reports the refusal as a distinct outcome
+(RegistrationAppeared = $true on the result) instead of throwing, so the
+caller maps it to its already-registered handling rather than its failure
+handling. The decisive fact is registration PRESENCE, the same decisive half
+of setup.ps1's Assert-SsmRegistrationStillAbsent guard: a registration file
+present in any form is never one of the two registration-less states whatever
+the service facts are (both of those map to Register), so the service facts
+are not re-read here - re-querying them could not change the verdict and the
+window must stay tight. A re-read that FAILS refuses the launch the same way
+(fail closed): a failed read cannot prove the absence the launch depends on -
+the file may be appearing right now, locked mid-write by the competing
+enrollment. The refused launch consumes no activation; the temp download is
+still cleaned up and reported on the result like any other exit.
 
 CLEANUP POSTCONDITION AND ITS FAILURE BEHAVIOR: removing the temp download is
 required, but a leftover after a SUCCESSFUL enrollment is deliberately NOT an
@@ -142,16 +168,20 @@ TempDownloadRemoved = $false on its result so the caller can phrase its own
 summary truthfully. The temp path is random and carries no secrets. When the
 enrollment itself failed, the cleanup still runs in finally and a surviving
 directory is warned about the same way, but the original failure - not the
-cleanup - is what propagates.
+cleanup - is what propagates. The race refusal returns through the same
+finally, so its temp download is cleaned up - and reported on the result -
+exactly like a successful run's.
 
 SECURITY: the activation code is passed to the executable only. The command
 line is never echoed, written or logged, and the tool's stdout AND stderr are
 both discarded (redirected together and piped to Out-Null under a temporarily
 relaxed $ErrorActionPreference), because they may reflect arguments (SPEC 43).
-Only a success/failure verdict is returned: a non-zero exit code, or a launch
-that never happened (detected via a $LASTEXITCODE sentinel, because a failed
-launch leaves it at a stale earlier value), throws - and the tool's own text
-never reaches the console or any log.
+Only a success/failure/race verdict is returned: a non-zero exit code, or a
+launch that never happened (detected via a $LASTEXITCODE sentinel, because a
+failed launch leaves it at a stale earlier value), throws - and the tool's own
+text never reaches the console or any log. The race refusal happens before the
+executable is ever invoked, so the activation code never leaves this process
+on that path.
 
 .PARAMETER Region
 Validated AWS region code.
@@ -167,12 +197,15 @@ Read-SsmSecret, never from command history.
 Override the download URL (testing seam). Defaults to Get-SsmSetupCliUrl.
 
 .OUTPUTS
-[PSCustomObject] on success, with TempDownloadPath ([string], the temp
-directory ssm-setup-cli was downloaded into) and TempDownloadRemoved
-([bool], whether that directory was gone when the function returned; $false
-means a warning naming the surviving path was written - see DESCRIPTION).
-Throws on any failure, including an unacceptable signature; nothing is
-returned when the function throws.
+[PSCustomObject] on success, with RegistrationAppeared ([bool], $true only
+when the launch was refused because a local registration file appeared - or
+could not be re-read - during the download/verification window; the caller
+maps $true to its already-registered handling), TempDownloadPath ([string],
+the temp directory ssm-setup-cli was downloaded into) and
+TempDownloadRemoved ([bool], whether that directory was gone when the
+function returned; $false means a warning naming the surviving path was
+written - see DESCRIPTION). Throws on any failure, including an unacceptable
+signature; nothing is returned when the function throws.
 #>
 function Invoke-SsmEnrollment {
     [CmdletBinding()]
@@ -218,6 +251,12 @@ function Invoke-SsmEnrollment {
     $cleanupRetryDelaySeconds = 2
     $tempDownloadRemoved = $false
 
+    # Race-abort flag (see the pre-launch revalidation below and the RACE
+    # paragraph in the comment-based help): set when a local registration
+    # appeared - or could not be disproved - during the download and
+    # verification window, so the executable must NOT be launched.
+    $registrationAppeared = $false
+
     try {
         Invoke-WebRequest -Uri $Url -OutFile $exePath -UseBasicParsing | Out-Null
 
@@ -228,43 +267,77 @@ function Invoke-SsmEnrollment {
             throw "Invoke-SsmEnrollment: downloaded ssm-setup-cli failed signature verification: $($verdict.Reason)"
         }
 
-        # Command line carries the activation code: it is executed but never
-        # echoed, logged, or captured into any output the caller sees. BOTH
-        # streams are discarded: on 5.1, '$null = & exe' suppresses only the
-        # success stream, leaving the tool's stderr on the console, and under
-        # a caller's $ErrorActionPreference = 'Stop' redirected stderr can
-        # raise a NativeCommandError embedding the tool's text. Relaxing
-        # ErrorActionPreference around the call keeps the merged redirect
-        # quiet. $LASTEXITCODE carries the verdict only when the tool
-        # actually launched: a launch that never happened (the download
-        # quarantined between the signature check above and this call)
-        # leaves it holding a stale earlier value - commonly 0 - which the
-        # exit-code check below would read as success. So a sentinel guards
-        # it: $LASTEXITCODE is reset to $null first, and a still-$null value
-        # after the call means nothing was launched.
-        $previousEap = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        $launchExitCode = $null
+        # Pre-launch revalidation (SPEC 22/23): the download and signature
+        # verification above are slow steps that ran AFTER the caller's own
+        # absence check, so that guard cannot see through them - another
+        # setup process can complete a whole registration inside the window,
+        # and launching anyway would silently replace the new identity and
+        # consume another activation. The class rule is that the check sits
+        # adjacent to the side effect it guards, so the local registration
+        # record is re-read HERE, immediately before the native launch - the
+        # last point that can still refuse - and the launch is refused when
+        # the file is present in ANY form, the decisive half of setup.ps1's
+        # Assert-SsmRegistrationStillAbsent guard (a registration file
+        # present in any form is never one of the two registration-less
+        # states whatever the service facts; both of those map to Register,
+        # so the service facts are not re-read - they cannot change this
+        # verdict and the window stays tight). A re-read that FAILS refuses
+        # the launch the same way, fail closed: a failed read cannot prove
+        # the absence the launch depends on (the file may be appearing right
+        # now, locked mid-write by the competing enrollment). The refusal is
+        # reported on the result (RegistrationAppeared) rather than thrown,
+        # so the caller can map it to its already-registered handling; the
+        # temp download is still cleaned up by the finally below.
+        $currentRegistrationJson = $null
+        $registrationReadFailed = $false
         try {
-            $global:LASTEXITCODE = $null
-            & $exePath -register -region $Region -activation-id $ActivationId -activation-code $ActivationCode 2>&1 | Out-Null
-            $launchExitCode = $LASTEXITCODE
+            $currentRegistrationJson = Get-SsmRegistrationFileJson
         } catch {
-            # The launch failure itself (nonexistent or non-runnable image);
-            # it can surface as a terminating error even under 'Continue'.
-            # Its text is deliberately not re-thrown: an invocation error can
-            # embed the command line, which carries the activation code
-            # (SPEC 43). The sentinel branch below reports the failure
-            # without it.
-            $launchExitCode = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $previousEap
+            $registrationReadFailed = $true
         }
-        if ($null -eq $launchExitCode) {
-            throw "Invoke-SsmEnrollment: ssm-setup-cli could not be launched, so the registration never ran. Verify the downloaded executable (antivirus quarantine) and re-run."
+        if ($registrationReadFailed -or ($null -ne $currentRegistrationJson)) {
+            $registrationAppeared = $true
         }
-        if ($launchExitCode -ne 0) {
-            throw "Invoke-SsmEnrollment: ssm-setup-cli exited with code $launchExitCode. Registration may have partially completed; inspect the SSM Agent log before re-running."
+
+        if (-not $registrationAppeared) {
+            # Command line carries the activation code: it is executed but never
+            # echoed, logged, or captured into any output the caller sees. BOTH
+            # streams are discarded: on 5.1, '$null = & exe' suppresses only the
+            # success stream, leaving the tool's stderr on the console, and under
+            # a caller's $ErrorActionPreference = 'Stop' redirected stderr can
+            # raise a NativeCommandError embedding the tool's text. Relaxing
+            # ErrorActionPreference around the call keeps the merged redirect
+            # quiet. $LASTEXITCODE carries the verdict only when the tool
+            # actually launched: a launch that never happened (the download
+            # quarantined between the signature check above and this call)
+            # leaves it holding a stale earlier value - commonly 0 - which the
+            # exit-code check below would read as success. So a sentinel guards
+            # it: $LASTEXITCODE is reset to $null first, and a still-$null value
+            # after the call means nothing was launched.
+            $previousEap = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            $launchExitCode = $null
+            try {
+                $global:LASTEXITCODE = $null
+                & $exePath -register -region $Region -activation-id $ActivationId -activation-code $ActivationCode 2>&1 | Out-Null
+                $launchExitCode = $LASTEXITCODE
+            } catch {
+                # The launch failure itself (nonexistent or non-runnable image);
+                # it can surface as a terminating error even under 'Continue'.
+                # Its text is deliberately not re-thrown: an invocation error can
+                # embed the command line, which carries the activation code
+                # (SPEC 43). The sentinel branch below reports the failure
+                # without it.
+                $launchExitCode = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $previousEap
+            }
+            if ($null -eq $launchExitCode) {
+                throw "Invoke-SsmEnrollment: ssm-setup-cli could not be launched, so the registration never ran. Verify the downloaded executable (antivirus quarantine) and re-run."
+            }
+            if ($launchExitCode -ne 0) {
+                throw "Invoke-SsmEnrollment: ssm-setup-cli exited with code $launchExitCode. Registration may have partially completed; inspect the SSM Agent log before re-running."
+            }
         }
     } finally {
         # SPEC 21 step 16: removing the temp download is a required
@@ -301,9 +374,13 @@ function Invoke-SsmEnrollment {
         }
     }
 
+    # Constructed AFTER the finally block so TempDownloadRemoved reports the
+    # cleanup's actual outcome (a return from inside the try would freeze the
+    # pre-cleanup value).
     return [PSCustomObject]@{
-        TempDownloadPath    = $tempDir
-        TempDownloadRemoved = $tempDownloadRemoved
+        RegistrationAppeared = $registrationAppeared
+        TempDownloadPath     = $tempDir
+        TempDownloadRemoved  = $tempDownloadRemoved
     }
 }
 

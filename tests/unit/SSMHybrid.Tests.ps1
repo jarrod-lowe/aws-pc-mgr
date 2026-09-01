@@ -106,9 +106,10 @@ Describe 'Get-SsmServiceInfo' {
     }
 }
 
-Describe 'Invoke-SsmEnrollment temp-download cleanup' {
+Describe 'Invoke-SsmEnrollment cleanup and pre-launch revalidation' {
     # The enrollment runner is a Windows-only adapter, but its temp-download
-    # cleanup (SPEC 21 step 16) is pure cmdlet orchestration, so it IS
+    # cleanup (SPEC 21 step 16) and its pre-launch registration
+    # revalidation (SPEC 22/23) are pure cmdlet orchestration, so they ARE
     # unit-tested here: every Windows-only step is mocked, and the
     # downloaded "executable" is a copy of the Unix 'true' binary, which
     # keeps the native invocation and $LASTEXITCODE genuine. The suite's
@@ -159,6 +160,13 @@ Describe 'Invoke-SsmEnrollment temp-download cleanup' {
                 }
             }
         }
+        # No local registration: the runner's pre-launch revalidation must
+        # pass so it reaches its launch and cleanup. The race-abort tests
+        # below re-mock this module function (a -ModuleName mock intercepts
+        # the runner's own call to it) to plant a registration mid-window.
+        Mock Get-SsmRegistrationFileJson -ModuleName SSMHybrid -MockWith {
+            return $null
+        }
         Mock Start-Sleep -ModuleName SSMHybrid -MockWith { }
         Mock Write-Warning -ModuleName SSMHybrid -MockWith {
             $global:EnrollCleanupWarnings = @($global:EnrollCleanupWarnings) + $Message
@@ -189,6 +197,7 @@ Describe 'Invoke-SsmEnrollment temp-download cleanup' {
 
         $enrollmentResult = Invoke-SsmEnrollment @script:EnrollParams
 
+        $enrollmentResult.RegistrationAppeared | Should -BeFalse
         $enrollmentResult.TempDownloadRemoved | Should -BeTrue
         $enrollmentResult.TempDownloadPath | Should -Match 'ssm-setup'
         Test-Path -LiteralPath $enrollmentResult.TempDownloadPath | Should -BeFalse
@@ -303,13 +312,67 @@ Describe 'Invoke-SsmEnrollment temp-download cleanup' {
         $global:EnrollCleanupWarnings | Should -BeNullOrEmpty
     }
 
-    It 'exposes exactly TempDownloadPath and TempDownloadRemoved' {
+    It 'exposes exactly RegistrationAppeared, TempDownloadPath and TempDownloadRemoved' {
         if (-not $script:TrueExe) { Set-ItResult -Skipped -Because 'no exit-0 executable available on this host'; return }
 
         $enrollmentResult = Invoke-SsmEnrollment @script:EnrollParams
 
         $properties = @($enrollmentResult.PSObject.Properties | ForEach-Object { $_.Name })
-        $properties | Should -Be @('TempDownloadPath', 'TempDownloadRemoved')
+        $properties | Should -Be @('RegistrationAppeared', 'TempDownloadPath', 'TempDownloadRemoved')
+    }
+
+    It 'refuses to launch when a registration appears during the download/verification window, still cleans the temp download, and reports the race' {
+        if (-not $script:TrueExe) { Set-ItResult -Skipped -Because 'no exit-0 executable available on this host'; return }
+
+        # The competing enrollment's record, present by the time the
+        # download and signature verification finish. A planted $LASTEXITCODE
+        # value proves the launch never ran: the launch path resets the
+        # sentinel to $null and a genuine 'true' launch then leaves 0, so a
+        # value that survives the call unchanged means neither happened.
+        Mock Get-SsmRegistrationFileJson -ModuleName SSMHybrid -MockWith {
+            return '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}' # audit-allow:synthetic
+        }
+        $global:LASTEXITCODE = 7
+
+        $enrollmentResult = Invoke-SsmEnrollment @script:EnrollParams
+        $exitCodeAfter = $global:LASTEXITCODE
+
+        # The refusal is POST-verification: the download and the signature
+        # check both ran before the runner re-read the registration record.
+        Should -Invoke Invoke-WebRequest -ModuleName SSMHybrid -Exactly 1
+        Should -Invoke Get-AuthenticodeSignature -ModuleName SSMHybrid -Exactly 1
+        $enrollmentResult.RegistrationAppeared | Should -BeTrue
+        $exitCodeAfter | Should -Be 7
+        # The refused launch still owes its cleanup postcondition: the temp
+        # download is gone and reported removed, first attempt, no warning.
+        $enrollmentResult.TempDownloadRemoved | Should -BeTrue
+        $enrollmentResult.TempDownloadPath | Should -Match 'ssm-setup'
+        Test-Path -LiteralPath $enrollmentResult.TempDownloadPath | Should -BeFalse
+        Should -Invoke Remove-Item -ModuleName SSMHybrid -Exactly 1
+        Should -Invoke Start-Sleep -ModuleName SSMHybrid -Exactly 0
+        $global:EnrollCleanupWarnings | Should -BeNullOrEmpty
+    }
+
+    It 'treats a pre-launch registration re-read that fails as a race and refuses to launch (fail closed)' {
+        if (-not $script:TrueExe) { Set-ItResult -Skipped -Because 'no exit-0 executable available on this host'; return }
+
+        # The locked-mid-write shape: the competing enrollment is creating
+        # its registration file right now, and the re-read cannot prove the
+        # absence the launch depends on - so it must refuse, not launch.
+        Mock Get-SsmRegistrationFileJson -ModuleName SSMHybrid -MockWith {
+            throw 'simulated registration file locked mid-write by the competing enrollment'
+        }
+        $global:LASTEXITCODE = 7
+
+        $enrollmentResult = Invoke-SsmEnrollment @script:EnrollParams
+        $exitCodeAfter = $global:LASTEXITCODE
+
+        $enrollmentResult.RegistrationAppeared | Should -BeTrue
+        $exitCodeAfter | Should -Be 7
+        $enrollmentResult.TempDownloadRemoved | Should -BeTrue
+        Test-Path -LiteralPath $enrollmentResult.TempDownloadPath | Should -BeFalse
+        Should -Invoke Remove-Item -ModuleName SSMHybrid -Exactly 1
+        $global:EnrollCleanupWarnings | Should -BeNullOrEmpty
     }
 }
 
