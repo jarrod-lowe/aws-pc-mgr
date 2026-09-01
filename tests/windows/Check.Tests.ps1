@@ -197,6 +197,8 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
                 '2026-08-29 00:00:07 WARN enrollment failed Token=EXAMPLE rejected'
                 '2026-08-29 00:00:08 WARN enrollment failed Activation Code = EXAMPLE rejected'
                 '2026-08-29 00:00:09 WARN enrollment failed Session Token: EXAMPLE rejected'
+                '2026-08-29 00:00:14 WARN credential rejected Token: EXAMPLE bearer'
+                '2026-08-29 00:00:15 WARN credential rejected "Token": "EXAMPLE" bearer'
                 '2026-08-29 00:00:10 WARN enrollment failed ActivationId = 00000000-0000-0000-0000-000000000000 rejected' # audit-allow:synthetic
                 '2026-08-29 00:00:11 WARN enrollment failed "ActivationCode": "EXAMPLE" rejected'
                 '2026-08-29 00:00:12 WARN enrollment failed ACTIVATION CODE: EXAMPLE rejected'
@@ -225,7 +227,8 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
             # activation_id (the ID is not a secret, but a log echoing it
             # identifies the enrollment, so it is withheld too);
             # security-token covers the X-Amz-Security-Token header spelling,
-            # and the bare token\s*= covers Token=. The EXAMPLE values stay
+            # and the bare token atom covers Token=, Token:, and the quoted
+            # JSON "Token": spelling. The EXAMPLE values stay
             # under the repo audit's value-length anchors, so this test file
             # itself stays audit-clean.
             $result.Output | Should -Not -Match ([Regex]::Escape('AccessKeyId=EXAMPLE'))
@@ -241,7 +244,7 @@ Describe 'check.ps1 log-excerpt credential redaction (SPEC 24/43)' {
             $result.Output | Should -Not -Match ([Regex]::Escape('Session Token: EXAMPLE'))
             $result.Output | Should -Not -Match ([Regex]::Escape('ActivationId = 00000000-0000-0000-0000-000000000000')) # audit-allow:synthetic
             # The withheld count is reported in the summary.
-            $result.Output | Should -Match '12 recent log warning/error line\(s\) withheld'
+            $result.Output | Should -Match '14 recent log warning/error line\(s\) withheld'
         } finally {
             Remove-Item -LiteralPath $tempLog -Force -ErrorAction SilentlyContinue
         }

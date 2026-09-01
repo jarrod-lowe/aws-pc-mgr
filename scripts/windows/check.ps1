@@ -85,8 +85,10 @@ $problems = New-Object -TypeName System.Collections.Generic.List[string]
 #   aws/secret/access/key  aws_secret_access_key (subsumed by
 #                      secret/access/key above, kept as its own atom to match
 #                      the audit-side label exactly)
-# The non-label atoms appended to the alternation - the bare token\s*= (Token=
-# and unavoidably PaginationToken=-style keys), the AKIA/ASIA key-ID shapes,
+# The non-label atoms appended to the alternation - the bare token field in
+# every separator spelling (Token=, Token:, "Token": - the optional quote
+# covers the JSON key form, and unavoidably PaginationToken:-style keys),
+# the AKIA/ASIA key-ID shapes,
 # and the bare UUID shape - are not word lists and stay literal. The UUID
 # atom is withheld even UNlabeled: an activation ID IS a UUID (the canonical
 # 8-4-4-4-12 shape Test-SsmActivationId documents), and AWS responses and
@@ -111,7 +113,7 @@ $credentialLinePattern = '(?i)' + (@(
         (Get-SsmCredentialLabelPattern @('security', 'token'))
         (Get-SsmCredentialLabelPattern @('private', 'key'))
         (Get-SsmCredentialLabelPattern @('aws', 'secret', 'access', 'key'))
-        'token\s*='
+        'token\s*["'']?\s*[=:]'
         'AKIA[0-9A-Z]{16}'
         'ASIA[0-9A-Z]{16}'
         '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'

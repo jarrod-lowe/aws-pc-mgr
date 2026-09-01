@@ -1381,7 +1381,7 @@ annotated_current_lines() {
         rm -f "$_acl_list"
         return 1
     fi
-    xargs -0 -r "$SCRIPT" --marker-lines <"$_acl_list" 2>/dev/null |
+    xargs -0 "$SCRIPT" --marker-lines <"$_acl_list" 2>/dev/null |
         sed -e 's/[[:space:]]*'"$MARKER"'[[:space:]]*$//' \
             -e 's/[[:space:]]*$//' |
         grep -v '^$' >"$_acl_file" 2>/dev/null
@@ -3674,10 +3674,14 @@ default_audit() {
         printf '%s: error: not a git repository: %s\n' "$SCRIPT_NAME" "$ROOT" >&2
         exit 2
     }
-    # xargs (with -0 and -r, BSD and GNU alike) is the NUL-safe driver for
-    # both tracked-file consumers (scan_tracked_one, --marker-lines); the
-    # audit fails closed rather than fall back to a newline-split loop that
-    # shreds newline-bearing filenames (see tracked_files_z).
+    # xargs (with -0; deliberately NOT -r, a GNU extension some BSD sets
+    # reject) is the NUL-safe driver for both tracked-file consumers
+    # (scan_tracked_one, --marker-lines); the audit fails closed rather
+    # than fall back to a newline-split loop that shreds newline-bearing
+    # filenames (see tracked_files_z). Without -r, an empty index makes
+    # some xargs implementations invoke the child once with zero paths -
+    # which the child modes treat as a no-op - and others invoke nothing;
+    # both are safe.
     command -v xargs >/dev/null 2>&1 || {
         printf '%s: error: xargs unavailable: cannot enumerate tracked files NUL-safely - failing closed, no clean result\n' \
             "$SCRIPT_NAME" >&2
@@ -3809,7 +3813,7 @@ default_audit() {
         AUDIT_SCAN_HOST_SHORT="$_host_short" \
         AUDIT_SCAN_PROFILE="$_profile" \
         AUDIT_SCAN_DISPLAY="$_display" \
-        xargs -0 -r "$SCRIPT" --scan-tracked-batch \
+        xargs -0 "$SCRIPT" --scan-tracked-batch \
         <"$_files" >>"$_results"
     _xs_rc=$?
     rm -f "$_files"
@@ -4035,8 +4039,8 @@ case "${1-}" in
     # invocation has none set, so those literal scans are inert, exactly as
     # in --scan-file. The paths are argv entries, so a newline-bearing name
     # arrives whole. FINDING lines on stdout, exit 0 regardless of findings;
-    # a zero-path invocation (empty index, or xargs -r on empty input)
-    # scans nothing.
+    # a zero-path invocation (empty index, or an xargs that runs the child
+    # once on empty input without -r) scans nothing.
     shift
     _bucket=${AUDIT_SCAN_BUCKET-}
     _user=${AUDIT_SCAN_USER-}
