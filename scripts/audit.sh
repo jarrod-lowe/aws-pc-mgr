@@ -178,7 +178,9 @@
 # username label is the bare two-word `user…name` (the label matches a
 # span, so `Windows username` needs no prefix handling of its own; the
 # bare `user` is deliberately not a label), the hostname label alternates
-# `host…name` and the Windows-UI `computer…name`, and each value anchor is
+# `…name` with each word of its single-source qualifier-word set
+# (HOSTNAME_NAME_WORDS: host, computer, machine, device — the last is the
+# Windows 11 Settings `Device name` spelling, round 48), and each value anchor is
 # a single identifier run of ANY length (one-character profile, account
 # and computer names are real; review round 29 removed the 4-plus floors)
 # — spaces break the run, which is the prose brake —
@@ -188,9 +190,11 @@
 # values, so no tracked line depends on those sets today.
 #
 # The personal-name detector (personal-name) covers SPEC §27's "personal
-# name" item directly: the identifying name-field labels — `personal
-# name`, `full name`, `real name` in every case/separator spelling, never
-# the bare `name` key of ordinary code — anchored to a two-run name shape
+# name" item directly: the identifying name-field labels — the
+# single-source word set PERSONAL_NAME_WORDS (personal, full, real,
+# display — the last is the directory-UI `Display Name` field spelling,
+# round 48) in every case/separator spelling, never the bare `name` key
+# of ordinary code — anchored to a two-run name shape
 # (each run 3-plus, totalling 8-plus), with a small GENERIC_NAMES
 # form-boilerplate set (Not Applicable, John Doe, …) excluded by a gate in
 # emit_hits after the match. Very short real names (Jan Li) stay silent —
@@ -222,10 +226,14 @@
 # name the SLOT, not a profile anyone selected — is skipped by a
 # generic-value gate in emit_hits. The bare `profile` label is deliberately
 # NOT matched: Terraform/HCL documentation writes `profile = "…"` as an
-# ordinary key, so only the aws-prefixed label (AWS_PROFILE, aws_profile,
-# AwsProfile, spaced `AWS PROFILE = …`) is a finding. The runtime
-# $AWS_PROFILE guard in default_audit applies the same rule and the same
-# set.
+# ordinary key, so only the QUALIFIED labels are findings — the aws-prefixed
+# spellings (AWS_PROFILE, aws_profile, AwsProfile, spaced `AWS PROFILE = …`)
+# and, since round 48, the SSO-qualified forms (`SSO Profile: corp-admin`,
+# `AWS SSO Profile: corp-admin`, whose separator machinery covers
+# sso_profile, SSOProfile, sso-profile and sso.profile alike);
+# AWS_PROFILE_LABEL_FORMS is the single source of the accepted forms. The
+# runtime $AWS_PROFILE guard in default_audit applies the same rule and the
+# same set.
 #
 # The machine-serial-number detector anchors on a PROPERTY, not a
 # positional pattern: after the serial label and assignment anchor, the
@@ -313,9 +321,11 @@
 #   random case and digit runs) are FORBIDDEN, even inside the harness's
 #   temp-file generators and even though this script itself is excluded
 #   from its own scan: the literals still get pushed. The value pools in
-#   MATRIX_LABEL_SETS, st_shape_matrix, st_value_tables, st_charsweep,
-#   st_gate_sweep, st_hook_smoke, st_binary_decode and st_message_file
-#   are the enforcement points of this rule.
+#   MATRIX_LABEL_SETS and the word-set pools that generate its rows
+#   (HOSTNAME_MATRIX_VALUES, PERSONAL_NAME_MATRIX_VALUES,
+#   AWS_PROFILE_MATRIX_VALUES), st_shape_matrix, st_value_tables,
+#   st_charsweep, st_gate_sweep, st_hook_smoke, st_binary_decode and
+#   st_message_file are the enforcement points of this rule.
 #
 #   HARD RULE (no exception, by construction): the marker NEVER suppresses
 #   real AWS key material. A line matching an AKIA…/ASIA… access or session
@@ -542,6 +552,13 @@ GENERIC_LABELED_HOSTS=' localhost hostname computer name your the example.com ex
 # region field empty as in iam:: or populated as in ssm:us-east-1:), and a
 # bare 12-digit number with no account label stays unflagged (too generic).
 #
+# Vocabulary sweep (round 48): AWS's own spellings of this label — Account,
+# Account ID, AccountNumber, aws_account_id, the STS GetCallerIdentity
+# `"Account"` JSON key — all reach the one pattern through the span match,
+# so nothing was added; `owner` alone stays EXCLUDED with its reason (an
+# ordinary Terraform/prose noun whose labeled values are teams and
+# services, not the 12-digit identifier).
+#
 # The SSO-profile and machine-serial detectors are the same label machinery
 # with value anchors chosen for values that are SHORT arbitrary strings —
 # there, prose safety cannot come from value length alone: a serial value
@@ -552,8 +569,9 @@ GENERIC_LABELED_HOSTS=' localhost hostname computer name your the example.com ex
 # be shaped at all (letter-only names are real), so it is only
 # length-floored (AWS_PROFILE_VALUE) and the prose safety lives in the
 # generic-value gate emit_hits applies to that detector (GENERIC_PROFILES;
-# see header). The profile label is aws-prefixed only — bare `profile` is
-# a documented HCL key — while the serial label needs no `machine` prefix
+# see header). The profile label is aws- or sso-qualified only
+# (AWS_PROFILE_LABEL_FORMS is the single source of the accepted forms) —
+# bare `profile` is a documented HCL key — while the serial label needs no `machine` prefix
 # of its own: the label matches a span, so `MachineSerialNumber` is
 # covered by `serial…number` inside it.
 #
@@ -590,7 +608,57 @@ LABEL_ASSIGN='([=:]|:=)'
 # deliberately shape-free — one unbroken run of any length, because
 # letter-only profile names (`production`) are real — so the prose/placeholder
 # safety lives in the gate, not here.
-AWS_PROFILE_LABEL="aws${LABEL_WORD_SEP}profile[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
+#
+# AWS_PROFILE_LABEL_FORMS — the label's accepted WORD SEQUENCES, one form per
+# line, each word spelling nameable to its source (round 48, thread
+# 3908574496: the anchor used to demand `aws` immediately followed by
+# `profile`, so both SSO-qualified spellings went undetected):
+#   aws profile      AWS_PROFILE env var, aws_profile Terraform provider
+#                    key, AwsProfile property spelling
+#   aws sso profile  the qualified tool-output label (`AWS SSO Profile:
+#                    corp-admin`)
+#   sso profile      the un-prefixed tool label (`SSO Profile: corp-admin`);
+#                    the separator machinery covers sso_profile, SSOProfile,
+#                    sso-profile and sso.profile of this form for free
+# EXCLUDED, each with its reason: bare `profile` (the documented HCL key —
+# Terraform docs write `profile = "…"` as an ordinary key); `named`/`config
+# profile` (AWS documentation PROSE phrases, never a dump or key spelling);
+# `[sso-session name]` (a ~/.aws/config SECTION naming a session, not the
+# selected profile, and never an assignment shape). The list is the SINGLE
+# SOURCE for two consumers that cannot drift from it: the ERE alternation
+# composed just below, and the selftest spelling matrix, whose registry rows
+# for this detector st_label_matrix generates from it — the next profile
+# label form is one line added here and swept everywhere by construction.
+AWS_PROFILE_LABEL_FORMS='aws profile
+aws sso profile
+sso profile'
+# AWS_PROFILE_MATRIX_VALUES — the value alternatives the generated matrix
+# rows rotate (SYNTHETIC-KEY CONVENTION: deterministic sequential patterns
+# only, never pseudo-random material).
+AWS_PROFILE_MATRIX_VALUES='mxprod7,9prod.name-x,MX-Prod_99'
+# Compose the alternation: each form's words joined with LABEL_WORD_SEP,
+# forms joined with `|`. Scratch variables are unset after — POSIX sh has
+# no local, and nothing below may see them.
+AWS_PROFILE_LABEL_ALT=
+while IFS= read -r _apl_form; do
+    [ -n "$_apl_form" ] || continue
+    _apl_pat=
+    for _apl_word in $_apl_form; do
+        if [ -n "$_apl_pat" ]; then
+            _apl_pat="${_apl_pat}${LABEL_WORD_SEP}"
+        fi
+        _apl_pat=$_apl_pat$_apl_word
+    done
+    if [ -n "$AWS_PROFILE_LABEL_ALT" ]; then
+        AWS_PROFILE_LABEL_ALT="${AWS_PROFILE_LABEL_ALT}|${_apl_pat}"
+    else
+        AWS_PROFILE_LABEL_ALT=$_apl_pat
+    fi
+done <<EOF
+$AWS_PROFILE_LABEL_FORMS
+EOF
+unset _apl_form _apl_word _apl_pat
+AWS_PROFILE_LABEL="(${AWS_PROFILE_LABEL_ALT})[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 # The value class is AWS's documented profile-name alphabet (letters,
 # digits, and _+.,@-; `=` cannot appear because the label's assignment
 # separator is the first [=:] on the line), any position, any length.
@@ -636,6 +704,15 @@ AWS_PROFILE_ALPHABET_MEMBERS='A B C D E F G H I J K L M N O P Q R S T U V W X Y 
 # fires. The two value anchors share one alphabet and differ only in the
 # tail, and the charsweep drift-checks both against SERIAL_ALPHABET_MEMBERS
 # so neither tier's bracket class can drift.
+#
+# Vocabulary sweep (round 48): every source this detector exists to cover
+# spells the label serial/serial number — systeminfo's `Serial Number:`,
+# `wmic bios get serialnumber`, macOS About This Mac — so nothing was
+# added. Vendor synonyms are EXCLUDED with their reasons: `service tag`
+# (Dell's sticker name for the SAME identifier, whose OS-level dumps print
+# `Serial Number`; it would also need its own tier decision, since the
+# floors and the gate key on the `number` branch) and `asset tag` (an
+# inventory sticker, not the machine serial).
 SERIAL_LABEL="serial(${LABEL_WORD_SEP}number)?[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 SERIAL_LABEL_EXPLICIT="serial${LABEL_WORD_SEP}number[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 SERIAL_VALUE_EXPLICIT='[A-Za-z0-9][A-Za-z0-9-]{3,}'
@@ -668,10 +745,10 @@ SERIAL_ALPHABET_MEMBERS='A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b
 ALPHABET_HIGH_SAMPLES='200 303 251 377'
 # PERSONAL_NAME_LABEL/PERSONAL_NAME_VALUE are the personal-name detector's
 # anchors, shared with the generic-name gate in emit_hits. The label is the
-# genuinely identifying name-field family — `personal name`, `full name`,
-# `real name` in every case/separator spelling via the shared machinery —
-# and deliberately NOT bare `name`, which is an ordinary key everywhere in
-# code and HCL. The value anchor is a NAME SHAPE, not a positional pattern:
+# genuinely identifying name-field family — every word of the single-source
+# set PERSONAL_NAME_WORDS below, in every case/separator spelling via the
+# shared machinery — and deliberately NOT bare `name`, which is an ordinary
+# key everywhere in code and HCL. The value anchor is a NAME SHAPE, not a positional pattern:
 # two-or-more consecutive word runs of name characters whose combined
 # length is at least 8 with each run at least 3 — expressed as the three
 # ERE regions (>=5+>=3, >=4+>=4, >=3+>=5). Case cannot carry the shape
@@ -694,7 +771,31 @@ ALPHABET_HIGH_SAMPLES='200 303 251 377'
 # `-` so no unintended range forms (`.-<0x80>` would swallow half of ASCII).
 _highrange=$(printf '\200-\377')
 NAME_RUN="[A-Za-z'${_highrange}.-]"
-PERSONAL_NAME_LABEL="(personal|full|real)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
+# PERSONAL_NAME_WORDS — the personal-name label's qualifier-word vocabulary,
+# one word per token, each word nameable to its source (round 48, thread
+# 3908574516 added `display`; the sweep that produced the list):
+#   personal  "Personal Name" form-field label
+#   full      the GECOS/full-name field, AD's "Full Name", ordinary web
+#             forms
+#   real      chfn's "Real Name" prompt spelling
+#   display   Entra ID/M365's "Display name" user field — the label
+#             Get-ADUser/Get-MgUser DisplayName dumps and directory UIs
+#             print (`Display Name: Alice Smith`)
+# EXCLUDED, each with its reason: `common` (X.509 CNs and Terraform's
+# `common_name` carry domains and service names far more often than
+# persons, and LDIF spells the attribute `cn:`); first/given/last/sur (name
+# PART fields carry single-run values the two-run anchor deliberately
+# ignores, and first_name/last_name are ordinary schema columns);
+# account/owner/contact (no named dump source prints them as a person-name
+# label; `account` labels are the winuser class, decided in its table).
+# Single source like the other word sets: the alternation in
+# PERSONAL_NAME_LABEL below and the matrix rows st_label_matrix generates
+# both derive from this list — the next name-field word is one token here.
+PERSONAL_NAME_WORDS='personal full real display'
+# PERSONAL_NAME_MATRIX_VALUES — value alternatives for the generated matrix
+# rows (SYNTHETIC-KEY CONVENTION: deterministic synthetic names only).
+PERSONAL_NAME_MATRIX_VALUES='Alice Smith,Jean-Pierre Blanc,Mary Jane Watson'
+PERSONAL_NAME_LABEL="($(printf '%s' "$PERSONAL_NAME_WORDS" | tr ' ' '|'))${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 PERSONAL_NAME_VALUE="(${NAME_RUN}{5,}([[:space:]]+|,[[:space:]]*)${NAME_RUN}{3,}|${NAME_RUN}{4,}([[:space:]]+|,[[:space:]]*)${NAME_RUN}{4,}|${NAME_RUN}{3,}([[:space:]]+|,[[:space:]]*)${NAME_RUN}{5,})"
 # NAME_ALPHABET_MEMBERS — parallel member list of the NAME_RUN bracket
 # class, same contract as AWS_PROFILE_ALPHABET_MEMBERS (charsweep rows +
@@ -725,11 +826,13 @@ NAME_ALPHABET_MEMBERS="A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c
 # standard exclusions, maximally loosened anchors) found ZERO label-adjacent
 # values, so nothing in this repository gates on them; the sets exist for
 # future prose. Both classes are marker-suppressible label classes.
-# LABEL VOCABULARY TABLE (review round 30, thread 3888296684): the label
-# words these two detectors accept, each alternative decided explicitly —
-# the third vocabulary addition (security token, computer name, Windows
-# user/account) made the dimension a table so every future proposal has a
-# landing place. Windows-username class:
+# LABEL VOCABULARY TABLE (review round 30, thread 3888296684; extended by
+# the round 48 sweep): the label words these two detectors accept, each
+# alternative decided explicitly — the third vocabulary addition (security
+# token, computer name, Windows user/account) made the dimension a table so
+# every future proposal has a landing place. The hostname class now lives
+# in the HOSTNAME_NAME_WORDS single source (see below); this table is its
+# decision log. Windows-username class:
 #   user…name            INCLUDE  core (UserName, user_name, USER-NAME)
 #   windows/win…user     INCLUDE  reviewer's line — the Windows qualifier
 #                                  makes the bare noun specific enough
@@ -752,11 +855,36 @@ NAME_ALPHABET_MEMBERS="A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c
 #                                  carries a trailing `$` outside the value
 #                                  class; machine…name (below) carries the
 #                                  same identifier
+#   user…principal…name  EXCLUDE  round 48 sweep: Get-ADUser's
+#                                  UserPrincipalName dumps carry
+#                                  email-shaped values the email-address
+#                                  SHAPE detector already catches on the
+#                                  same line, and the same dump's
+#                                  sam…account line is covered above
 # Hostname class:
 #   host…name            INCLUDE  core
 #   computer…name        INCLUDE  Windows-UI Computer Name
 #   machine…name         INCLUDE  round 30: `Machine Name: ALICE-PC`
 #                                  sysinfo-style output
+#   device…name          INCLUDE  round 48: Windows 11 Settings → System →
+#                                  About spells it `Device name: ALICE-PC`
+#                                  (thread 3908574507)
+#   node…name            EXCLUDE  round 48 sweep: `Node name` is uname's
+#                                  man-page FIELD name — no
+#                                  Settings/systeminfo dump prints it, and
+#                                  cluster/schema prose (`node name:` YAML
+#                                  keys) collides
+#   netbios…name         EXCLUDE  round 48 sweep: nbtstat tables name
+#                                  SERVICES, not a labeled machine
+#                                  identifier; the same value rides the
+#                                  computer/device-name dumps above
+#   static/pretty/transient…hostname
+#                         EXCLUDE  round 48 sweep: hostnamectl spellings
+#                                  describe the machine RUNNING a command
+#                                  (the runtime hostname literal check owns
+#                                  that value), and the qualifier applies to
+#                                  `hostname`, not the `…name` shape this
+#                                  ERE composes
 WINUSER_LABEL="((user|logon)${LABEL_WORD_SEP}name|(windows|win|local)${LABEL_WORD_SEP}(user|account)|sam${LABEL_WORD_SEP}account(${LABEL_WORD_SEP}name)?)[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 # The value class IS the OS's documented alphabet, not an enumeration that
 # grows one review round at a time: SAM account names accept letters,
@@ -802,7 +930,18 @@ WINUSER_VALUE="${WINUSER_WORD}([[:space:]]+${WINUSER_WORD})*"
 # the leading-punctuation and SAM-alphabet-character misses were both
 # review-round findings against exactly this list.
 WINUSER_ALPHABET_MEMBERS="! # \$ % & ' ( ) . @ ^ _ { } ~ - A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9"
-HOSTNAME_LABEL="(host|computer|machine)${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
+# HOSTNAME_NAME_WORDS — the hostname label's qualifier-word vocabulary, one
+# word per token; the LABEL VOCABULARY TABLE above is its decision log and
+# this list the machine source (round 48, thread 3908574507 added `device`).
+# Single source like the other word sets: the alternation in HOSTNAME_LABEL
+# below and the matrix rows st_label_matrix generates both derive from this
+# list — the next hostname label word is one token here, swept by
+# construction.
+HOSTNAME_NAME_WORDS='host computer machine device'
+# HOSTNAME_MATRIX_VALUES — value alternatives for the generated matrix rows
+# (SYNTHETIC-KEY CONVENTION: deterministic synthetic hostnames only).
+HOSTNAME_MATRIX_VALUES='ALICE-PC,build-runner-01,ci-host.example.internal'
+HOSTNAME_LABEL="($(printf '%s' "$HOSTNAME_NAME_WORDS" | tr ' ' '|'))${LABEL_WORD_SEP}name[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 HOSTNAME_VALUE='[A-Za-z0-9][A-Za-z0-9.-]*'
 # HOSTNAME_ALPHABET_MEMBERS — parallel member list of HOSTNAME_VALUE's
 # bracket classes, same contract as AWS_PROFILE_ALPHABET_MEMBERS (charsweep
@@ -1797,6 +1936,15 @@ st_form() {
     'machine 0') printf 'machine' ;;
     'machine 1') printf 'MACHINE' ;;
     'machine 2') printf 'Machine' ;;
+    'device 0') printf 'device' ;;
+    'device 1') printf 'DEVICE' ;;
+    'device 2') printf 'Device' ;;
+    'display 0') printf 'display' ;;
+    'display 1') printf 'DISPLAY' ;;
+    'display 2') printf 'Display' ;;
+    'sso 0') printf 'sso' ;;
+    'sso 1') printf 'SSO' ;;
+    'sso 2') printf 'Sso' ;;
     *)
         printf 'selftest: internal: st_form: no case form for word "%s"\n' \
             "$1" >&2
@@ -1995,6 +2143,13 @@ st_check() {
 # label word and both label shapes; the optional-suffix three-word form
 # (sam…account…name) is pinned by value-table rows — a full matrix row
 # for it costs 18k variants of machinery every other row already sweeps.
+# Three detectors' rows are NOT hand-written here (round 48): the
+# word-set-driven label vocabularies (HOSTNAME_NAME_WORDS,
+# PERSONAL_NAME_WORDS, AWS_PROFILE_LABEL_FORMS) generate their rows in
+# st_label_matrix from the same single-source lists their EREs are
+# composed from — a word added to one of those lists is swept here
+# without a registry edit, which is how the matrix covers new vocabulary
+# BY CONSTRUCTION instead of one hand-picked row per review round.
 MATRIX_LABEL_SETS='aws-secret-access-key|secret access key|EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE,EXAMPLEEXAMPLEEXAMPLEEXAMPLE+/==ABC,ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
 aws-secret-access-key|aws secret access key|EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE,EXAMPLEEXAMPLEEXAMPLEEXAMPLE+/==ABC,ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
 aws-activation-code|activation code|SYNTHETICACTIVATIONCODE01234567,aaaa/bbbb+
@@ -2004,16 +2159,9 @@ aws-session-token|aws session token|SYNTHETICSESSIONTOKEN0123456789,SYNTHETICSES
 aws-session-token|aws security token|SYNTHETICSESSIONTOKEN0123456789,SYNTHETICSESSIONTOKEN+/==ABCDEF
 account-id-context|account|123456789012,000000000000
 account-id-context|account id|123456789012,000000000000
-aws-sso-profile|aws profile|mxprod7,9prod.name-x,MX-Prod_99
 machine-serial-number|serial|mtx1aaaaaa,9mtxaaaaaa,ABC12345,ABC-12345,ABCDEFG1,ABC1234Z
 machine-serial-number|serial number|mtx1aaaaaa,9mtxaaaaaa,ABC12345,ABC-12345,ABCDEFG1,ABC1234Z
-personal-name|personal name|Alice Smith,Jean-Pierre Blanc,Mary Jane Watson
-personal-name|full name|Alice Smith,Jean-Pierre Blanc,Mary Jane Watson
-personal-name|real name|Alice Smith,Jean-Pierre Blanc,Mary Jane Watson
 windows-username-labeled|user name|alice.smith,svc-win-ci,LocalAdmin1
-hostname-labeled|host name|ALICE-PC,build-runner-01,ci-host.example.internal
-hostname-labeled|computer name|ALICE-PC,build-runner-01,ci-host.example.internal
-hostname-labeled|machine name|ALICE-PC,build-runner-01,ci-host.example.internal
 windows-username-labeled|windows user|alice.smith,svc-win-ci,LocalAdmin1
 windows-username-labeled|windows account|alice.smith,svc-win-ci,LocalAdmin1
 windows-username-labeled|win account|alice.smith,svc-win-ci,LocalAdmin1
@@ -2025,6 +2173,30 @@ st_label_matrix() {
     _lm_status=0
     _lm_dets=
     printf '%s\n' "$MATRIX_LABEL_SETS" >"$ST_WORK/lm-reg"
+    # Generated rows (round 48): the word-set-driven label vocabularies
+    # append their rows BY CONSTRUCTION from the same single-source lists
+    # their EREs are composed from (HOSTNAME_NAME_WORDS,
+    # PERSONAL_NAME_WORDS, AWS_PROFILE_LABEL_FORMS) — every word of those
+    # vocabularies is swept in the full case/separator/assignment/quote
+    # cross-product with no hand-written registry row, so the next
+    # vocabulary addition cannot forget the matrix. The value pools are
+    # the *_MATRIX_VALUES variables defined beside the word sets, under
+    # the SYNTHETIC-KEY CONVENTION.
+    for _lm_w in $HOSTNAME_NAME_WORDS; do
+        printf 'hostname-labeled|%s name|%s\n' "$_lm_w" \
+            "$HOSTNAME_MATRIX_VALUES" >>"$ST_WORK/lm-reg"
+    done
+    for _lm_w in $PERSONAL_NAME_WORDS; do
+        printf 'personal-name|%s name|%s\n' "$_lm_w" \
+            "$PERSONAL_NAME_MATRIX_VALUES" >>"$ST_WORK/lm-reg"
+    done
+    while IFS= read -r _lm_form; do
+        [ -n "$_lm_form" ] || continue
+        printf 'aws-sso-profile|%s|%s\n' "$_lm_form" \
+            "$AWS_PROFILE_MATRIX_VALUES" >>"$ST_WORK/lm-reg"
+    done <<EOF
+$AWS_PROFILE_LABEL_FORMS
+EOF
     # Registry closure: matrix word sets exist for every label detector
     # and nothing else.
     sed 's/|.*//' "$ST_WORK/lm-reg" | LC_ALL=C sort -u >"$ST_WORK/lm-a"
@@ -2431,6 +2603,9 @@ aws-sso-profile|M|awsProfile=dev_profile
 aws-sso-profile|M|aws.profile := 9prod.name-x
 aws-sso-profile|M|aws profile : mxprod7
 aws-sso-profile|M|AWS_PROFILE=default
+aws-sso-profile|M|SSO Profile: corp-admin-prod
+aws-sso-profile|M|AWS SSO Profile: corp-admin-prod
+aws-sso-profile|X|sso_profile: "example"
 aws-sso-profile|X|aws_profile: "example"
 aws-sso-profile|X|export AWS_PROFILE=<profile>
 aws-sso-profile|M|aws_profile = "default."
@@ -2479,6 +2654,8 @@ personal-name|M|"full_name": "Mary Jane Watson"
 personal-name|M|REAL-NAME:=O'Brien Casey
 personal-name|M|personalName: Alice Smith
 personal-name|M|full name = Jean Pierre Dupont
+personal-name|M|Display Name: Alicex Smithy
+personal-name|X|Display Name: Not Applicable
 personal-name|X|Personal Name: the name of the person
 personal-name|X|personal_name = <your name>
 personal-name|X|name = "Alice Smith"
@@ -2525,6 +2702,7 @@ hostname-labeled|M|"hostname": "ci-host.example.internal"
 hostname-labeled|M|host_name := ALICE-PC
 hostname-labeled|M|HOSTNAME=build-runner-01
 hostname-labeled|M|Machine Name: ALICE-PC
+hostname-labeled|M|Device Name: EXAMPLE-PC
 hostname-labeled|X|hostname: localhost
 hostname-labeled|X|hostname: hostname
 hostname-labeled|X|hostname: computer
