@@ -104,7 +104,8 @@ tests/unit/                 Pester unit tests for SSMHybrid.psm1
 tests/windows/              on-machine Pester tests for the entry scripts
 tests/tf-init.test.sh       contract test for tf-init.sh
 tests/fixtures/             synthetic audit fixtures + tfvars fixture
-.github/workflows/ci.yml    CI (three jobs; see below)
+.gitleaks.toml              gitleaks config: default rules + synthetic-value allowlists
+.github/workflows/ci.yml    CI (four jobs; see below)
 ```
 
 ## Windows 11 is not AWS-supported
@@ -619,6 +620,18 @@ scripts/audit.sh --message-file FILE      # pre-commit gate: the same detectors 
                                           #   commit-message text; exit 1 on any finding
 ```
 
+Secret scanning in this repository is two layers with a deliberate division
+of labor. **gitleaks** (CI's fourth job) owns the generic credential shapes —
+access-key IDs, secret-key assignments, session tokens, private keys — via
+the upstream-maintained default ruleset, so those detections are someone
+else's job to keep current. **audit.sh** owns what no upstream ruleset can
+know: the identity and PII classes tied to this machine and these workflows
+(hostname, username, personal-name, serial and profile labels; `mi-`
+managed-node IDs; UUID literals; awsapps.com/start URLs; emails; account
+IDs; tfstate paths; the runtime per-machine values) — and it is the
+zero-dependency layer (POSIX `sh` + git only) that still runs as the
+pre-push gate on a machine where gitleaks is not installed.
+
 `--message-file` is the gate for **commit message text**: the default audit
 scans message bodies as content, but only after the commit exists, when the
 fix is history surgery. Twice a commit has quoted a detector-tripping value
@@ -667,19 +680,31 @@ tests cannot trip it —
 the SSO-profile label matches its aws-prefixed, aws-sso-qualified and
 bare-sso forms (`AWS_PROFILE`, `aws_profile`, `AwsProfile`, spaced
 `AWS PROFILE = …`, the tool-dump `AWS SSO Profile: …` and the bare
-`SSO Profile: …` / `sso_profile` / `SSOProfile` spellings; the bare
-`profile` key of HCL documentation is deliberately not matched) and its
+`SSO Profile: …` / `sso_profile` / `SSOProfile` spellings, plus the AWS
+CLI global-option form — `--profile <name>`, `--profile=<name>`, quoted
+`--profile '<name>'` — because a committed invocation like
+`aws sso login --profile <name>` names the selected profile exactly like
+the env assignment does (angle brackets cannot match, as with the env
+placeholder forms); the bare `profile` key of HCL documentation and the
+non-CLI flag spellings (`--sso-profile`, `--aws-profile`) are deliberately
+not matched) and its
 value anchor is a single
 unbroken run of any length — letter-only profile names are real, so no
 shape is required — with an explicit generic-value
 exclusion (default, example, examples, placeholder, value, name, profile,
 none, test: words that name the slot, not a profile anyone selected), so
 `AWS_PROFILE=<profile>` placeholders (angle brackets cannot match),
-`AWS_PROFILE=example`-style doc filler never trips, the labeled
+`AWS_PROFILE=example`-style doc filler never trips (the flag form passes
+through the same generic-value exclusion), the labeled
 Windows-identifier labels (the `username` core — `Windows username:`,
 `win_username`, `UserName`, `user.name` — plus the Windows-qualified nouns
 `Windows user:`, `Windows account:`, `LocalAccount`, `SamAccountName`,
-`logon name`; the hostname label alternation `hostname` / `computer name` /
+`logon name`, and the Windows event/security field `Account Name:` with
+its `sam account name` spelling; the well-known event-log built-ins —
+`SYSTEM`, `NETWORK SERVICE`, `ANONYMOUS LOGON` — are deliberately NOT
+doc filler: a labeled built-in is a real account and a finding, and only
+the empty-field marker `Account Name: -` is; the hostname label
+alternation `hostname` / `computer name` /
 `machine name` / `device name` (the Windows 11 Settings spelling) — every
 alternative is decided in the LABEL VOCABULARY
 TABLE inside scripts/audit.sh, with bare `user`/`account` and `login
@@ -702,7 +727,13 @@ requires one post-label token of 8-plus carrying both a letter and a
 digit — a **property**, not a positional pattern, so any interleaving
 (`ABC12345`, `ABC-12345`, `ABCDEFG1`, `ABC1234Z`) fires while free text,
 a Terraform state file's pure-digit `"serial": 57` counter and
-pure-letter words never do —
+pure-letter words never do — and the serial family alone also associates
+table-shaped output, the `wmic bios get serialnumber` shape where the
+`SerialNumber` header sits alone on its row (optionally over a separator
+row) with the bare value on the row below, into a synthesized same-line
+hit that these same tiers and the letter/digit property gate exactly as
+an inline value; every other label family stays same-line only, with each
+family's verdict recorded in scripts/audit.sh —
 managed-node IDs (`mi-...`), UUID
 literals, SSO start URLs (any scheme/host capitalization), email addresses, 12-digit account IDs in ARNs
 of any service (empty-region `arn:aws:iam::…` style or regional
@@ -753,7 +784,7 @@ hard rules, enforced in code: the marker can **never** silence AWS key
 material (`AKIA`/`ASIA` key IDs, secret-key or session-token assignments in
 any spelling or case) or the
 runtime per-machine value checks (bucket name, username, hostname, AWS
-profile name) — those are
+profile name, account display name) — those are
 real by definition. And history equivalence: a finding in an already-committed
 line is also skipped when the byte-identical line exists in the current tree
 carrying the marker, so synthetic lines committed before the marker existed
@@ -825,7 +856,7 @@ it from the repository root.
 
 ### CI
 
-`.github/workflows/ci.yml` — three jobs on every push and pull request, no
+`.github/workflows/ci.yml` — four jobs on every push and pull request, no
 secrets and no AWS credentials anywhere:
 
 1. **terraform** — per stack: `fmt -check -recursive`,
@@ -842,6 +873,14 @@ secrets and no AWS credentials anywhere:
    shallow clone would truncate it). The default `scripts/audit.sh` mode is
    also meant to gate this job; see `.github/workflows/ci.yml` for its
    current state, and run it locally before pushing regardless.
+4. **gitleaks** — a pinned gitleaks release scanning the full history of
+   every ref (`gitleaks git`; the checkout is full-depth for the same reason
+   as the shell job) and the working tree (`gitleaks dir`), with `--redact`
+   so a finding never prints the matched secret into the log. Config is
+   `.gitleaks.toml`: the upstream default ruleset, extended, plus allowlist
+   entries only for this repo's verified synthetic values. This job is the
+   credential-shape layer of the division of labor described under
+   [audit.sh](#auditsh) below.
 
 ## Security properties
 

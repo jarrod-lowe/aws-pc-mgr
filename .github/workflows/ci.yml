@@ -1,10 +1,13 @@
-# CI (plan Task T8). Three jobs, no secrets, no AWS credentials anywhere:
+# CI (plan Task T8). Four jobs, no secrets, no AWS credentials anywhere:
 #   terraform — fmt/init(-backend=false)/validate/test with mock providers, plus
 #               tflint using only its bundled ruleset (no AWS plugin, so it runs
 #               offline and needs no credentials).
 #   pwsh      — Pester unit tests and PSScriptAnalyzer in the same PowerShell
 #               container used for local test runs.
 #   shell     — POSIX contract tests for tf-init.sh and the audit self-test.
+#   gitleaks  — secret scan (generic credential shapes) of the full history
+#               and the working tree, with a pinned gitleaks release; the
+#               allowlist entries it needs live in .gitleaks.toml.
 #
 # tests/windows is deliberately NOT executed here: those tests are machine-tier
 # (they need the enrolled Windows 11 host) and run on-machine in V4.
@@ -154,3 +157,40 @@ jobs:
 
       - name: shellcheck
         run: shellcheck scripts/tf-init.sh scripts/audit.sh
+
+  gitleaks:
+    name: gitleaks secret scan (full history + working tree)
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+    steps:
+      # Full history: gitleaks git scans `git log -p` of every ref, which a
+      # shallow clone would silently truncate.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Pinned binary download instead of gitleaks/gitleaks-action: the
+      # action requires a GITLEAKS_LICENSE secret for org-owned repos (this
+      # CI carries no secrets by design) and exposes neither --redact nor
+      # the git+dir two-scan shape below. Same install pattern as tflint
+      # above, and the exact version the .gitleaks.toml allowlist entries
+      # were verified against — keep the two in lockstep.
+      - name: Install gitleaks
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
+          mkdir -p "$HOME/.local/bin"
+          tar xzf /tmp/gitleaks.tgz -C "$HOME/.local/bin" gitleaks
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # `gitleaks git` with no --log-opts scans `git log -p` with
+      # --full-history --all under the hood, so every ref is covered, not
+      # just the checked-out branch. --redact keeps a finding from printing
+      # the matched secret into the CI log.
+      - name: gitleaks git (full history, all refs)
+        run: gitleaks git --config .gitleaks.toml --redact -v .
+
+      # Working tree separately: dir mode also covers untracked files the
+      # history scan cannot see.
+      - name: gitleaks dir (working tree)
+        run: gitleaks dir --config .gitleaks.toml --redact -v .

@@ -1,0 +1,42 @@
+# Gitleaks configuration. CI pins the gitleaks version (see the gitleaks job
+# in .github/workflows/ci.yml); local scans must use the same release, since
+# these allowlist entries were verified against exactly that ruleset.
+#
+# Division of labor with scripts/audit.sh (README "Repository hygiene"):
+# gitleaks owns the generic credential shapes, upstream-maintained, in CI;
+# audit.sh owns this-machine identity and PII classes plus the
+# zero-dependency pre-push layer. Extending the built-in defaults rather
+# than re-declaring rules keeps the credential shapes upstream's job.
+#
+# This file adds allowlist entries ONLY for values that are synthetic by
+# construction; each entry below was a real local finding first, and a
+# blanket allow would defeat the point of the scan.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "audit-engine fixtures: synthetic detection data by definition"
+paths = [
+    # Every file under tests/fixtures/audit/ exists to trip a scripts/audit.sh
+    # detector in --selftest; its values are deterministic synthetics. The
+    # repo's own audit excludes this directory by path for the same reason.
+    # The leading boundary keeps this from matching lookalike directories,
+    # while still matching whether gitleaks was given a relative or absolute
+    # source path (findings carry the source's form).
+    '''(^|/)tests/fixtures/audit/''',
+]
+
+[[allowlists]]
+description = "audit.sh selftest synthetic AKIA literal"
+# scripts/audit.sh's selftest writes an ascending-alphabet key shape
+# (AKIA + ABCDEFGHIJKLMNOP) to prove the audit-allow marker can never
+# silence an AKIA key ID. audit.sh's own default mode excludes that file
+# by path (it must contain the detector patterns), which leaves gitleaks
+# as the only credential-shape scan over it — so allow the exact synthetic
+# value, never the whole file path. The named group splits the run so this
+# config does not itself carry the key-shaped literal: the repo audit scans
+# every tracked file, and its AKIA rule is deliberately never suppressible.
+regexes = [
+    '''^AKIAABCDEFGH(?P<synthetic>IJKLMNOP)$''',
+]

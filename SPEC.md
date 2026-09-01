@@ -1581,14 +1581,15 @@ POSIX sh (macOS-compatible). Usage: `scripts/tf-init.sh <bootstrap|infrastructur
 
 ## Task T7 — `scripts/audit.sh` + fixtures + self-test
 
-Default mode: scan `git ls-files -z` text + `git log -p --all` (excluding `tests/fixtures/audit/`) for: `AKIA[0-9A-Z]{16}`, `ASIA[0-9A-Z]{16}`, secret-key assignments, `mi-[a-f0-9]{8,}`, UUID literals, `https://…awsapps.com/start`, email addresses, 12-digit account IDs in AWS-keyed contexts. Also: if local `terraform/bootstrap/terraform.tfvars` exists, its bucket name, plus `whoami`/hostname values, must not appear in tracked files. Exit 1 on any finding. `--selftest`: run the same engine over `tests/fixtures/audit/` (synthetic values only) and exit 0 iff every fixture is detected. Red first: `sh -c 'scripts/audit.sh --selftest'` fails before implementation. CI runs both modes.
+Default mode: scan `git ls-files -z` text + `git log -p --all` (excluding `tests/fixtures/audit/`) for the **machine-identity and PII classes only**: `mi-[a-f0-9]{8,}` managed-node IDs, UUID literals (SSM activation IDs are AWS-workflow-specific — no gitleaks rule carries them), `https://…awsapps.com/start` URLs, email addresses, 12-digit account IDs in AWS-keyed contexts, tracked/historical `*.tfstate`/`*.tfstate.*` paths, user-specific absolute home/`Users` paths, the hostname/username/personal-name/serial/profile label vocabularies, and the runtime per-machine values — the local `terraform/bootstrap/terraform.tfvars` bucket name plus `whoami`/hostname — which must not appear in tracked files or history. Generic credential shapes (access-key IDs, secret-key assignments, session/security tokens, private keys) are delegated to gitleaks in CI (T8 job 4); audit.sh checks them only in the `--message-file` commit-message gate — the one layer that scans message text, which gitleaks (blobs and patches) never does. Exit 1 on any finding. `--selftest`: run the same engine over `tests/fixtures/audit/` (synthetic values only) and exit 0 iff every fixture is detected. Red first: `sh -c 'scripts/audit.sh --selftest'` fails before implementation. CI runs both modes.
 
 ## Task T8 — CI + analyzer settings
 
-`.github/workflows/ci.yml`, three jobs, no secrets:
+`.github/workflows/ci.yml`, four jobs, no secrets:
 1. **terraform** — hashicorp/setup-terraform (1.14.x); per stack: `fmt -check -recursive`, `init -backend=false`, `validate`, `test`; plus `tflint` (no AWS plugin).
 2. **pwsh** — same PowerShell container as local; `Invoke-Pester tests/unit`; `Invoke-ScriptAnalyzer -Path scripts/windows -Recurse -Settings .PSScriptAnalyzerSettings.psd1`.
 3. **shell** — `sh tests/tf-init.test.sh`, `scripts/audit.sh --selftest`, `scripts/audit.sh`.
+4. **gitleaks** — pinned release (exact version, same locally and in CI); `gitleaks git --config .gitleaks.toml --redact .` over the full history of all refs plus `gitleaks dir` over the working tree. `.gitleaks.toml` extends the built-in default ruleset and allowlists only this repo's verified synthetic values. Owns the generic credential shapes per the T7 division.
 
 `.PSScriptAnalyzerSettings.psd1`: `PSUseCompatibleSyntax` with `TargetVersions = @('5.1','7.0')`. CI itself is validated on first push (V0).
 
