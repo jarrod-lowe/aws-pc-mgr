@@ -446,6 +446,48 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       (R47 pre-launch re-read, sentinel, verify-before-execute),
     #       temp cleanup (self-owned artifact), check.ps1 (read-only)
     #       - CLOSED, no further cells
+    #   report-only query soft-fail (round 54 class sweep) - failure
+    #       handling proportional to the query's role: fail-closed (exit)
+    #       belongs to DECISION queries, where acting on unknown state is
+    #       dangerous; a query is REPORT-only when nothing but console
+    #       output follows it, and after a completed-and-verified
+    #       irreversible act it must fail SOFT - degraded wording, full
+    #       result still reported. Sweep of every query after such an
+    #       act: Reregister FINAL service read (the completion message's
+    #       status arm) - was routed through Get-ServiceInfoOrFail, whose
+    #       exit-1 suppressed 'Local registration cleared.' and the
+    #       fresh-activation guidance over a TRANSIENT query failure;
+    #       VIOLATION, fixed: the read is taken locally in try/catch and
+    #       a failed read prints its own arm (status unknown, explicitly
+    #       not a claim of stopped or running, plus $stopNote for what
+    #       the run actually did to the service) while the verified clear
+    #       result and the re-enrollment guidance always print; the
+    #       read-ok arms (stopped / restarted-by-another / vanished) are
+    #       unchanged from round 53. Register post-enrollment
+    #       registration read - ADJUDICATED: that read IS the act's
+    #       verification (it runs before 'completed-and-verified'
+    #       applies), and its failure exits 1 with
+    #       partial-completion guidance. Register post-enrollment
+    #       service queries (the exists check plus the repair helper's
+    #       reads) - ADJUDICATED: decision queries, repairs and the
+    #       health verdict still hang on them, fail-closed is
+    #       proportionate, and the failure exit is truthful (nothing
+    #       further was changed by THIS run, inspect, re-run - the
+    #       persisted registration makes the re-run classify and act
+    #       safely). Register success-boundary guard - ADJUDICATED: a
+    #       verdict gate that REPLACES the success report with an
+    #       accurate drift report (naming the consumed activation), not
+    #       an abort of reporting. Post-clear registration guard -
+    #       ADJUDICATED: the clear's verifier; its failure mode IS the
+    #       drift report. NoOperation/StartService - no irreversible act
+    #       precedes their queries. Net: exactly one report-only query
+    #       ran after a point of no return; it is now soft. Not
+    #       child-process-drivable (the confirmation prompt blocks closed
+    #       stdin first); the pin is this disposition, same V4
+    #       scratch-copy form (the service reader throws at the final
+    #       read; pre-fix, exit 1 with the clear unreported; post-fix,
+    #       the clear result, the unknown arm, and the guidance all
+    #       print, exit 3 per the branch contract)
     #   post-clear absence revalidation (Reregister) - the postcondition-
     #       adjacency member of the class invariant, and the clear's
     #       POST-condition joining the PRE-condition above:
@@ -471,7 +513,9 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       report-adjacent (round 53): its STOPPED claim is read at the
     #       boundary, so a service another actor restarted (or removed)
     #       prints its truthful variant instead of the stopped claim
-    #       from the stop sequence's earlier state.
+    #       from the stop sequence's earlier state - and (round 54) a
+    #       FAILED read prints an explicit unknown arm, which is not a
+    #       claim, instead of aborting the report.
     # This file has no static source-text assertions (its always-runnable
     # tier is the parser and contract checks only), so the committed
     # coverage is what IS drivable: the parse check above runs over the

@@ -76,7 +76,11 @@
     record re-reads as gone, because a captured exit code 0 is the
     agent's claim, not proof the file left the disk. The completion
     message's STOPPED claim is likewise read at the boundary, never
-    asserted from the stop sequence's earlier state (SPEC 22/23).
+    asserted from the stop sequence's earlier state, and a FAILED final
+    query degrades that wording to 'unknown' instead of suppressing the
+    verified clear result and the re-enrollment guidance: past the point
+    of no return, reporting must complete - fail-closed exits belong to
+    decision queries, fail-soft wording to report-only ones (SPEC 22/23).
 
     The activation code is never a parameter and never appears on a command
     line (SPEC 20): it is read with a masked prompt via Read-SsmSecret, and
@@ -1243,10 +1247,33 @@ if ($action -eq 'Reregister') {
     # at the boundary, instead of being asserted from the stop sequence's
     # earlier state - another actor can restart the service inside the
     # clear window, and the message must match the machine.
-    $serviceAtReport = Get-ServiceInfoOrFail
+    #
+    # Failure handling is PROPORTIONAL TO THE QUERY'S ROLE: the point of
+    # no return has passed (the clear completed and its postcondition was
+    # verified by the guard above), and this read feeds ONLY the wording
+    # below - nothing follows it but console output - so it is a
+    # REPORT-only query and must fail SOFT. The fail-closed wrapper
+    # belongs to DECISION queries, where acting on unknown state is
+    # dangerous; exiting here instead would misreport a COMPLETED
+    # destructive operation over a transient query failure, burying the
+    # verified clear result and the fresh-activation guidance under an
+    # unrelated error report. A failed read degrades the wording to
+    # 'unknown' - which is not a claim of any state - and reporting
+    # completes.
+    $serviceAtReport = $null
+    $serviceReadFailed = $false
+    try {
+        $serviceAtReport = Get-SsmServiceInfo
+    } catch {
+        $serviceReadFailed = $true
+    }
 
     Write-Step 'Local registration cleared.'
-    if (-not $serviceAtReport.Exists) {
+    if ($serviceReadFailed) {
+        Write-Host 'The AmazonSSMAgent service status could not be queried at the final read; its'
+        Write-Host 'current status is unknown (unknown is not a claim of stopped or running).'
+        Write-Host ('What this run did to the service: ' + $stopNote + '. Check: Get-Service AmazonSSMAgent.')
+    } elseif (-not $serviceAtReport.Exists) {
         Write-Host 'The AmazonSSMAgent service no longer exists at the final read (the agent'
         Write-Host 'installation changed under this run).'
     } elseif ($serviceAtReport.Status -eq 'Stopped') {
