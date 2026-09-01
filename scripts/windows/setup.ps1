@@ -60,22 +60,23 @@
     the Running/Automatic invariant still does not hold - so the branches
     cannot drift apart in ordering again.
 
-    The destructive clear is guarded the same way the launch and the
-    success report are: Reregister re-reads the registration immediately
-    before launching amazon-ssm-agent -register -clear - after the
-    operator confirmation and the service stop - and aborts (exit 3,
-    nothing cleared) unless the record is still exactly what the
-    confirmation covered. Gone, emptied, rewritten, or replaced by
-    another enrollment inside the window is a decision the operator must
-    make again against the new state, never something this run clears
-    blind; a record that was unusable (empty or unparseable) at
-    classification still clears while it is STILL unusable (SPEC 22/23).
-    The clear's own postcondition is verified at the same boundary:
-    'Local registration cleared.' prints only after the raw record
-    re-reads as gone, immediately after the native command - a file still
-    present in any form, or an unreadable one, is reported as drift,
-    because a captured exit code 0 is the agent's claim, not proof the
-    file left the disk.
+    The destructive sequence is guarded the same way the launch and the
+    success report are: Reregister revalidates the registration
+    immediately before EVERY side-effectful step - once before the
+    service stop (a stale run must not take a replacement identity's
+    agent offline) and again immediately before
+    amazon-ssm-agent -register -clear - comparing the classification-time
+    record on the finest basis each state class offers: the parsed
+    identity where the record parsed, the RAW content where it did not,
+    so every classified state can detect replacement. The service must
+    also still be stopped at the clear boundary (a restarted agent is
+    exactly what the stop-before-clear sequence exists to prevent), and
+    the clear's own postcondition is verified immediately after the
+    native command: 'Local registration cleared.' prints only when the
+    record re-reads as gone, because a captured exit code 0 is the
+    agent's claim, not proof the file left the disk. The completion
+    message's STOPPED claim is likewise read at the boundary, never
+    asserted from the stop sequence's earlier state (SPEC 22/23).
 
     The activation code is never a parameter and never appears on a command
     line (SPEC 20): it is read with a masked prompt via Read-SsmSecret, and
@@ -482,41 +483,55 @@ function Get-SsmRegistrationForSuccessReport {
     exit 3
 }
 
-# Registration revalidation immediately before the DESTRUCTIVE CLEAR of the
-# Reregister action (SPEC 22/23) - the third binding of the adjacency
-# invariant: R47 bound the enrollment launch (re-read the registration
-# absence immediately before ssm-setup-cli runs), dd8c0b4 bound the success
-# report (re-read the registration immediately before printing a healthy
-# verdict); this binds the clear. The registration that CLASSIFIED this
-# branch was read at the top of the run, and the Reregister flow spends
-# unbounded wall-clock after that - an interactive confirmation a human
-# can sit on, then a service stop - long enough for another setup process
-# to replace the registration entirely. Clearing blind at that point
-# destroys an identity the operator never inspected and never confirmed;
-# the confirmation covered the record AS IT STOOD when the machine was
-# classified, and only that record may be cleared.
+# Registration revalidation before the DESTRUCTIVE STEPS of the Reregister
+# action (SPEC 22/23) - called TWICE, immediately before each side-effectful
+# mutation, because in a destructive sequence every mutation is damage-if-
+# stale, not mere preparation for the one after it: once before the service
+# STOP (a stale run must not take a replacement identity's agent offline
+# and leave the newly enrolled node dark until repaired) and once
+# immediately before amazon-ssm-agent -register -clear. The registration
+# that CLASSIFIED this branch was read at the top of the run, and the
+# Reregister flow spends unbounded wall-clock after that - an interactive
+# confirmation a human can sit on, then the stop - long enough for another
+# setup process to replace the registration entirely. Acting blind at
+# either point destroys - or takes offline - an identity the operator
+# never inspected and never confirmed; the confirmation covered the record
+# AS IT STOOD when the machine was classified, and only that record may be
+# acted on. The guard is pure (reads and comparisons only), so calling it
+# twice is idempotent.
 #
 # Proceed/abort matrix (the classification shape decides what 'still the
-# confirmed record' means; 'unusable' = empty or unparseable):
+# confirmed record' means; 'unusable' = empty or unparseable). The
+# comparison basis is the FINEST AVAILABLE for each state class - the
+# parsed identity where the record parsed, the RAW content where it did
+# not - so every classified state can detect replacement:
 #   classified PARSEABLE (an identity the operator saw named):
 #     - re-reads as the SAME managed node ID                -> proceed
+#       (same ID with different auxiliary fields is the same
+#        confirmed identity; the identity is the confirmed unit)
 #     - parses to a DIFFERENT ID                            -> abort
 #     - gone, emptied, unreadable, or unparseable NOW       -> abort
 #   classified UNUSABLE (empty or unparseable, cleared sight-unseen by
-#   design - there is no identity to compare):
-#     - still unusable in ANY unusable shape                -> proceed
+#   design - no parsed identity to compare, so the raw record itself is):
+#     - raw content IDENTICAL to the classification read     -> proceed
+#       (the exact bytes the confirmation covered, in whatever
+#        unusable shape they were confirmed in)
+#     - raw content DIFFERS                                 -> abort
+#       (rewritten inside the window - for example a competing
+#        enrollment part-way through writing its own record - and
+#        the confirmation never covered the new content)
 #     - parses to a real registration NOW                   -> abort
 #       (an identity appeared that the confirmation never covered)
 #     - the file is gone NOW                                -> abort
-#       (nothing left to clear; the machine changed anyway)
+#       (nothing left to act on; the machine changed anyway)
 # A re-read that itself fails aborts for every entry (fail closed).
 #
 # Disposition - exit 3, the manual-intervention/race family: the operator
 # must decide again against the new state, exactly like every other
-# registration ambiguity this script refuses to resolve alone. The
-# calling branch may already have STOPPED the service by the time this
-# runs, so $ChangesSoFar names what the run already did and the report
-# says the clear did not run rather than claiming nothing changed.
+# registration ambiguity this script refuses to resolve alone. By the
+# second call site the run may already have STOPPED the service, so
+# $ChangesSoFar names what the run already did and the report says what
+# did not run rather than claiming nothing changed.
 # Returns normally only when the record is still the confirmed one, or
 # never returns.
 function Assert-SsmRegistrationBeforeClear {
@@ -573,9 +588,17 @@ function Assert-SsmRegistrationBeforeClear {
                 $drift = 'The record was unusable (empty or unparseable) when this run classified it, but parses to a real registration NOW: another enrollment completed inside the window, and the confirmation never covered that identity.'
             } elseif ($null -eq $currentJson) {
                 $drift = 'The registration file is gone NOW; there is nothing left to clear, and the machine changed inside the window.'
+            } elseif ($currentJson -cne $ClassifiedRegistrationJson) {
+                # Finest available basis for the unusable class: the raw
+                # record itself. Still-unparseable content that DIFFERS
+                # from the classification read is a replacement (for
+                # example a competing enrollment part-way through writing
+                # its own record), not the bytes the confirmation covered.
+                $drift = 'The record is still unusable, but its CONTENT differs from what classification read: it was rewritten inside the window, and the confirmation never covered the new content.'
             }
-            # Anything else is a record still unusable in some shape - the
-            # very thing the confirmation covered - so the clear proceeds.
+            # What remains is an unusable record byte-identical to the
+            # classification read - the exact bytes the confirmation
+            # covered - so the act it confirmed proceeds.
         }
     }
 
@@ -655,9 +678,10 @@ function Assert-SsmRegistrationCleared {
     Write-Host 'run, and neither is retried automatically (SPEC 22/23). The machine may be'
     Write-Host 'registered with an identity this run never inspected.'
     Write-Host ('Inspect: the registration file under ' + $env:ProgramData + '\Amazon\SSM\InstanceData;')
-    Write-Host 'Get-Service AmazonSSMAgent (deliberately left stopped); the SSM Agent log. Then'
-    Write-Host 're-run this script: it classifies whatever the machine holds now and takes the'
-    Write-Host 'appropriate action (a registered machine is reported, not re-enrolled).'
+    Write-Host 'Get-Service AmazonSSMAgent (this run stopped it; verify its current state); the'
+    Write-Host 'SSM Agent log. Then re-run this script: it classifies whatever the machine'
+    Write-Host 'holds now and takes the appropriate action (a registered machine is reported,'
+    Write-Host 'not re-enrolled).'
     exit 3
 }
 
@@ -1080,9 +1104,21 @@ if ($action -eq 'Reregister') {
     # stopped. The service is deliberately NOT started again in this run: with
     # no registration left it has nothing to run with, and the fresh Register
     # run (a new activation) brings it back. $stopNote records what this run
-    # actually did here, for the pre-clear guard's drift report below.
+    # actually did here, for the second guard call's drift report below.
+
+    # Revalidation before the FIRST service mutation, not only before the
+    # clear: the stop is itself damage-if-stale. If another setup replaced
+    # the registration while this run waited on the confirmation prompt,
+    # stopping now would take the REPLACEMENT identity's agent offline -
+    # the pre-clear revalidation would still abort the clear, but the
+    # newly enrolled node would sit dark until something repaired it. The
+    # same guard runs here, before any mutation has happened, so drift is
+    # refused while refusal is still free. Between this guard and the
+    # Stop-Service below there is no statement other than the branch
+    # decision (a read taken just above it).
     $stopNote = 'nothing at all'
     $serviceBeforeClear = Get-ServiceInfoOrFail
+    Assert-SsmRegistrationBeforeClear -ClassifiedRegistrationJson $registrationJson -ChangesSoFar $stopNote
     if (-not $serviceBeforeClear.Exists) {
         Write-Step 'AmazonSSMAgent service not found; nothing to stop before the clear.'
         $stopNote = 'the AmazonSSMAgent service was not found, so nothing was stopped'
@@ -1109,15 +1145,40 @@ if ($action -eq 'Reregister') {
         exit 3
     }
 
-    # Destructive-act adjacency, the third binding of the class invariant
-    # (see Assert-SsmRegistrationBeforeClear above): the registration that
+    # Destructive-act adjacency, the second call of the same guard (see
+    # Assert-SsmRegistrationBeforeClear above): the registration that
     # classified this branch was read before an interactive confirmation a
     # human can sit on and before the service stop, so the clear runs only
     # after the record is re-read immediately beforehand and is still
     # exactly what the confirmation covered. Between this guard and the
     # native clear below there is no mutation and no slow step - only the
+    # stopped re-verification directly below (a read) and the
     # error-preference juggling the native call itself needs.
     Assert-SsmRegistrationBeforeClear -ClassifiedRegistrationJson $registrationJson -ChangesSoFar $stopNote
+
+    # The clear is justified by TWO facts, so both are read at its
+    # boundary: the registration identity (revalidated just above) and the
+    # service being stopped - verified after the stop, several statements
+    # ago. A service another actor restarted in between is exactly what
+    # the documented stop-before-clear sequence exists to prevent: a
+    # running agent can hold or rewrite its registration data while
+    # -register -clear runs, turning the clear into a partial one the
+    # post-clear guard could only REPORT, not prevent. So the stopped fact
+    # is re-read here, immediately before the mutation, like every other
+    # justifying fact; a running service aborts, and deliberately without
+    # re-stopping: an actor actively restarting the agent mid-sequence is
+    # the operator's fight, not this run's (bounded, like every repair
+    # here).
+    $serviceAtClearBoundary = Get-ServiceInfoOrFail
+    if ($serviceAtClearBoundary.Exists -and ($serviceAtClearBoundary.Status -ne 'Stopped')) {
+        Write-Fail ("AmazonSSMAgent is running again at the clear boundary (status '" + $serviceAtClearBoundary.Status + "'); the clear was NOT run.")
+        Write-Host 'The documented clear sequence requires the agent stopped (a running agent can'
+        Write-Host 'hold or rewrite its registration data mid-clear). Another actor restarted it'
+        Write-Host 'after this run stopped it, so the registration was NOT cleared and the stop is'
+        Write-Host 'not re-fought against that actor. Inspect: Get-Service AmazonSSMAgent and the'
+        Write-Host 'SSM Agent log, then re-run (the confirmation is asked for again).'
+        exit 3
+    }
 
     Write-Step 'Clearing the local registration (amazon-ssm-agent -register -clear).'
     # Native-call discipline, mirroring Invoke-SsmEnrollment in
@@ -1177,11 +1238,26 @@ if ($action -eq 'Reregister') {
     # and the message.
     Assert-SsmRegistrationCleared -ChangesSoFar ($stopNote + '; ran the clear, which reported success (exit code 0)')
 
+    # Report adjacency for the completion message: the STOPPED claim is a
+    # machine-state fact like any other reported fact, so it is read here,
+    # at the boundary, instead of being asserted from the stop sequence's
+    # earlier state - another actor can restart the service inside the
+    # clear window, and the message must match the machine.
+    $serviceAtReport = Get-ServiceInfoOrFail
+
     Write-Step 'Local registration cleared.'
-    Write-Host 'AmazonSSMAgent has deliberately been left STOPPED: without a registration it'
-    Write-Host 'has nothing to run with. Re-enroll by running this script again WITHOUT'
-    Write-Host '-ForceReregister, providing a fresh activation (the previous one is consumed);'
-    Write-Host 'that Register run starts AmazonSSMAgent again with the new identity.'
+    if (-not $serviceAtReport.Exists) {
+        Write-Host 'The AmazonSSMAgent service no longer exists at the final read (the agent'
+        Write-Host 'installation changed under this run).'
+    } elseif ($serviceAtReport.Status -eq 'Stopped') {
+        Write-Host 'AmazonSSMAgent has deliberately been left STOPPED: without a registration it'
+        Write-Host 'has nothing to run with.'
+    } else {
+        Write-Host ("AmazonSSMAgent was left stopped by this run, but another actor has started it again (status '" + $serviceAtReport.Status + "').")
+    }
+    Write-Host 'Re-enroll by running this script again WITHOUT -ForceReregister, providing a'
+    Write-Host 'fresh activation (the previous one is consumed); that Register run starts'
+    Write-Host 'AmazonSSMAgent again with the new identity.'
     exit 3
 }
 

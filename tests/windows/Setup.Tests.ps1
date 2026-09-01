@@ -360,31 +360,92 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       module-internal enrollment ordering (download, signature
     #       verify, pre-launch re-read, launch) - PASS, verify before
     #       execute, out of this file's scope
-    #   pre-clear registration revalidation (Reregister) - destructive-act
-    #       adjacency, the third binding of the class invariant (R47
-    #       bound the launch, the success-boundary entry above bound the
-    #       report, this binds the clear): Assert-SsmRegistrationBeforeClear
-    #       re-reads the registration immediately before
-    #       amazon-ssm-agent -register -clear, after the operator
-    #       confirmation and the service stop, and the clear runs only
-    #       when the record is still exactly what the confirmation
-    #       covered. Classified parseable: the SAME managed node ID is
-    #       required; gone, emptied, rewritten-unusable, a different ID,
-    #       or an unreadable re-read aborts. Classified unusable (empty
-    #       or unparseable - cleared sight-unseen by design, no identity
-    #       to compare): still unusable in any shape proceeds; a record
-    #       that now PARSES aborts (an identity the confirmation never
-    #       covered); the file gone aborts. Drift exits 3 (race/
-    #       manual-intervention family; the operator re-confirms against
-    #       the new state) naming what the run already did ($stopNote:
-    #       stopped the service / already stopped / service missing).
+    #   pre-stop + pre-clear registration revalidation (Reregister) -
+    #       destructive-sequence adjacency: in a destructive sequence
+    #       every side-effectful mutation is damage-if-stale, not mere
+    #       preparation for the next, so Assert-SsmRegistrationBeforeClear
+    #       is called TWICE - immediately before the service STOP (a
+    #       stale run must not take a replacement identity's agent
+    #       offline and leave the newly enrolled node dark until
+    #       repaired) and again immediately before
+    #       amazon-ssm-agent -register -clear, both after the operator
+    #       confirmation. The comparison basis is the FINEST AVAILABLE
+    #       for each classified shape, so every classified state can
+    #       detect replacement: parseable -> the managed node ID (same
+    #       ID with different auxiliary fields proceeds - the identity
+    #       is the confirmed unit; a different ID, gone, emptied,
+    #       rewritten-unusable, or an unreadable re-read aborts);
+    #       unusable (empty or unparseable, cleared sight-unseen by
+    #       design) -> the RAW record content (byte-identical to the
+    #       classification read proceeds - the exact bytes the
+    #       confirmation covered; content that DIFFERS aborts, e.g. a
+    #       competing enrollment part-way through writing its own
+    #       record; a record that now PARSES aborts; the file gone
+    #       aborts). Drift exits 3 (race/manual-intervention family;
+    #       the operator re-confirms against the new state) naming what
+    #       the run already did ($stopNote: stopped the service /
+    #       already stopped / service missing). The clear is justified
+    #       by a SECOND fact too - the service being stopped - so it is
+    #       re-read AT the clear boundary (after the registration
+    #       guard, immediately before the native command): a service
+    #       another actor restarted aborts the clear (a running agent
+    #       can hold or rewrite its registration data mid-clear; the
+    #       post-clear guard could only report that partial clear, not
+    #       prevent it), deliberately without re-stopping - bounded,
+    #       an actively-restarting actor is the operator's fight.
     #       Not child-process-drivable (no seams, and the confirmation
     #       prompt blocks on closed stdin before the branch acts); the
     #       committed pin is this disposition plus the parse check, and
-    #       the scratch-copy red/green demonstration (module readers
-    #       flip to a replaced identity at the pre-clear read; pre-fix,
-    #       the clear destroys the replacement; post-fix, exit 3 with
-    #       nothing cleared) runs on the validation machine in phase V4
+    #       the scratch-copy red/green demonstrations (module readers
+    #       flip to a replaced identity at the pre-stop read - pre-fix
+    #       the stop still ran and left the replacement's agent dark;
+    #       flip to different still-unparseable content - pre-fix the
+    #       clear destroyed content the operator never confirmed; a
+    #       service reader flips to Running at the boundary - pre-fix
+    #       the clear ran against the restarted agent; post-fix each
+    #       is exit 3 with the mutation withheld) run on the validation
+    #       machine in phase V4
+    #   Reregister adversarial closure matrix (round 53) - state class x
+    #       mutation x window, 'can the script damage or misreport on
+    #       stale state here?', every cell fixed or adjudicated:
+    #       W1 classification -> pre-stop revalidation: any
+    #       registration drift (replaced identity, replaced unusable
+    #       content, became-parseable, vanished) is caught BEFORE any
+    #       mutation - FIXED this round (was: stop ran first)
+    #       W2 pre-stop revalidation -> Stop-Service: no statement
+    #       between the guard and the mutation beyond the branch
+    #       decision; check-then-act at irreducible scale, the stop is
+    #       reversible, and the pre-clear guard re-runs - ADJUDICATED
+    #       W3 stop -> clear: identity/raw drift caught by the pre-clear
+    #       revalidation (adjacent); a service restarted in the window
+    #       caught by the stopped re-verification AT the clear boundary
+    #       - boundary check FIXED this round (was: clear ran against a
+    #       restarted agent with only post-clear detection);
+    #       same-ID-different-fields proceeds - ADJUDICATED (the
+    #       identity is the confirmed unit); statements between the
+    #       boundary read and the native command are the irreducible
+    #       R47-scale residue - ADJUDICATED
+    #       W4 clear -> post-clear read: a surviving or reappearing
+    #       record caught by the post-clear guard (one branch for
+    #       remained/reappeared - a captured exit 0 cannot distinguish
+    #       them, and the disposition is identical) - ADJUDICATED
+    #       (round 51)
+    #       W5 post-clear read -> report: reads only between; the
+    #       completion message's STOPPED claim is read at the boundary
+    #       (stopped / restarted-by-another-actor / service-vanished
+    #       each print their truthful variant) - FIXED this round
+    #       misreport cells: every exit-3 report in the branch states
+    #       only run-history facts ('the clear did NOT run', $stopNote)
+    #       and machine facts read immediately above its own print; no
+    #       code path prints a managed node ID that was not just
+    #       re-read; the not-confirmed and exe-missing exits precede
+    #       any mutation - ADJUDICATED
+    #       outside Reregister: repairs (helper reads before each
+    #       mutation, both-facts verdict after, registration guarded at
+    #       the report boundary - rounds 49/51), enrollment launch
+    #       (R47 pre-launch re-read, sentinel, verify-before-execute),
+    #       temp cleanup (self-owned artifact), check.ps1 (read-only)
+    #       - CLOSED, no further cells
     #   post-clear absence revalidation (Reregister) - the postcondition-
     #       adjacency member of the class invariant, and the clear's
     #       POST-condition joining the PRE-condition above:
@@ -401,12 +462,16 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       cannot distinguish a clear that lied from a concurrent
     #       enrollment that wrote afterwards, and the disposition is
     #       identical, so the code does not pretend to the distinction.
-    #       Same drivability shape as the pre-clear entry above (the
-    #       confirmation prompt blocks closed stdin first); same V4
+    #       Same drivability shape as the pre-stop/pre-clear entry above
+    #       (the confirmation prompt blocks closed stdin first); same V4
     #       scratch-copy proof form (readers flip to present-at-the-post-
     #       read; pre-fix, 'Local registration cleared.' prints over the
     #       surviving record; post-fix, the drift report and exit 3
-    #       replace it)
+    #       replace it). The completion message that follows is itself
+    #       report-adjacent (round 53): its STOPPED claim is read at the
+    #       boundary, so a service another actor restarted (or removed)
+    #       prints its truthful variant instead of the stopped claim
+    #       from the stop sequence's earlier state.
     # This file has no static source-text assertions (its always-runnable
     # tier is the parser and contract checks only), so the committed
     # coverage is what IS drivable: the parse check above runs over the
