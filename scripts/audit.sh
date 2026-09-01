@@ -177,7 +177,10 @@
 # runner those runtime values can never be the Windows machine's. The
 # username label is the bare two-word `user…name` (the label matches a
 # span, so `Windows username` needs no prefix handling of its own; the
-# bare `user` is deliberately not a label), the hostname label alternates
+# bare `user` is deliberately not a label) plus, since round 50, the
+# Windows event/security field `account…name` (`Account Name:
+# alice.smith`; the class's INCLUDE rows live in WINUSER_LABEL_FORMS);
+# the hostname label alternates
 # `…name` with each word of its single-source qualifier-word set
 # (HOSTNAME_NAME_WORDS: host, computer, machine, device — the last is the
 # Windows 11 Settings `Device name` spelling, round 48), and each value anchor is
@@ -231,7 +234,16 @@
 # and, since round 48, the SSO-qualified forms (`SSO Profile: corp-admin`,
 # `AWS SSO Profile: corp-admin`, whose separator machinery covers
 # sso_profile, SSOProfile, sso-profile and sso.profile alike);
-# AWS_PROFILE_LABEL_FORMS is the single source of the accepted forms. The
+# AWS_PROFILE_LABEL_FORMS is the single source of the accepted forms.
+# Since round 50 the CLI FLAG spelling is a form too (thread 3908851576):
+# a committed invocation `aws sso login --profile corp-admin` names the
+# selected profile exactly like `AWS_PROFILE=corp-admin`, so
+# AWS_PROFILE_FLAG_FORMS (the `--profile` global option) is detected with
+# its own separator family — whitespace plus an optional opening quote, or
+# the standard assignment separators (`--profile=corp-admin`) — and the
+# composed AWS_PROFILE_ANCHOR is the one alternation the detector and the
+# GENERIC_PROFILES gate share, so the gate's doc-filler rule applies to
+# flag captures exactly as to assignment captures. The
 # runtime $AWS_PROFILE guard in default_audit applies the same rule and the
 # same set.
 #
@@ -263,6 +275,17 @@
 # capture keeps the finding — over-detection remains the safe direction —
 # and only a capture in which NO token holds the tier's property is
 # skipped.
+#
+# Table-shaped sources (round 50, thread 3908851584): `wmic bios get
+# serialnumber` — cited above — prints the `SerialNumber` header alone on
+# its row with the value on the row(s) below, and no same-line anchor can
+# see that shape. The following-row association pass
+# (scan_following_rows, driven by FOLLOWING_ROW_DETECTORS) rewrites such a
+# pair into a synthesized same-line hit (`SerialNumber := ABC12345`,
+# numbered with the value row) that re-enters through THIS gate, so both
+# tiers' floors and the letter/digit property decide on an associated
+# value exactly as on an inline one; the per-family sweep table lives at
+# the registry.
 #
 # The user-home-path shape detector (Windows drive-letter form, macOS
 # /Users form, Linux /home form) anchors on the ORIGINAL line: the username
@@ -323,8 +346,9 @@
 #   from its own scan: the literals still get pushed. The value pools in
 #   MATRIX_LABEL_SETS and the word-set pools that generate its rows
 #   (HOSTNAME_MATRIX_VALUES, PERSONAL_NAME_MATRIX_VALUES,
-#   AWS_PROFILE_MATRIX_VALUES), st_shape_matrix, st_value_tables,
-#   st_charsweep, st_gate_sweep, st_hook_smoke, st_binary_decode and
+#   AWS_PROFILE_MATRIX_VALUES, WINUSER_MATRIX_VALUES), st_shape_matrix,
+#   st_value_tables, st_table_rows, st_charsweep, st_gate_sweep,
+#   st_hook_smoke, st_binary_decode and
 #   st_message_file are the enforcement points of this rule.
 #
 #   HARD RULE (no exception, by construction): the marker NEVER suppresses
@@ -431,6 +455,10 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 #   profile     self-referential filler (`AWS_PROFILE=profile`)
 #   none        documentation/CI "leave unset" spelling
 #   test        CI example value
+#   flag,option flag-SYNTAX boilerplate (round 50, with the CLI-flag label
+#               form): the words that follow the flag spelling in
+#               documentation prose ("the --profile flag/option selects…")
+#               name the SYNTAX ELEMENT, never a profile anyone selected
 # The aws-sso-profile value anchor is a shape-free run of any length
 # (letter-only
 # names are real), so emit_hits's generic-value gate excludes these AFTER the
@@ -440,7 +468,7 @@ GENERIC_USERS=' root admin administrator user users runner ubuntu ci build build
 # names without a real-vs-filler exception); the runtime guard below keeps
 # its own separate skip for it, because substring-scanning the ordinary
 # English word would be breakage rather than detection.
-GENERIC_PROFILES=' example examples placeholder value name profile none test '
+GENERIC_PROFILES=' example examples placeholder value name profile none test flag option '
 # Generic personal-name VALUES (lowercased, matched whole by the same
 # `*" word "*` idiom): form boilerplate a name-shaped value can carry
 # without naming anyone. The personal-name VALUE anchor is name-shaped by
@@ -459,7 +487,17 @@ GENERIC_NAMES=' not applicable not provided unknown anonymous test user sample u
 #   the, your, this, name, value  ordinary doc words after a colon
 #   none, unknown                 self-describing absent data
 #   example, placeholder          documentation filler
-GENERIC_LABELED_USERS=' the your this name value none unknown example placeholder … '
+#   -                            the Windows event-log EMPTY-field marker
+#                                (`Account Name: -` in every security
+#                                record; round 50, with the account…name
+#                                label form). The event-log BUILT-IN
+#                                accounts (SYSTEM, NETWORK SERVICE,
+#                                ANONYMOUS LOGON) are deliberately NOT
+#                                members: by the root/administrator rule
+#                                above a labeled built-in is a real
+#                                account and a finding — only the marker
+#                                that names NO account is filler.
+GENERIC_LABELED_USERS=' the your this name value none unknown example placeholder … - '
 # Generic LABELED-hostname values: doc filler a `hostname:`/`computer
 # name:` label can carry without naming a machine: localhost and the
 # self-referential hostname/computer/name words, the RFC-2606 example
@@ -569,11 +607,14 @@ GENERIC_LABELED_HOSTS=' localhost hostname computer name your the example.com ex
 # be shaped at all (letter-only names are real), so it is only
 # length-floored (AWS_PROFILE_VALUE) and the prose safety lives in the
 # generic-value gate emit_hits applies to that detector (GENERIC_PROFILES;
-# see header). The profile label is aws- or sso-qualified only
-# (AWS_PROFILE_LABEL_FORMS is the single source of the accepted forms) —
+# see header). The profile label is aws- or sso-qualified or CLI-flag
+# spelled (AWS_PROFILE_LABEL_FORMS and AWS_PROFILE_FLAG_FORMS are the
+# single sources of the accepted forms) —
 # bare `profile` is a documented HCL key — while the serial label needs no `machine` prefix
 # of its own: the label matches a span, so `MachineSerialNumber` is
-# covered by `serial…number` inside it.
+# covered by `serial…number` inside it. The serial class is also the one
+# family with a registered table-shape tier pair (FOLLOWING_ROW_DETECTORS):
+# its cited wmic source prints the value on a row after the header.
 #
 # The user-home-path detector is a SHAPE detector because what it anchors
 # on — a username inside a filesystem path — is case-bearing free text with
@@ -601,10 +642,12 @@ QUOTE_CLASS="[\"']?"
 LABEL_WORD_SEP='[[:space:]_.-]*'
 LABEL_ASSIGN='([=:]|:=)'
 # AWS_PROFILE_LABEL is the label+separator+quote anchor of the aws-sso-profile
-# detector, AWS_PROFILE_VALUE its value anchor. Both are shared between the
-# detector ERE in LABEL_DETECTORS and the generic-value gate in emit_hits
-# (GENERIC_PROFILES), so the gate always re-anchors EXACTLY the value tokens
-# the detector matched and the two can never drift apart. The value anchor is
+# detector's qualified forms, AWS_PROFILE_FLAG_LABEL the CLI-flag anchor,
+# AWS_PROFILE_VALUE the value anchor they share. The three compose into
+# AWS_PROFILE_ANCHOR, which is shared between the detector ERE in
+# LABEL_DETECTORS and the generic-value gate in emit_hits (GENERIC_PROFILES),
+# so the gate always re-anchors EXACTLY the value tokens the detector matched
+# and the two can never drift apart. The value anchor is
 # deliberately shape-free — one unbroken run of any length, because
 # letter-only profile names (`production`) are real — so the prose/placeholder
 # safety lives in the gate, not here.
@@ -632,37 +675,107 @@ LABEL_ASSIGN='([=:]|:=)'
 AWS_PROFILE_LABEL_FORMS='aws profile
 aws sso profile
 sso profile'
+# AWS_PROFILE_FLAG_FORMS — the CLI-flag spellings of the same label: word
+# sequences (the leading `--` is a token of its own, joined to the word by
+# the shared LABEL_WORD_SEP grammar) whose value follows by WHITESPACE or
+# the standard assignment separators (AWS_PROFILE_FLAG_SEP below), not by
+# an assignment separator alone. One form per line, each nameable to its
+# source (round 50, thread 3908851576: a committed invocation like
+# `aws sso login --profile corp-admin` produced no finding because every
+# accepted form required the label to be followed by `=` or `:`):
+#   -- profile  the AWS CLI's global `--profile` option (AWS CLI
+#               reference, global options; the reviewer's `aws sso login
+#               --profile corp-admin` shape and the `--profile=corp-admin`
+#               shorthand), the flag every aws subcommand takes
+# EXCLUDED, each with its reason: `--sso-profile` and every other
+# qualified flag spelling (no AWS CLI flag spells the qualified forms —
+# the global option is always `--profile`); a `--aws-profile` token (not
+# a spelling the CLI accepts).
+# FLAG-FORM CLASS SWEEP (round 50) over the other label vocabularies — a
+# flag spelling is added ONLY where one is a plausible committed-file
+# occurrence nameable to a source; every verdict is recorded here:
+#   machine-serial-number  NOT ADDED — the one CLI flag spelled from this
+#                          vocabulary, `aws sts get-session-token
+#                          --serial-number`, takes an MFA-device
+#                          identifier (an ARN in every source the audit
+#                          cites, already covered by account-id-arn); no
+#                          cited serial source (systeminfo, wmic, About
+#                          This Mac) passes the machine serial by flag
+#   hostname-labeled       NOT ADDED — no cited source takes the label as
+#                          a flag (systeminfo/Settings are dumps, not
+#                          CLIs)
+#   personal-name          NOT ADDED — the cited sources are form fields,
+#                          GECOS and directory dumps; no cited CLI flag
+#                          spells a name field (az ad-style CLIs are
+#                          outside this audit's cited sources)
+#   windows-username-…     NOT ADDED — `--user-name`-style flags (aws iam
+#                          create-user) name IAM users, not the Windows
+#                          machine accounts the §27 bullet and this
+#                          vocabulary cover
+# Single source like AWS_PROFILE_LABEL_FORMS: the ERE alternation composed
+# below and the selftest matrix rows st_label_matrix generates both derive
+# from this list — the next flag form is one line here, swept everywhere
+# by construction.
+AWS_PROFILE_FLAG_FORMS='-- profile'
 # AWS_PROFILE_MATRIX_VALUES — the value alternatives the generated matrix
 # rows rotate (SYNTHETIC-KEY CONVENTION: deterministic sequential patterns
 # only, never pseudo-random material).
 AWS_PROFILE_MATRIX_VALUES='mxprod7,9prod.name-x,MX-Prod_99'
-# Compose the alternation: each form's words joined with LABEL_WORD_SEP,
-# forms joined with `|`. Scratch variables are unset after — POSIX sh has
-# no local, and nothing below may see them.
-AWS_PROFILE_LABEL_ALT=
-while IFS= read -r _apl_form; do
-    [ -n "$_apl_form" ] || continue
-    _apl_pat=
-    for _apl_word in $_apl_form; do
-        if [ -n "$_apl_pat" ]; then
-            _apl_pat="${_apl_pat}${LABEL_WORD_SEP}"
+# compose_label_alt FORMS — the one composer every word-sequence label
+# vocabulary runs through (AWS_PROFILE_LABEL_FORMS,
+# AWS_PROFILE_FLAG_FORMS, WINUSER_LABEL_FORMS): each form's words joined
+# with LABEL_WORD_SEP, forms joined with `|`, the alternation echoed.
+# POSIX sh has no local, so it runs inside a command substitution and no
+# scratch variable leaks (the round-48 copy of this loop unset its
+# variables by hand for the same reason).
+compose_label_alt() {
+    _ca_forms=$1
+    _ca_alt=
+    while IFS= read -r _ca_form; do
+        [ -n "$_ca_form" ] || continue
+        _ca_pat=
+        for _ca_word in $_ca_form; do
+            if [ -n "$_ca_pat" ]; then
+                _ca_pat="${_ca_pat}${LABEL_WORD_SEP}"
+            fi
+            _ca_pat=$_ca_pat$_ca_word
+        done
+        if [ -n "$_ca_alt" ]; then
+            _ca_alt="${_ca_alt}|${_ca_pat}"
+        else
+            _ca_alt=$_ca_pat
         fi
-        _apl_pat=$_apl_pat$_apl_word
-    done
-    if [ -n "$AWS_PROFILE_LABEL_ALT" ]; then
-        AWS_PROFILE_LABEL_ALT="${AWS_PROFILE_LABEL_ALT}|${_apl_pat}"
-    else
-        AWS_PROFILE_LABEL_ALT=$_apl_pat
-    fi
-done <<EOF
-$AWS_PROFILE_LABEL_FORMS
+    done <<EOF
+$_ca_forms
 EOF
-unset _apl_form _apl_word _apl_pat
-AWS_PROFILE_LABEL="(${AWS_PROFILE_LABEL_ALT})[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
+    printf '%s' "$_ca_alt"
+}
+AWS_PROFILE_LABEL_ALT=$(compose_label_alt "$AWS_PROFILE_LABEL_FORMS")
+AWS_PROFILE_FLAG_ALT=$(compose_label_alt "$AWS_PROFILE_FLAG_FORMS")
+# AWS_PROFILE_TAIL is the assignment-separator span every qualified label
+# form carries (a quote closing a quoted JSON key before the separator, a
+# quote opening a quoted value after it). The flag form accepts that span
+# wholesale (`--profile=corp-admin`) OR plain whitespace followed by an
+# optional opening quote (`--profile corp-admin`, `--profile 'corp-admin'`;
+# the closing quote is not part of the match — like any character outside
+# the value alphabet it merely ends the value run).
+AWS_PROFILE_TAIL="[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
+AWS_PROFILE_FLAG_SEP="([[:space:]]+[\"']?|${AWS_PROFILE_TAIL})"
+AWS_PROFILE_LABEL="(${AWS_PROFILE_LABEL_ALT})${AWS_PROFILE_TAIL}"
+AWS_PROFILE_FLAG_LABEL="(${AWS_PROFILE_FLAG_ALT})${AWS_PROFILE_FLAG_SEP}"
 # The value class is AWS's documented profile-name alphabet (letters,
 # digits, and _+.,@-; `=` cannot appear because the label's assignment
 # separator is the first [=:] on the line), any position, any length.
 AWS_PROFILE_VALUE='[A-Za-z0-9_+.,@-]+'
+# AWS_PROFILE_ANCHOR — the composed detector-and-gate anchor: every
+# accepted label form (the qualified assignment forms and the CLI flag
+# forms) with its separator family and the value class, ONE alternation
+# used verbatim by the LABEL_DETECTORS registration AND by the
+# generic-value gate's re-anchor grep in emit_hits — the discipline
+# SERIAL_ANCHOR established, so the detector and the gate cannot drift
+# apart and GENERIC_PROFILES applies to flag-form captures exactly as to
+# separator-form ones.
+AWS_PROFILE_ANCHOR="(${AWS_PROFILE_LABEL}|${AWS_PROFILE_FLAG_LABEL})${AWS_PROFILE_VALUE}"
 # AWS_PROFILE_ALPHABET_MEMBERS is the parallel member list of the class
 # above: EVERY character it accepts, one per token, in class order. This is
 # the list the selftest charsweep (st_charsweep) iterates — a must-fire
@@ -717,6 +830,19 @@ SERIAL_LABEL="serial(${LABEL_WORD_SEP}number)?[[:space:]]*${QUOTE_CLASS}[[:space
 SERIAL_LABEL_EXPLICIT="serial${LABEL_WORD_SEP}number[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 SERIAL_VALUE_EXPLICIT='[A-Za-z0-9][A-Za-z0-9-]{3,}'
 SERIAL_VALUE_BARE='[A-Za-z0-9][A-Za-z0-9-]{7,}'
+# SERIAL_HEADER_* are the table-header forms of the same label vocabulary —
+# the same word grammars ROW-ANCHORED (no assignment separator, nothing
+# else on the row), for the following-row association pass
+# (scan_following_rows / FOLLOWING_ROW_DETECTORS): `wmic bios get
+# serialnumber` prints the header `SerialNumber` alone on its row with the
+# value on the row(s) below, a shape no same-line anchor can see. The
+# pairing is tier-for-tier: the explicit header associates rows that are a
+# bare SERIAL_VALUE_EXPLICIT token, the bare header rows that are a bare
+# SERIAL_VALUE_BARE token, and the synthesized hit re-enters through
+# SERIAL_ANCHOR's gate, so the floors and the letter/digit property of the
+# same-line detector decide unchanged.
+SERIAL_HEADER_EXPLICIT="serial${LABEL_WORD_SEP}number"
+SERIAL_HEADER_BARE='serial'
 # SERIAL_ANCHOR — the composed detector-and-gate anchor: a SHORT (4-plus)
 # value is admissible ONLY behind the number-bearing label branch, while
 # the any-form label branch keeps the 8-plus floor. One alternation, used
@@ -831,7 +957,8 @@ NAME_ALPHABET_MEMBERS="A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c
 # alternative decided explicitly — the third vocabulary addition (security
 # token, computer name, Windows user/account) made the dimension a table so
 # every future proposal has a landing place. The hostname class now lives
-# in the HOSTNAME_NAME_WORDS single source (see below); this table is its
+# in the HOSTNAME_NAME_WORDS single source and the Windows-username class
+# in WINUSER_LABEL_FORMS (both below); this table is their
 # decision log. Windows-username class:
 #   user…name            INCLUDE  core (UserName, user_name, USER-NAME)
 #   windows/win…user     INCLUDE  reviewer's line — the Windows qualifier
@@ -846,6 +973,15 @@ NAME_ALPHABET_MEMBERS="A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c
 #                                  serial use
 #   logon…name           INCLUDE  Windows whoami/audit dump spelling
 #                                  (Windows-only word, not a schema column)
+#   account…name         INCLUDE  round 50 (thread 3908954024): the
+#                                  Windows event/security records'
+#                                  standard field — `Account Name:
+#                                  alice.smith` in event text, AccountName
+#                                  in event XML. Round 48's sweep
+#                                  adjudicated user…principal…name but
+#                                  never this form; the bare `account` row
+#                                  below stays EXCLUDED (the name suffix
+#                                  is what makes the noun specific)
 #   login…name           EXCLUDE  cross-platform schema/form column
 #                                  (login_name) whose values are app-level
 #                                  usernames, not machine accounts
@@ -885,7 +1021,33 @@ NAME_ALPHABET_MEMBERS="A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c
 #                                  that value), and the qualifier applies to
 #                                  `hostname`, not the `…name` shape this
 #                                  ERE composes
-WINUSER_LABEL="((user|logon)${LABEL_WORD_SEP}name|(windows|win|local)${LABEL_WORD_SEP}(user|account)|sam${LABEL_WORD_SEP}account(${LABEL_WORD_SEP}name)?)[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
+# WINUSER_LABEL_FORMS — the machine source of the Windows-username class
+# (round 50, thread 3908954024): the INCLUDE rows of the table above as
+# one word sequence per line — the round-48 winuser sweep left this class
+# hand-composed while hostname/personal-name/profile became word sets, and
+# the account…name finding was the third vocabulary miss against a
+# hand-written alternation, so the class joins the same machinery. The ERE
+# alternation below and the matrix rows st_label_matrix generates both
+# compose from this list (through the shared compose_label_alt); the
+# optional-suffix sam…account(…name) shape of the old ERE is two plain
+# forms here (`sam account`, `sam account name`), which also brings the
+# three-word spelling into the matrix sweep (its hand rows used to cover
+# only the two-word subset).
+WINUSER_LABEL_FORMS='user name
+logon name
+account name
+windows user
+win user
+local user
+windows account
+win account
+local account
+sam account
+sam account name'
+# WINUSER_MATRIX_VALUES — value alternatives for the generated matrix rows
+# (SYNTHETIC-KEY CONVENTION: deterministic synthetic account names only).
+WINUSER_MATRIX_VALUES='alice.smith,svc-win-ci,LocalAdmin1'
+WINUSER_LABEL="($(compose_label_alt "$WINUSER_LABEL_FORMS"))[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 # The value class IS the OS's documented alphabet, not an enumeration that
 # grows one review round at a time: SAM account names accept letters,
 # digits, and the punctuation !#$%&'().@^_{}~- (Microsoft's naming-
@@ -954,7 +1116,7 @@ LABEL_DETECTORS="aws-secret-access-key:(aws${LABEL_WORD_SEP})?secret${LABEL_WORD
 aws-activation-code:activation${LABEL_WORD_SEP}code[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
 aws-session-token:(aws${LABEL_WORD_SEP})?(session|security)${LABEL_WORD_SEP}token[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}
 account-id-context:account(${LABEL_WORD_SEP}(id|number))?[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[[:space:]]*[0-9]{12}
-aws-sso-profile:${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}
+aws-sso-profile:${AWS_PROFILE_ANCHOR}
 machine-serial-number:${SERIAL_ANCHOR}
 personal-name:${PERSONAL_NAME_LABEL}${PERSONAL_NAME_VALUE}
 windows-username-labeled:${WINUSER_LABEL}${WINUSER_VALUE}
@@ -973,6 +1135,54 @@ user-home-path:(^|[^A-Za-z0-9/])([A-Za-z]:${PATH_SEP_CLASS}{1,2}|/)[Uu][sS][eE][
 # the same characters the labeled-username detector accepts - the two
 # classes are one vocabulary and cannot drift apart. Unix /home segments
 # take the same class (over-broad there, safe direction).
+# FOLLOWING_ROW_DETECTORS — the table-shape association registry: one
+# `name|header|value` line per family TIER whose documented sources put
+# the VALUE on a row after the LABEL, consumed by scan_stream through
+# scan_following_rows (the header/value EREs are the family's own anchors,
+# row-anchored by the helper; the `|` field separator is safe because the
+# name and the two EREs contain none — a `:` would not be, the bracket
+# classes carry `[[:space:]]`-style colons). The
+# TABLE-SHAPE CLASS SWEEP (round 50, thread 3908851584) — which detector
+# families have a documented table-shaped source, each verdict:
+#   machine-serial-number  APPLIED — `wmic bios get serialnumber` (cited
+#                          in this detector's own vocabulary note) prints
+#                          the `SerialNumber` header alone on its row and
+#                          the value on the row(s) below; both label tiers
+#                          registered (explicit `serial…number` header
+#                          with the 4-plus value anchor, bare `serial`
+#                          header with the 8-plus one), the synthesized
+#                          hit re-anchored by the same SERIAL_ANCHOR gate
+#                          as inline values, so the tiered letter/digit
+#                          property decides unchanged
+#   hostname-labeled       NOT APPLIED — the wmic shape for the machine
+#                          name (`wmic computersystem get name`) prints
+#                          the BARE header `Name`, and bare `name` is
+#                          deliberately no hostname label (the label
+#                          requires a host/computer/machine/device
+#                          qualifier; `hostname: name` is a silent
+#                          value-table row); every cited source
+#                          (systeminfo `Host Name(s): …`, Settings
+#                          `Device name:`) prints label and value on ONE
+#                          line, which the same-line anchor already covers
+#   windows-username-…     NOT APPLIED — same shape: `wmic useraccount get
+#                          name` prints bare `Name`, `net user` an
+#                          unlabeled column; every cited labeled source
+#                          (whoami-style dumps, `SamAccountName : alice`)
+#                          is same-line
+#   personal-name          NOT APPLIED — no cited source prints a
+#                          name-field header with the name on a following
+#                          row (AD/Entra Get-* dumps are same-line
+#                          `DisplayName : Alice Smith`)
+#   aws-sso-profile        NOT APPLIED — §27's profile carriers (env
+#                          assignments, config keys, CLI flags) are all
+#                          same-line; no cited source prints a profile
+#                          header row
+#   account-id / key-material
+#                          NOT APPLIED — value-anchored one-line shapes
+#                          (12-digit runs, key bodies); no table-shaped
+#                          cited source
+FOLLOWING_ROW_DETECTORS="machine-serial-number|${SERIAL_HEADER_EXPLICIT}|${SERIAL_VALUE_EXPLICIT}
+machine-serial-number|${SERIAL_HEADER_BARE}|${SERIAL_VALUE_BARE}"
 
 # Suppression marker (see header): a raw line containing this string is
 # skipped by every suppressible detector, in file mode and in history mode.
@@ -1002,8 +1212,18 @@ ALLOWLIST_SED='s/noreply@anthropic[.]com//g'
 # detector's own label+value ERE, strip the label through the assignment
 # separator plus leading quotes, apply the TRIM sed program to each captured
 # value, and return 0 only when EVERY captured value (there is at least one)
-# is a member of SET. These detectors' values are single tokens (no spaces),
-# so word-split comparison is exact — the personal-name gate compares whole
+# is a member of SET. The CLI-flag captures (round 50) carry no assignment
+# separator at all — their label ends at whitespace — so the strip chain
+# opens with a whitespace fallback: `label␣value` loses `label␣` and the
+# remaining seds take over when an =/: separator is present. The fallback
+# can never remove value text: a flag-form capture ends at the first
+# character outside the value alphabet (its captured value is a single
+# token, so the last whitespace in the capture is the label's), and every
+# assignment-form capture carries its =/: separator between label and
+# value, which the fallback's `[^=:]*` cannot cross — spaces before the
+# separator are label material whether the seds take them or the fallback
+# does. The word-split comparison below is therefore exact for these
+# captures' value tokens — the personal-name gate compares whole
 # multi-word values and keeps its own loop, and the serial gate checks a
 # property, not a set. An empty capture returns 1: over-detection stays the
 # safe direction.
@@ -1013,7 +1233,8 @@ eh_all_generic() {
     _ag_vals=$(printf '%s\n' "${_eh_hit#*:}" |
         tr '[:upper:]' '[:lower:]' |
         grep -oE -- "$_ag_ere" |
-        sed -e 's/^[^=:]*:=//' -e 's/^[^=:]*[=:][[:space:]]*//' \
+        sed -e 's/^[^=:]*[[:space:]][[:space:]]*//' \
+            -e 's/^[^=:]*:=//' -e 's/^[^=:]*[=:][[:space:]]*//' \
             -e "s/^[\"']*//")
     [ -n "$_ag_vals" ] || return 1
     # Values are compared WHOLE, one per line: the username class captures
@@ -1098,9 +1319,13 @@ emit_hits() {
             # over-detection stays the safe direction — and the marker and
             # history rules above are untouched. The windows-username-
             # labeled and hostname-labeled gates below share the helper.
+            # The re-anchor ERE is AWS_PROFILE_ANCHOR — the same single
+            # alternation LABEL_DETECTORS registers — so the gate applies
+            # to CLI-flag captures exactly as to assignment-form ones
+            # (round 50).
             if [ "$_eh_name" = 'aws-sso-profile' ] &&
                 eh_all_generic "$GENERIC_PROFILES" \
-                    "${AWS_PROFILE_LABEL}${AWS_PROFILE_VALUE}"; then
+                    "${AWS_PROFILE_ANCHOR}"; then
                 continue
             fi
             # Serial-property gate (machine-serial-number only), mirroring
@@ -1289,6 +1514,102 @@ scan_literal() {
     return 0
 }
 
+# scan_following_rows NAME LABEL FILE HEADER_ERE VALUE_ERE — the generic
+# following-row (table-shape) association pass, driven per family tier by
+# FOLLOWING_ROW_DETECTORS: sources that print their output as a table put
+# the LABEL alone on a header row and the VALUE on a following row (`wmic
+# bios get serialnumber` prints `SerialNumber`, then the serial below it)
+# — a shape no same-line anchor can see. A row associates when it is
+# EXACTLY a HEADER_ERE spelling (the whitespace-trimmed row carries
+# nothing but the label), the rows below it supply at most ONE separator
+# row (blank, or a run of `-`/`=` underline characters — two blanks are a
+# paragraph boundary and stop the association) and then at most the first
+# TWO rows that are EXACTLY a VALUE_ERE spelling (a BARE value: the whole
+# row is the value, so a multi-column table's rows, prose, and any
+# labeled line are all outside the association; the cap bounds a header
+# followed by many rows). Patch-line prefixes (+/-/space) are stripped
+# from each row before the tests, so history patches associate exactly
+# like file content, and the suppression marker is stripped for the
+# bare-row tests and REMEMBERED: a marker on EITHER row suppresses the
+# finding.
+#
+# The hit handed to emit_hits is SYNTHESIZED as `<header row> := <value
+# row>` — numbered with the VALUE row's line, because the value is the
+# finding — with the marker appended when either raw row carried it.
+# Synthesis is what keeps every downstream rule SINGLE-SOURCED: the
+# marker gate reads the same marker text, and the class's value gates
+# (the serial tiers' letter/digit property, the generic sets) re-anchor
+# their detector ERE on the synthesized line and decide on the associated
+# value EXACTLY as on an inline one — a generic or property-less value
+# row stays silent. One documented limitation: history equivalence (a
+# pre-marker commit suppressed by today's annotated copy of the same
+# line) compares the hit's line text against annotated RAW lines and so
+# cannot match a synthesized two-row line; the marker on either row of
+# the same stream remains the suppression path for annotated table
+# shapes. Runs on a lowercased copy of FILE, like every label detector;
+# the header and value EREs cross through the environment (ENVIRON, the
+# scan_matches pattern — `awk -v` would process escape sequences).
+scan_following_rows() {
+    _fr_name=$1
+    _fr_label=$2
+    _fr_file=$3
+    _fr_header=$4
+    _fr_value=$5
+    export AUDIT_FR_HEADER="$_fr_header"
+    export AUDIT_FR_VALUE="$_fr_value"
+    export AUDIT_FR_MARKER="$MARKER"
+    _fr_hits=$(
+        tr '[:upper:]' '[:lower:]' <"$_fr_file" 2>/dev/null |
+            awk '
+                BEGIN {
+                    fr_hdr = "^(" ENVIRON["AUDIT_FR_HEADER"] ")$"
+                    fr_val = "^(" ENVIRON["AUDIT_FR_VALUE"] ")$"
+                    fr_mk = ENVIRON["AUDIT_FR_MARKER"]
+                    fr_mkre = "[[:space:]]*" fr_mk "$"
+                }
+                {
+                    fr_c = $0
+                    fr_p = substr(fr_c, 1, 1)
+                    if (fr_p == "+" || fr_p == "-" || fr_p == " ")
+                        fr_c = substr(fr_c, 2)
+                    sub(/^[[:space:]]+/, "", fr_c)
+                    sub(/[[:space:]]+$/, "", fr_c)
+                    fr_m[NR] = 0
+                    if (fr_c != "" && fr_c ~ fr_mkre) {
+                        fr_m[NR] = 1
+                        sub(fr_mkre, "", fr_c)
+                        sub(/[[:space:]]+$/, "", fr_c)
+                    }
+                    fr_t[NR] = fr_c
+                }
+                END {
+                    for (fr_i = 1; fr_i <= NR; fr_i++) {
+                        if (fr_t[fr_i] !~ fr_hdr) continue
+                        fr_j = fr_i + 1
+                        if (fr_j > NR) continue
+                        if (fr_t[fr_j] == "" ||
+                            fr_t[fr_j] ~ /^[-=]+$/) {
+                            fr_j++
+                            if (fr_j > NR || fr_t[fr_j] == "" ||
+                                fr_t[fr_j] ~ /^[-=]+$/)
+                                continue
+                        }
+                        for (fr_n = 0; fr_j <= NR && fr_n < 2; fr_j++) {
+                            if (fr_t[fr_j] !~ fr_val) break
+                            printf "%d:%s := %s%s\n", fr_j, \
+                                fr_t[fr_i], fr_t[fr_j], \
+                                ((fr_m[fr_i] || fr_m[fr_j]) ? \
+                                    " " fr_mk : "")
+                            fr_n++
+                        }
+                    }
+                }
+            '
+    )
+    emit_hits "$_fr_name" "$_fr_label" "$_fr_hits"
+    return 0
+}
+
 # scan_stream LABEL FILE — run every detector over FILE: the label
 # detectors against a lowercased copy of FILE's lines (case-insensitive by
 # construction, with the original line text restored onto every finding —
@@ -1308,6 +1629,17 @@ EOF
         scan_matches "${_ss_det%%:*}" "$_ss_label" "${_ss_det#*:}" "$_ss_file"
     done <<EOF
 $SHAPE_DETECTORS
+EOF
+    # Table-shape (following-row) association passes: the family tiers
+    # whose documented sources put the value on a row after the label
+    # (FOLLOWING_ROW_DETECTORS carries the per-family sweep table).
+    while IFS= read -r _ss_row; do
+        [ -n "$_ss_row" ] || continue
+        _ss_rest=${_ss_row#*|}
+        scan_following_rows "${_ss_row%%|*}" "$_ss_label" "$_ss_file" \
+            "${_ss_rest%%|*}" "${_ss_rest#*|}"
+    done <<EOF
+$FOLLOWING_ROW_DETECTORS
 EOF
     return 0
 }
@@ -1945,6 +2277,11 @@ st_form() {
     'sso 0') printf 'sso' ;;
     'sso 1') printf 'SSO' ;;
     'sso 2') printf 'Sso' ;;
+    # The CLI-flag dash token has no case forms; %s-format keeps a leading
+    # `--` an argument, never an option.
+    '-- 0') printf '%s' -- ;;
+    '-- 1') printf '%s' -- ;;
+    '-- 2') printf '%s' -- ;;
     *)
         printf 'selftest: internal: st_form: no case form for word "%s"\n' \
             "$1" >&2
@@ -2141,11 +2478,15 @@ st_check() {
 # The first check below fails if this registry and LABEL_DETECTORS ever
 # name different detectors, in either direction. Word-set rows cover every
 # label word and both label shapes; the optional-suffix three-word form
-# (sam…account…name) is pinned by value-table rows — a full matrix row
-# for it costs 18k variants of machinery every other row already sweeps.
-# Three detectors' rows are NOT hand-written here (round 48): the
+# (sam…account…name) used to be pinned by value-table rows only — round
+# 50 moved the Windows-username class onto WINUSER_LABEL_FORMS, and the
+# three-word spelling is generated with every other form (the ~18k
+# variants are the price of the list-driven closure; every two-word row
+# already swept the same machinery).
+# Four detectors' rows are NOT hand-written here (rounds 48-50): the
 # word-set-driven label vocabularies (HOSTNAME_NAME_WORDS,
-# PERSONAL_NAME_WORDS, AWS_PROFILE_LABEL_FORMS) generate their rows in
+# PERSONAL_NAME_WORDS, AWS_PROFILE_LABEL_FORMS, WINUSER_LABEL_FORMS)
+# generate their rows in
 # st_label_matrix from the same single-source lists their EREs are
 # composed from — a word added to one of those lists is swept here
 # without a registry edit, which is how the matrix covers new vocabulary
@@ -2160,23 +2501,17 @@ aws-session-token|aws security token|SYNTHETICSESSIONTOKEN0123456789,SYNTHETICSE
 account-id-context|account|123456789012,000000000000
 account-id-context|account id|123456789012,000000000000
 machine-serial-number|serial|mtx1aaaaaa,9mtxaaaaaa,ABC12345,ABC-12345,ABCDEFG1,ABC1234Z
-machine-serial-number|serial number|mtx1aaaaaa,9mtxaaaaaa,ABC12345,ABC-12345,ABCDEFG1,ABC1234Z
-windows-username-labeled|user name|alice.smith,svc-win-ci,LocalAdmin1
-windows-username-labeled|windows user|alice.smith,svc-win-ci,LocalAdmin1
-windows-username-labeled|windows account|alice.smith,svc-win-ci,LocalAdmin1
-windows-username-labeled|win account|alice.smith,svc-win-ci,LocalAdmin1
-windows-username-labeled|local account|alice.smith,svc-win-ci,LocalAdmin1
-windows-username-labeled|sam account|alice.smith,svc-win-ci,LocalAdmin1
-windows-username-labeled|logon name|alice.smith,svc-win-ci,LocalAdmin1'
+machine-serial-number|serial number|mtx1aaaaaa,9mtxaaaaaa,ABC12345,ABC-12345,ABCDEFG1,ABC1234Z'
 
 st_label_matrix() {
     _lm_status=0
     _lm_dets=
     printf '%s\n' "$MATRIX_LABEL_SETS" >"$ST_WORK/lm-reg"
-    # Generated rows (round 48): the word-set-driven label vocabularies
-    # append their rows BY CONSTRUCTION from the same single-source lists
-    # their EREs are composed from (HOSTNAME_NAME_WORDS,
-    # PERSONAL_NAME_WORDS, AWS_PROFILE_LABEL_FORMS) — every word of those
+    # Generated rows (rounds 48-50): the word-set-driven label
+    # vocabularies append their rows BY CONSTRUCTION from the same
+    # single-source lists their EREs are composed from
+    # (HOSTNAME_NAME_WORDS, PERSONAL_NAME_WORDS,
+    # AWS_PROFILE_LABEL_FORMS, WINUSER_LABEL_FORMS) — every word of those
     # vocabularies is swept in the full case/separator/assignment/quote
     # cross-product with no hand-written registry row, so the next
     # vocabulary addition cannot forget the matrix. The value pools are
@@ -2196,6 +2531,13 @@ st_label_matrix() {
             "$AWS_PROFILE_MATRIX_VALUES" >>"$ST_WORK/lm-reg"
     done <<EOF
 $AWS_PROFILE_LABEL_FORMS
+EOF
+    while IFS= read -r _lm_form; do
+        [ -n "$_lm_form" ] || continue
+        printf 'windows-username-labeled|%s|%s\n' "$_lm_form" \
+            "$WINUSER_MATRIX_VALUES" >>"$ST_WORK/lm-reg"
+    done <<EOF
+$WINUSER_LABEL_FORMS
 EOF
     # Registry closure: matrix word sets exist for every label detector
     # and nothing else.
@@ -2234,6 +2576,47 @@ EOF
         fi
         st_expand "$ST_WORK/lm-spells" "$ST_WORK/lm-$_lm_det" "$_lm_vals"
     done <"$ST_WORK/lm-reg"
+    # CLI-flag label forms (round 50): the flag grammar has TWO separator
+    # families, and st_expand expresses only one — the assignment family
+    # (`--profile=…`, whose quote/assign product st_expand already
+    # generates, reused verbatim below). The space family
+    # (`--profile corp-admin`, the shape a command line actually takes,
+    # with an optional opening quote whose closing twin merely ends the
+    # value run) is emitted here. Both derive from
+    # AWS_PROFILE_FLAG_FORMS — the same single-source list the ERE
+    # alternation is composed from — so the next flag form is one line
+    # there, swept by construction.
+    while IFS= read -r _lm_fform; do
+        [ -n "$_lm_fform" ] || continue
+        if [ "$(printf '%s\n' "$_lm_fform" | wc -w | tr -d ' ')" -le 3 ]; then
+            _lm_fmode=f
+        else
+            _lm_fmode=u
+        fi
+        : >"$ST_WORK/lm-spells"
+        st_spellings "$_lm_fform" "$ST_WORK/lm-spells" "$_lm_fmode"
+        if [ "$(grep -c . "$ST_WORK/lm-spells")" -gt 15000 ]; then
+            printf 'selftest: FAIL  spelling generator runaway for aws-sso-profile flag forms (%s spellings; harness grammar bug - refusing to expand)\n' \
+                "$(grep -c . "$ST_WORK/lm-spells")"
+            _lm_status=1
+            continue
+        fi
+        while IFS= read -r _lm_spell; do
+            [ -n "$_lm_spell" ] || continue
+            for _lm_fval in $(printf '%s' "$AWS_PROFILE_MATRIX_VALUES" |
+                tr ',' ' '); do
+                {
+                    printf '%s %s\n' "$_lm_spell" "$_lm_fval"
+                    printf '%s "%s"\n' "$_lm_spell" "$_lm_fval"
+                    printf "%s '%s'\n" "$_lm_spell" "$_lm_fval"
+                } >>"$ST_WORK/lm-aws-sso-profile"
+            done
+        done <"$ST_WORK/lm-spells"
+        st_expand "$ST_WORK/lm-spells" "$ST_WORK/lm-aws-sso-profile" \
+            "$AWS_PROFILE_MATRIX_VALUES"
+    done <<EOF
+$AWS_PROFILE_FLAG_FORMS
+EOF
     for _lm_det in $_lm_dets; do
         scan_file "$ST_WORK/lm-$_lm_det" "matrix-$_lm_det" \
             >"$ST_WORK/lm-out" ||
@@ -2605,6 +2988,14 @@ aws-sso-profile|M|aws profile : mxprod7
 aws-sso-profile|M|AWS_PROFILE=default
 aws-sso-profile|M|SSO Profile: corp-admin-prod
 aws-sso-profile|M|AWS SSO Profile: corp-admin-prod
+aws-sso-profile|M|aws sso login --profile mxprod7
+aws-sso-profile|M|aws sso login --profile=mxprod7
+aws-sso-profile|M|aws sso login --profile 'MX-Prod_99'
+aws-sso-profile|M|aws sso login --profile default
+aws-sso-profile|X|aws sso login --profile example
+aws-sso-profile|X|the --profile flag selects the named profile
+aws-sso-profile|X|pass the --profile option to the CLI
+aws-sso-profile|X|aws sso login --profile <profile>
 aws-sso-profile|X|sso_profile: "example"
 aws-sso-profile|X|aws_profile: "example"
 aws-sso-profile|X|export AWS_PROFILE=<profile>
@@ -2672,6 +3063,11 @@ windows-username-labeled|M|Windows account: bob
 windows-username-labeled|M|LocalAccount = alice
 windows-username-labeled|M|sAMAccountName: alice.smith
 windows-username-labeled|M|logon name: alice
+windows-username-labeled|M|Account Name: alice.smith
+windows-username-labeled|M|"AccountName": "svc-win-ci"
+windows-username-labeled|M|event_account_name := LocalAdmin1
+windows-username-labeled|M|Account Name: SYSTEM
+windows-username-labeled|X|Account Name: -
 windows-username-labeled|M|username = "svc-win-ci"
 windows-username-labeled|M|"UserName": "LocalAdmin1"
 windows-username-labeled|M|win_username := alice.smith
@@ -3324,6 +3720,171 @@ your name'
     done
     st_run_table "$ST_WORK/gp-table" 'gate sweep' || _gg_status=1
     return "$_gg_status"
+}
+
+# st_table_rows — the following-row (table-shape) association pass's
+# explicit pins (round 50, thread 3908851584): a TWO-row shape cannot be
+# expressed through the line-per-row tables, so the wmic/Markdown shapes
+# are pinned as whole files through the real engine, with deterministic
+# synthetic values (SYNTHETIC-KEY CONVENTION — the pool members the serial
+# matrix already uses). Every must-fire case asserts the EXACT finding
+# records — the class AND the line number of the VALUE row (the value is
+# the finding; the header row and the command row above it stay unnamed)
+# — and the silent cases pin the guard rails: the gate-silent
+# generic/property-less value rows (the association fires; the SAME
+# serial gate that governs inline values suppresses), the two-blank
+# paragraph boundary, the separator row followed by prose, the sub-floor
+# value row, the patch-line prefix shape history feeds the pass, and the
+# marker on either row.
+st_table_rows() {
+    _tb_status=0
+
+    # wmic shape: the command row (not a bare header), the header row,
+    # TWO value rows (wmic multi-instance output) and the trailing blank
+    # wmic leaves.
+    cat >"$ST_WORK/tb-wmic.txt" <<'EOF'
+wmic bios get serialnumber
+SerialNumber
+ABC12345
+ABC1234Z
+
+EOF
+    scan_file "$ST_WORK/tb-wmic.txt" harness-table-wmic \
+        >"$ST_WORK/tb-wmic.out"
+    _tb_ok=yes
+    [ "$(grep -c ': machine-serial-number$' "$ST_WORK/tb-wmic.out")" \
+        -eq 2 ] || _tb_ok=no
+    grep -q '^FINDING harness-table-wmic:3: machine-serial-number$' \
+        "$ST_WORK/tb-wmic.out" || _tb_ok=no
+    grep -q '^FINDING harness-table-wmic:4: machine-serial-number$' \
+        "$ST_WORK/tb-wmic.out" || _tb_ok=no
+    if [ "$_tb_ok" = yes ]; then
+        printf 'selftest: PASS  %-44s wmic header/value rows fire\n' \
+            'table rows wmic'
+    else
+        printf 'selftest: FAIL  %-44s want exactly the value rows 3 and 4\n' \
+            'table rows wmic'
+        sed 's/^/         /' "$ST_WORK/tb-wmic.out" | head -n 3
+        _tb_status=1
+    fi
+
+    # Markdown/setext underline separator between header and value, and
+    # the BARE header tier with an 8-plus letter+digit value.
+    cat >"$ST_WORK/tb-marks.txt" <<'EOF'
+Serial Number
+-------------
+ABC-12345
+
+serial
+9mtxaaaaaa
+EOF
+    scan_file "$ST_WORK/tb-marks.txt" harness-table-marks \
+        >"$ST_WORK/tb-marks.out"
+    _tb_ok=yes
+    [ "$(grep -c ': machine-serial-number$' "$ST_WORK/tb-marks.out")" \
+        -eq 2 ] || _tb_ok=no
+    grep -q '^FINDING harness-table-marks:3: machine-serial-number$' \
+        "$ST_WORK/tb-marks.out" || _tb_ok=no
+    grep -q '^FINDING harness-table-marks:6: machine-serial-number$' \
+        "$ST_WORK/tb-marks.out" || _tb_ok=no
+    if [ "$_tb_ok" = yes ]; then
+        printf 'selftest: PASS  %-44s underline separator and bare tier\n' \
+            'table rows markdown'
+    else
+        printf 'selftest: FAIL  %-44s want exactly the value rows 3 and 6\n' \
+            'table rows markdown'
+        sed 's/^/         /' "$ST_WORK/tb-marks.out" | head -n 3
+        _tb_status=1
+    fi
+
+    # Explicit tier's digit-only value (a real all-numeric serial behind
+    # the number-bearing header), and the patch-prefix shape the history
+    # pass feeds: rows arrive with a `+`/`-`/space diff prefix.
+    cat >"$ST_WORK/tb-patch.txt" <<'EOF'
++SerialNumber
++1234
+-context row
++Serial Number
++ABC12345
+EOF
+    scan_file "$ST_WORK/tb-patch.txt" harness-table-patch \
+        >"$ST_WORK/tb-patch.out"
+    _tb_ok=yes
+    [ "$(grep -c ': machine-serial-number$' "$ST_WORK/tb-patch.out")" \
+        -eq 2 ] || _tb_ok=no
+    grep -q '^FINDING harness-table-patch:2: machine-serial-number$' \
+        "$ST_WORK/tb-patch.out" || _tb_ok=no
+    grep -q '^FINDING harness-table-patch:5: machine-serial-number$' \
+        "$ST_WORK/tb-patch.out" || _tb_ok=no
+    if [ "$_tb_ok" = yes ]; then
+        printf 'selftest: PASS  %-44s digit-only and patch-prefix rows\n' \
+            'table rows patch'
+    else
+        printf 'selftest: FAIL  %-44s want exactly the value rows 2 and 5\n' \
+            'table rows patch'
+        sed 's/^/         /' "$ST_WORK/tb-patch.out" | head -n 3
+        _tb_status=1
+    fi
+
+    # Silent rails: every case below must produce NO serial finding —
+    # gate-suppressed generic/property-less value rows, the two-blank
+    # paragraph boundary, a separator row whose next row is prose, the
+    # sub-floor value, and a command row that is not a bare header.
+    cat >"$ST_WORK/tb-silent.txt" <<'EOF'
+SerialNumber
+unknown
+
+serial
+12345678
+
+Serial Number
+
+
+ABC12345
+
+Serial Number
+-------------
+see the underside of the device
+
+SerialNumber
+ABC
+
+wmic bios get serialnumber
+EOF
+    scan_file "$ST_WORK/tb-silent.txt" harness-table-silent \
+        >"$ST_WORK/tb-silent.out"
+    if grep -q ': machine-serial-number$' "$ST_WORK/tb-silent.out"; then
+        printf 'selftest: FAIL  %-44s fired on must-silent table input\n' \
+            'table rows silent'
+        grep ': machine-serial-number$' "$ST_WORK/tb-silent.out" |
+            head -n 3 | sed 's/^/         /'
+        _tb_status=1
+    else
+        printf 'selftest: PASS  %-44s gates and rails hold\n' \
+            'table rows silent'
+    fi
+
+    # Marker on either row: the header row's marker and the value row's
+    # marker each suppress the association — no finding of ANY class.
+    cat >"$ST_WORK/tb-marker.txt" <<'EOF'
+SerialNumber # audit-allow:synthetic
+ABC12345
+
+serial
+9mtxaaaaaa # audit-allow:synthetic
+EOF
+    scan_file "$ST_WORK/tb-marker.txt" harness-table-marker \
+        >"$ST_WORK/tb-marker.out"
+    if grep -q '^FINDING' "$ST_WORK/tb-marker.out"; then
+        printf 'selftest: FAIL  %-44s marker on either row must suppress\n' \
+            'table rows marker'
+        sed 's/^/         /' "$ST_WORK/tb-marker.out" | head -n 3
+        _tb_status=1
+    else
+        printf 'selftest: PASS  %-44s marker on either row suppresses\n' \
+            'table rows marker'
+    fi
+    return "$_tb_status"
 }
 
 # SPEC §27 coverage map. The bullets are parsed out of SPEC.md at
@@ -4285,6 +4846,7 @@ selftest() {
     st_label_matrix || _status=1
     st_shape_matrix || _status=1
     st_value_tables || _status=1
+    st_table_rows || _status=1
     st_charsweep || _status=1
     st_gate_sweep || _status=1
     st_spec27_map || _status=1
