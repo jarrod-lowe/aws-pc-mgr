@@ -42,6 +42,16 @@
     is defense in depth where refusal is still free; the module-side one
     is the last point that can still refuse.
 
+    Success, too, is revalidated: every branch that reports it (NoOperation,
+    StartService, Register) re-reads the registration AFTER its last
+    mutation - the service repairs - and immediately before printing the
+    managed node ID, and reports success only when the record is still
+    present, still parseable, and still the same registration the branch
+    verified earlier. A registration cleared or replaced while the repairs
+    ran is reported as drift and exits 3 - the same human-decides
+    disposition as the other registration ambiguities - never a cached
+    managed node ID printed with exit 0 (SPEC 22/23).
+
     The activation code is never a parameter and never appears on a command
     line (SPEC 20): it is read with a masked prompt via Read-SsmSecret, and
     only when a registration is actually about to run. It is never printed
@@ -301,6 +311,74 @@ function Assert-SsmRegistrationStillAbsent {
         "' (no registration file) and planned Register from that fact.")
 }
 
+# Registration revalidation at the SUCCESS BOUNDARY (SPEC 22/23): the last
+# read before any branch prints a healthy verdict or exits 0. The branches
+# that report success all verify the registration EARLY and then run slow,
+# mutating repair steps before their summary: NoOperation and StartService
+# hold a registration read from before Set-Service/Start-Service can run,
+# and Register holds one from before the post-enrollment startup repair.
+# Another actor can clear or replace the registration inside that window,
+# and a report built from the early read would print a managed node ID the
+# machine no longer holds - a healthy verdict over stale facts. The class
+# rule is that a validation sits adjacent to what it certifies, so this
+# guard runs AFTER the calling branch's last mutation, with nothing but
+# reads and console output between it and the summary, and the branch may
+# print its ID and exit 0 only when the record is STILL present, STILL
+# parseable (a read or parse that fails here is drift, not a pass - the
+# fail-closed, present-but-unparseable-is-ambiguous discipline of
+# Get-SsmRegistrationOrAmbiguousExit above), and STILL the same registration:
+# the same managed node ID the branch verified earlier.
+#
+# Disposition - exit 3, the manual-intervention/race family, not exit 1:
+# exit 1 is for an action this run attempted failing its own postcondition
+# (a service that will not start, an enrollment that produced no
+# registration file). Here every action this run attempted succeeded; what
+# broke is the machine's coherence with the plan this run was executing,
+# and the way forward - accept a replacement identity, or re-enroll with a
+# NEW activation - is a decision this script never makes on its own (SPEC
+# 22), the same human-decides verdict as the other registration
+# ambiguities. Unlike those guards, the calling branch may already have
+# changed the SERVICE by the time this runs (that is the window being
+# closed), so $ChangesSoFar names what this run already did and the report
+# below states it plainly rather than claiming nothing changed.
+# Returns the last-moment registration for the branch to print, or never
+# returns.
+function Get-SsmRegistrationForSuccessReport {
+    param(
+        [object]$Registration,
+        [string]$ChangesSoFar
+    )
+
+    $lastMomentRegistration = $null
+    try {
+        $lastMomentRegistration = Get-SsmRegistration
+    } catch {
+        # Read or parse failed NOW, after the repairs: the record this
+        # branch verified may have been replaced mid-write or locked; the
+        # failure is drift, not a pass (fail closed).
+        $lastMomentRegistration = $null
+    }
+
+    if (($null -ne $lastMomentRegistration) -and
+        ($lastMomentRegistration.ManagedInstanceId -eq $Registration.ManagedInstanceId)) {
+        return $lastMomentRegistration
+    }
+
+    Write-Fail 'The local registration changed or vanished while this run was finishing.'
+    Write-Host ('What this run already did before this read: ' + $ChangesSoFar + '.')
+    Write-Host 'What the machine holds NOW is not the registration this run verified: the record'
+    Write-Host 'is gone, empty, unreadable, unparseable, or carries a different managed node ID,'
+    Write-Host 'so the managed node ID this run was about to print no longer describes this'
+    Write-Host 'machine, and the healthy verdict is withheld with it (SPEC 22/23). This run never'
+    Write-Host 'deletes or rewrites the registration record, so the change came from another actor.'
+    Write-Host ('Inspect: the registration file under ' + $env:ProgramData + '\Amazon\SSM\InstanceData;')
+    Write-Host 'Get-Service AmazonSSMAgent; the SSM Agent log. Then re-run this script: it'
+    Write-Host 'classifies the machine afresh and takes the appropriate action (a fresh enrollment'
+    Write-Host 'needs a NEW activation; -ForceReregister discards the local registration first -'
+    Write-Host 'destructive).'
+    exit 3
+}
+
 # --- 1. elevation (SPEC 21 step 1) ------------------------------------------
 
 $windowsPrincipal = New-Object -TypeName Security.Principal.WindowsPrincipal -ArgumentList ([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -407,6 +485,27 @@ if ($action -eq 'NoOperation') {
         exit 1
     }
 
+    # Success-report adjacency (the class rule applied to the REPORT side):
+    # the registration this branch holds was read BEFORE the repairs above,
+    # and Start-Service/Set-Service are mutating steps another actor can
+    # clear or replace a registration inside - a summary built from that
+    # read would print a cached managed node ID. The guard re-reads and
+    # re-validates the registration here, after the last mutation and
+    # immediately before the summary, and withholds success when the record
+    # is gone, changed, or unreadable. It runs on the clean path too: the
+    # read is cheap, and every success report in this script is built the
+    # same way - only facts read at the last possible moment, nothing but
+    # reads and console output after them.
+    $changesMade = 'nothing at all'
+    if ($serviceStarted -and $startupRestored) {
+        $changesMade = 'started AmazonSSMAgent and restored its Automatic startup type'
+    } elseif ($serviceStarted) {
+        $changesMade = 'started AmazonSSMAgent'
+    } elseif ($startupRestored) {
+        $changesMade = 'restored the AmazonSSMAgent Automatic startup type'
+    }
+    $registration = Get-SsmRegistrationForSuccessReport -Registration $registration -ChangesSoFar $changesMade
+
     Write-Host ''
     Write-Host ('Managed node ID : ' + $registration.ManagedInstanceId)
     # The region shown here comes from the local registration record, not from
@@ -460,6 +559,18 @@ if ($action -eq 'StartService') {
         Write-Host 'registration was NOT modified and no activation was consumed.'
         exit 1
     }
+
+    # Success-report adjacency, the same ordering as NoOperation above: the
+    # registration this branch holds was read before Set-Service/Start-
+    # Service ran, so the summary below may print its managed node ID only
+    # after re-reading and re-validating the registration past those
+    # mutations - gone, changed, or unreadable at this moment is reported
+    # as drift, never a cached ID with exit 0.
+    $changesMade = 'started AmazonSSMAgent'
+    if ($startupRestored) {
+        $changesMade = 'started AmazonSSMAgent and restored its Automatic startup type'
+    }
+    $registration = Get-SsmRegistrationForSuccessReport -Registration $registration -ChangesSoFar $changesMade
 
     Write-Host ''
     Write-Host ('Managed node ID : ' + $registration.ManagedInstanceId)
@@ -599,14 +710,18 @@ if ($action -eq 'Register') {
         Write-Host 'registration data was NOT deleted.'
         exit 1
     }
+    $startupSetAfter = $false
+    $serviceStartedAfter = $false
     if ($serviceAfter.StartType -ne 'Automatic') {
         Write-Step ("Setting AmazonSSMAgent startup type to Automatic (was '" + $serviceAfter.StartType + "').")
         Set-Service -Name 'AmazonSSMAgent' -StartupType Automatic
+        $startupSetAfter = $true
         $serviceAfter = Get-ServiceInfoOrFail
     }
     if ($serviceAfter.Status -ne 'Running') {
         Write-Step 'AmazonSSMAgent is not running after registration; starting it.'
         Start-Service -Name 'AmazonSSMAgent'
+        $serviceStartedAfter = $true
         $serviceAfter = Get-ServiceInfoOrFail
     }
     if (($serviceAfter.Status -ne 'Running') -or ($serviceAfter.StartType -ne 'Automatic')) {
@@ -617,6 +732,24 @@ if ($action -eq 'Register') {
     }
 
     Remove-Variable -Name ActivationId -ErrorAction SilentlyContinue
+
+    # Success-report adjacency, the same ordering as NoOperation and
+    # StartService above: the registration this branch verified was read
+    # BEFORE the startup repairs, so the summary below may print its
+    # managed node ID only after re-reading and re-validating the
+    # registration past those mutations. Drift here is reported, never
+    # retried: the enrollment already consumed the activation, and whether
+    # to accept a replacement identity or enroll afresh is the operator's
+    # decision, so the guard's report names the consumed activation too.
+    $changesMade = 'completed the enrollment (one activation was consumed)'
+    if ($startupSetAfter -and $serviceStartedAfter) {
+        $changesMade = 'completed the enrollment (one activation was consumed), set the AmazonSSMAgent startup type to Automatic, and started AmazonSSMAgent'
+    } elseif ($startupSetAfter) {
+        $changesMade = 'completed the enrollment (one activation was consumed) and set the AmazonSSMAgent startup type to Automatic'
+    } elseif ($serviceStartedAfter) {
+        $changesMade = 'completed the enrollment (one activation was consumed) and started AmazonSSMAgent'
+    }
+    $registrationAfter = Get-SsmRegistrationForSuccessReport -Registration $registrationAfter -ChangesSoFar $changesMade
 
     Write-Host ''
     Write-Host 'Registration complete.'

@@ -295,6 +295,39 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #   Register post-enrollment registration read + service checks -
     #       fail-closed (exit 1) on unparseable/absent registration and on
     #       not Running/Automatic after the repairs, both re-verified
+    #   success-boundary revalidation (ALL THREE exit-0 branches) - the
+    #       class rule applied to the report itself: a success report must
+    #       state only facts read at the last possible moment, with no
+    #       mutation between the read and the report. NoOperation (clean
+    #       and repair paths), StartService, and Register each hold a
+    #       registration read taken BEFORE their slow, mutating repair
+    #       steps (Set-Service/Start-Service), so each branch calls
+    #       Get-SsmRegistrationForSuccessReport AFTER its final mutation
+    #       and immediately before its summary; the branch prints its
+    #       managed node ID and exits 0 only when the record re-reads as
+    #       present, parseable (a failed read or parse is drift, not a
+    #       pass), and STILL the same managed node ID the branch verified
+    #       earlier. Gone, emptied, rewritten, unreadable, or replaced by
+    #       another identity is reported as drift with exit 3 - the
+    #       manual-intervention/race disposition, because every action
+    #       this run attempted succeeded and the next step (accept the
+    #       replacement identity, or enroll afresh with a NEW activation)
+    #       is a human decision - and the cached ID is never printed; the
+    #       report names what the run already changed ($ChangesSoFar)
+    #       instead of claiming nothing changed. Not drivable from a child
+    #       process: the same lack of path seams as every entry above, and
+    #       the Register caller cannot even reach the boundary past the
+    #       activation-code prompt on closed stdin. The committed pins are
+    #       this disposition, the parse check over the edited script, and
+    #       the idempotence tests above - a guard that false-positived on
+    #       a healthy machine (two reads, ID mismatch by construction)
+    #       would fail their exit-0/same-ID assertions on the validation
+    #       machine. The drift-specific red/green demonstration (scratch
+    #       copy whose module readers flip to a vanished registration on
+    #       the boundary read; pre-fix, the stale ID prints with exit 0;
+    #       post-fix, the drift report and exit 3 replace it) runs on the
+    #       validation machine in phase V4, the same scratch-copy form the
+    #       entries above document.
     #   Reregister pre-clear service reads - fail-closed wrapper plus a
     #       verified-stopped gate before anything destructive
     # This file has no static source-text assertions (its always-runnable
