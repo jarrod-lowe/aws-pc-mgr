@@ -1,6 +1,7 @@
 # Synthetic audit fixture: personal names (SPEC §27) behind the
-# identifying name-field labels — the personal/full/real name family in
-# every case and separator spelling (the label machinery matches a
+# identifying name-field labels — the personal/full/real/display name
+# family (`display` is Entra/M365's Display Name field) in every case
+# and separator spelling (the label machinery matches a
 # lowercased copy of the line). The bare `name` key is deliberately NOT a
 # label: it is an ordinary key everywhere in code and HCL. The value
 # anchor is a NAME SHAPE, not positional: two-or-more word runs of name

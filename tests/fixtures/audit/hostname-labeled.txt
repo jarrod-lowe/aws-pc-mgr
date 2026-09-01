@@ -1,11 +1,13 @@
 # Synthetic audit fixture: labeled hostnames (SPEC §27; review thread
 # 3888208297) — the label alternation covers `hostname`, `host_name`,
-# `HostName`, `HOSTNAME`, `host.name` and the Windows-UI `Computer Name` /
-# `ComputerName` spellings. The value anchor is a single identifier run
+# `HostName`, `HOSTNAME`, `host.name`, the Windows-UI `Computer Name` /
+# `ComputerName`, `Machine Name` and the Windows 11 Settings About
+# page's `Device name` label. The value anchor is a single identifier
+# run
 # of ANY length (letters, digits, hyphens, dots — FQDNs included; one-char
 # computer names like PC1 are real — round 29 removed the 4-plus floor);
 # spaces break the run, which is the prose brake. Doc filler (localhost, hostname, computer,
-# name, your, example.com, example.invalid, test) is excluded by a
+# name, your, the, example.com, example.invalid, test) is excluded by a
 # post-match generic gate. Synthetic values.
 Windows hostname: ALICE-PC
 hostname = "build-runner-01"
