@@ -52,6 +52,31 @@
     disposition as the other registration ambiguities - never a cached
     managed node ID printed with exit 0 (SPEC 22/23).
 
+    Service repairs are shared and dependency-ordered: every branch that
+    repairs AmazonSSMAgent toward the healthy verdict (NoOperation,
+    StartService, Register) runs ONE sequence - restore the Automatic
+    startup type FIRST, then start the service (a Disabled service cannot
+    be started at all), re-verify after every step, and fail closed when
+    the Running/Automatic invariant still does not hold - so the branches
+    cannot drift apart in ordering again.
+
+    The destructive clear is guarded the same way the launch and the
+    success report are: Reregister re-reads the registration immediately
+    before launching amazon-ssm-agent -register -clear - after the
+    operator confirmation and the service stop - and aborts (exit 3,
+    nothing cleared) unless the record is still exactly what the
+    confirmation covered. Gone, emptied, rewritten, or replaced by
+    another enrollment inside the window is a decision the operator must
+    make again against the new state, never something this run clears
+    blind; a record that was unusable (empty or unparseable) at
+    classification still clears while it is STILL unusable (SPEC 22/23).
+    The clear's own postcondition is verified at the same boundary:
+    'Local registration cleared.' prints only after the raw record
+    re-reads as gone, immediately after the native command - a file still
+    present in any form, or an unreadable one, is reported as drift,
+    because a captured exit code 0 is the agent's claim, not proof the
+    file left the disk.
+
     The activation code is never a parameter and never appears on a command
     line (SPEC 20): it is read with a masked prompt via Read-SsmSecret, and
     only when a registration is actually about to run. It is never printed
@@ -225,6 +250,84 @@ function Get-ServiceInfoOrFail {
     }
 }
 
+# Shared service repair for every healthy-verdict branch (SPEC 22/23):
+# drives AmazonSSMAgent to Running AND Automatic through ONE sequence, so
+# the branches cannot drift apart in ordering again. They had: the
+# NoOperation copy started the service BEFORE restoring the startup type,
+# and a Disabled service cannot be started at all (Start-Service fails on
+# it), so a service Group Policy had flipped to Stopped+Disabled aborted
+# the branch with a raw terminating error before Automatic was ever
+# restored - despite the branch existing to repair exactly that drift.
+#
+# ORDERING RULE (the class rule for repairs): a repair sequence must be
+# ordered so every step is executable given the state the previous steps
+# produced. The dependencies here:
+#   - EXISTENCE before configuration: Set-Service/Start-Service
+#     presuppose the service; one that vanished since classification
+#     fails closed below instead of surfacing as a raw terminating error.
+#   - STARTUP TYPE before START: a Disabled service cannot be started,
+#     so the type is restored first and the start that follows is
+#     executable whatever the pre-repair start type was.
+#   - RE-VERIFY after every mutation: each step re-queries through the
+#     fail-closed wrapper, and the start type is repaired once more after
+#     the start (Group Policy can flip it back between the Set-Service
+#     and the re-query; bounded at one re-repair) before the final
+#     verdict requires BOTH facts - or the run fails closed.
+# Returns a PSCustomObject with Service (the final facts, for the report
+# to print), Started and StartupRestored (what this run changed, for the
+# truthful summary and drift clauses), or never returns: a failed query
+# exits 1 inside Get-ServiceInfoOrFail, and every other failure exits 1
+# here after the calling branch's own guidance lines.
+function Repair-SsmServiceForHealth {
+    param([string[]]$FailureGuidance)
+
+    $started = $false
+    $startupRestored = $false
+
+    $currentService = Get-ServiceInfoOrFail
+    if (-not $currentService.Exists) {
+        Write-Fail 'The AmazonSSMAgent service no longer exists at the repair read.'
+        Write-Host 'It existed when this run last verified it, so the repair plan is void. Inspect'
+        Write-Host 'the agent installation and the SSM Agent log, then re-run.'
+        foreach ($line in $FailureGuidance) {
+            Write-Host $line
+        }
+        exit 1
+    }
+
+    if ($currentService.StartType -ne 'Automatic') {
+        Write-Step ("Restoring AmazonSSMAgent startup type to Automatic (was '" + $currentService.StartType + "').")
+        Set-Service -Name 'AmazonSSMAgent' -StartupType Automatic
+        $startupRestored = $true
+        $currentService = Get-ServiceInfoOrFail
+    }
+    if ($currentService.Status -ne 'Running') {
+        Write-Step 'AmazonSSMAgent is not running; starting it.'
+        Start-Service -Name 'AmazonSSMAgent'
+        $started = $true
+        $currentService = Get-ServiceInfoOrFail
+    }
+    if ($currentService.StartType -ne 'Automatic') {
+        Write-Step ("Restoring AmazonSSMAgent startup type to Automatic again (was '" + $currentService.StartType + "'); it flipped back during the repairs.")
+        Set-Service -Name 'AmazonSSMAgent' -StartupType Automatic
+        $startupRestored = $true
+        $currentService = Get-ServiceInfoOrFail
+    }
+    if (($currentService.Status -ne 'Running') -or ($currentService.StartType -ne 'Automatic')) {
+        Write-Fail ("AmazonSSMAgent is not Running/Automatic after the repairs (status '" + $currentService.Status + "', startup '" + $currentService.StartType + "').")
+        foreach ($line in $FailureGuidance) {
+            Write-Host $line
+        }
+        exit 1
+    }
+
+    return [PSCustomObject]@{
+        Service         = $currentService
+        Started         = $started
+        StartupRestored = $startupRestored
+    }
+}
+
 # Race report shared by BOTH last-moment registration guards (SPEC 22/23):
 # the script-side pre-enrollment revalidation (Assert-SsmRegistrationStillAbsent
 # below) and the enrollment runner's own post-verification refusal
@@ -379,6 +482,185 @@ function Get-SsmRegistrationForSuccessReport {
     exit 3
 }
 
+# Registration revalidation immediately before the DESTRUCTIVE CLEAR of the
+# Reregister action (SPEC 22/23) - the third binding of the adjacency
+# invariant: R47 bound the enrollment launch (re-read the registration
+# absence immediately before ssm-setup-cli runs), dd8c0b4 bound the success
+# report (re-read the registration immediately before printing a healthy
+# verdict); this binds the clear. The registration that CLASSIFIED this
+# branch was read at the top of the run, and the Reregister flow spends
+# unbounded wall-clock after that - an interactive confirmation a human
+# can sit on, then a service stop - long enough for another setup process
+# to replace the registration entirely. Clearing blind at that point
+# destroys an identity the operator never inspected and never confirmed;
+# the confirmation covered the record AS IT STOOD when the machine was
+# classified, and only that record may be cleared.
+#
+# Proceed/abort matrix (the classification shape decides what 'still the
+# confirmed record' means; 'unusable' = empty or unparseable):
+#   classified PARSEABLE (an identity the operator saw named):
+#     - re-reads as the SAME managed node ID                -> proceed
+#     - parses to a DIFFERENT ID                            -> abort
+#     - gone, emptied, unreadable, or unparseable NOW       -> abort
+#   classified UNUSABLE (empty or unparseable, cleared sight-unseen by
+#   design - there is no identity to compare):
+#     - still unusable in ANY unusable shape                -> proceed
+#     - parses to a real registration NOW                   -> abort
+#       (an identity appeared that the confirmation never covered)
+#     - the file is gone NOW                                -> abort
+#       (nothing left to clear; the machine changed anyway)
+# A re-read that itself fails aborts for every entry (fail closed).
+#
+# Disposition - exit 3, the manual-intervention/race family: the operator
+# must decide again against the new state, exactly like every other
+# registration ambiguity this script refuses to resolve alone. The
+# calling branch may already have STOPPED the service by the time this
+# runs, so $ChangesSoFar names what the run already did and the report
+# says the clear did not run rather than claiming nothing changed.
+# Returns normally only when the record is still the confirmed one, or
+# never returns.
+function Assert-SsmRegistrationBeforeClear {
+    param(
+        [string]$ClassifiedRegistrationJson,
+        [string]$ChangesSoFar
+    )
+
+    # What classification saw: the parsed identity when the record parsed
+    # then; $null when it was already the unusable shape. The script-level
+    # classification read is passed in verbatim, so this derives from the
+    # same text the classification verdict derived from.
+    $classifiedRegistration = $null
+    if (-not [string]::IsNullOrEmpty($ClassifiedRegistrationJson)) {
+        try {
+            $classifiedRegistration = ConvertFrom-SsmRegistrationJson -Json $ClassifiedRegistrationJson
+        } catch {
+            $classifiedRegistration = $null
+        }
+    }
+
+    # Last-moment re-read, immediately before the clear: $null means the
+    # file is gone, '' means it exists but is empty, text means content.
+    $drift = $null
+    $currentJson = $null
+    try {
+        $currentJson = Get-SsmRegistrationFileJson
+    } catch {
+        $drift = 'The registration file is present but could not be re-read NOW (locked, or its permissions changed mid-run).'
+    }
+
+    if ($null -eq $drift) {
+        $currentRegistration = $null
+        if (-not [string]::IsNullOrEmpty($currentJson)) {
+            try {
+                $currentRegistration = ConvertFrom-SsmRegistrationJson -Json $currentJson
+            } catch {
+                $currentRegistration = $null
+            }
+        }
+
+        if ($null -ne $classifiedRegistration) {
+            if ($null -ne $currentRegistration) {
+                if ($currentRegistration.ManagedInstanceId -ne $classifiedRegistration.ManagedInstanceId) {
+                    $drift = 'The record parses to a DIFFERENT managed node ID than the one the confirmation covered: another enrollment replaced the identity inside the window.'
+                }
+            } elseif ([string]::IsNullOrEmpty($currentJson)) {
+                $drift = 'The registration file is gone or empty NOW; the record this run was confirmed to clear no longer exists.'
+            } else {
+                $drift = 'The record parsed when this run classified it, but cannot be parsed NOW; it was rewritten inside the window.'
+            }
+        } else {
+            if ($null -ne $currentRegistration) {
+                $drift = 'The record was unusable (empty or unparseable) when this run classified it, but parses to a real registration NOW: another enrollment completed inside the window, and the confirmation never covered that identity.'
+            } elseif ($null -eq $currentJson) {
+                $drift = 'The registration file is gone NOW; there is nothing left to clear, and the machine changed inside the window.'
+            }
+            # Anything else is a record still unusable in some shape - the
+            # very thing the confirmation covered - so the clear proceeds.
+        }
+    }
+
+    if ($null -eq $drift) {
+        return
+    }
+
+    Write-Fail 'The registration is not the one this run was confirmed to clear.'
+    Write-Host $drift
+    Write-Host ('What this run already did before this read: ' + $ChangesSoFar + '.')
+    Write-Host 'The clear did NOT run and nothing was deleted by this run. The confirmation'
+    Write-Host 'covered the record as it stood when the machine was classified, and another'
+    Write-Host 'actor changed the machine inside the window since (SPEC 22/23).'
+    Write-Host ('Inspect: the registration file under ' + $env:ProgramData + '\Amazon\SSM\InstanceData;')
+    Write-Host 'Get-Service AmazonSSMAgent; the SSM Agent log. Then re-run this script: it'
+    Write-Host 'classifies the machine afresh and asks for the confirmation again against'
+    Write-Host 'whatever it holds then. What this run already did (above) is not undone.'
+    exit 3
+}
+
+# Registration-ABSENCE revalidation immediately AFTER the destructive clear
+# (SPEC 22/23) - the postcondition-adjacency member of the class invariant:
+# R47 bound the launch to a pre-check, dd8c0b4 bound every success report
+# to a boundary re-read, Assert-SsmRegistrationBeforeClear above bound the
+# clear itself to a pre-clear re-read; this binds the clear's OWN
+# postcondition to the report that claims it. A captured native exit code
+# 0 is the agent's CLAIM that the registration left the disk - not proof
+# (a concurrent enrollment can also write a whole new registration between
+# the command and any later read) - and the operator is about to be told
+# to run a fresh Register flow on the strength of that claim. So
+# 'Local registration cleared.' prints only after the raw record re-reads
+# as gone, immediately after the native command, with nothing but this
+# check between the mutation and the message: a file still present in ANY
+# form - parseable, empty (an empty leftover file still classifies
+# Ambiguous, not registration-less), or unreadable - is drift, and so is
+# a re-read that fails (fail closed: an unreadable post-clear file is not
+# 'cleared').
+#
+# REMAINED vs REAPPEARED, one branch by design: after a captured exit
+# code 0, a still-present record means either the clear did not do what
+# its exit code claims or another enrollment wrote a record after it -
+# and this script cannot actually distinguish those from inside one run.
+# Both leave the machine possibly registered with an identity this run
+# never inspected, and both get the same operator disposition (report
+# drift, exit 3, no automatic retry), so one branch covers both rather
+# than pretending to a distinction the evidence cannot support.
+#
+# Disposition - exit 3, the race/manual-intervention family, consistent
+# with every other Reregister outcome: the service is already stopped and
+# that is not undone; the operator decides against the machine's actual
+# state. $ChangesSoFar names what the run already did, including that the
+# clear command itself reported success.
+# Returns normally only when the record re-reads as gone, or never
+# returns.
+function Assert-SsmRegistrationCleared {
+    param([string]$ChangesSoFar)
+
+    $currentJson = $null
+    $readFailed = $false
+    try {
+        $currentJson = Get-SsmRegistrationFileJson
+    } catch {
+        $readFailed = $true
+    }
+
+    if ((-not $readFailed) -and ($null -eq $currentJson)) {
+        return
+    }
+
+    Write-Fail 'The registration record is still present after a clear that reported success.'
+    Write-Host ('What this run already did before this read: ' + $ChangesSoFar + '.')
+    Write-Host 'The native clear returned exit code 0, but the raw registration record reads as'
+    Write-Host "present NOW - parseable, empty, or unreadable - so the postcondition the"
+    Write-Host "'Local registration cleared.' message would claim does not hold. Either the"
+    Write-Host 'clear did not do what its exit code claims, or another enrollment wrote a'
+    Write-Host 'registration after it; this script cannot distinguish those from inside one'
+    Write-Host 'run, and neither is retried automatically (SPEC 22/23). The machine may be'
+    Write-Host 'registered with an identity this run never inspected.'
+    Write-Host ('Inspect: the registration file under ' + $env:ProgramData + '\Amazon\SSM\InstanceData;')
+    Write-Host 'Get-Service AmazonSSMAgent (deliberately left stopped); the SSM Agent log. Then'
+    Write-Host 're-run this script: it classifies whatever the machine holds now and takes the'
+    Write-Host 'appropriate action (a registered machine is reported, not re-enrolled).'
+    exit 3
+}
+
 # --- 1. elevation (SPEC 21 step 1) ------------------------------------------
 
 $windowsPrincipal = New-Object -TypeName Security.Principal.WindowsPrincipal -ArgumentList ([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -456,34 +738,21 @@ if ($action -eq 'NoOperation') {
 
     # Re-verify the service before declaring health (SPEC 22). The health
     # verdict requires AmazonSSMAgent to be BOTH Running AND Automatic at
-    # re-query time - not merely as classified above. Drift that appeared in
-    # between, for example the service stopping or Group Policy flipping the
-    # startup type to Manual/Disabled, is repaired the same way the
-    # StartService path repairs it (start the service, restore Automatic),
-    # and the invariant is then re-queried and must hold, or the run fails
-    # closed.
-    $serviceStarted = $false
-    $startupRestored = $false
-    $currentService = Get-ServiceInfoOrFail
-    if ($currentService.Status -ne 'Running') {
-        Write-Step 'AmazonSSMAgent stopped since the check above; starting it (registration untouched).'
-        Start-Service -Name 'AmazonSSMAgent'
-        $serviceStarted = $true
-        $currentService = Get-ServiceInfoOrFail
-    }
-    if ($currentService.StartType -ne 'Automatic') {
-        Write-Step ("Restoring AmazonSSMAgent startup type to Automatic (was '" + $currentService.StartType + "').")
-        Set-Service -Name 'AmazonSSMAgent' -StartupType Automatic
-        $startupRestored = $true
-        $currentService = Get-ServiceInfoOrFail
-    }
-    if (($currentService.Status -ne 'Running') -or ($currentService.StartType -ne 'Automatic')) {
-        Write-Fail ("AmazonSSMAgent is not Running/Automatic at the re-check (status '" + $currentService.Status + "', startup '" + $currentService.StartType + "').")
-        Write-Host 'Another actor may be re-applying a service configuration, for example Group'
-        Write-Host 'Policy. Inspect: Get-Service AmazonSSMAgent and the SSM Agent log under'
-        Write-Host ($env:ProgramData + '\Amazon\SSM\Logs. The existing registration was NOT modified.')
-        exit 1
-    }
+    # re-query time - not merely as classified above. Drift that appeared
+    # in between, for example the service stopping or Group Policy flipping
+    # the startup type to Manual/Disabled, is repaired by the same shared,
+    # dependency-ordered sequence every healthy-verdict branch uses (see
+    # Repair-SsmServiceForHealth: startup type restored BEFORE the start,
+    # because a Disabled service cannot be started at all), and the
+    # invariant is then re-queried and must hold, or the run fails closed.
+    $repair = Repair-SsmServiceForHealth -FailureGuidance @(
+        'Another actor may be re-applying a service configuration, for example Group'
+        'Policy. Inspect: Get-Service AmazonSSMAgent and the SSM Agent log under'
+        ($env:ProgramData + '\Amazon\SSM\Logs. The existing registration was NOT modified.')
+    )
+    $currentService = $repair.Service
+    $serviceStarted = $repair.Started
+    $startupRestored = $repair.StartupRestored
 
     # Success-report adjacency (the class rule applied to the REPORT side):
     # the registration this branch holds was read BEFORE the repairs above,
@@ -527,38 +796,23 @@ if ($action -eq 'StartService') {
     $registration = Get-SsmRegistrationOrAmbiguousExit
     Write-Step 'Registration exists and AmazonSSMAgent is stopped; starting the existing service (SPEC 23).'
 
-    # Restore Automatic startup before starting, like the Register path: a
-    # Manual/Disabled start type would leave the node offline again after the
-    # next reboot even though it is Running now.
-    $currentService = Get-ServiceInfoOrFail
-    $startupRestored = $false
-    if ($currentService.StartType -ne 'Automatic') {
-        Write-Step ("Restoring AmazonSSMAgent startup type to Automatic (was '" + $currentService.StartType + "').")
-        Set-Service -Name 'AmazonSSMAgent' -StartupType Automatic
-        $startupRestored = $true
-    }
-
-    Start-Service -Name 'AmazonSSMAgent'
-    $currentService = Get-ServiceInfoOrFail
-
-    # The verdict needs BOTH facts, so BOTH are re-verified after the start:
-    # the restore above can itself be undone between the Set-Service and
-    # this re-query (Group Policy re-applying a Manual/Disabled start type),
-    # and a service that is Running but not Automatic is the same
-    # offline-after-next-reboot state the restore exists to prevent.
-    if ($currentService.StartType -ne 'Automatic') {
-        Write-Step ("Restoring AmazonSSMAgent startup type to Automatic (was '" + $currentService.StartType + "').")
-        Set-Service -Name 'AmazonSSMAgent' -StartupType Automatic
-        $startupRestored = $true
-        $currentService = Get-ServiceInfoOrFail
-    }
-    if (($currentService.Status -ne 'Running') -or ($currentService.StartType -ne 'Automatic')) {
-        Write-Fail ("AmazonSSMAgent is not Running/Automatic after starting it (status '" + $currentService.Status + "', startup '" + $currentService.StartType + "').")
-        Write-Host 'Another actor may be re-applying a service configuration, for example Group'
-        Write-Host 'Policy. Inspect: Get-Service AmazonSSMAgent and the SSM Agent log. The existing'
-        Write-Host 'registration was NOT modified and no activation was consumed.'
-        exit 1
-    }
+    # Repairs run through the same shared, dependency-ordered sequence every
+    # healthy-verdict branch uses (see Repair-SsmServiceForHealth): the
+    # startup type is restored BEFORE the start - a Manual/Disabled start
+    # type would leave the node offline again after the next reboot even
+    # though it is Running now, and a Disabled service cannot be started at
+    # all - and the start type is re-verified after the start, because the
+    # restore can be undone between the Set-Service and the re-query. The
+    # start itself is conditional on the re-read status, so the flags (and
+    # the truthful summary below) reflect what this run actually did even
+    # when another actor already started the service inside the window.
+    $repair = Repair-SsmServiceForHealth -FailureGuidance @(
+        'Another actor may be re-applying a service configuration, for example Group'
+        'Policy. Inspect: Get-Service AmazonSSMAgent and the SSM Agent log. The existing'
+        'registration was NOT modified and no activation was consumed.'
+    )
+    $currentService = $repair.Service
+    $startupRestored = $repair.StartupRestored
 
     # Success-report adjacency, the same ordering as NoOperation above: the
     # registration this branch holds was read before Set-Service/Start-
@@ -566,19 +820,27 @@ if ($action -eq 'StartService') {
     # after re-reading and re-validating the registration past those
     # mutations - gone, changed, or unreadable at this moment is reported
     # as drift, never a cached ID with exit 0.
-    $changesMade = 'started AmazonSSMAgent'
-    if ($startupRestored) {
+    $changesMade = 'nothing at all'
+    if ($repair.Started -and $startupRestored) {
         $changesMade = 'started AmazonSSMAgent and restored its Automatic startup type'
+    } elseif ($repair.Started) {
+        $changesMade = 'started AmazonSSMAgent'
+    } elseif ($startupRestored) {
+        $changesMade = 'restored the AmazonSSMAgent Automatic startup type'
     }
     $registration = Get-SsmRegistrationForSuccessReport -Registration $registration -ChangesSoFar $changesMade
 
     Write-Host ''
     Write-Host ('Managed node ID : ' + $registration.ManagedInstanceId)
     Write-Host ('Service         : AmazonSSMAgent ' + $currentService.Status + ' / startup ' + $currentService.StartType)
-    if ($startupRestored) {
+    if ($repair.Started -and $startupRestored) {
         Write-Step 'Service started and Automatic startup restored; existing registration preserved.'
-    } else {
+    } elseif ($repair.Started) {
         Write-Step 'Service started; existing registration preserved.'
+    } elseif ($startupRestored) {
+        Write-Step 'Automatic startup restored; the service was already running again; existing registration preserved.'
+    } else {
+        Write-Step 'The service was already running again; existing registration preserved.'
     }
     exit 0
 }
@@ -710,26 +972,18 @@ if ($action -eq 'Register') {
         Write-Host 'registration data was NOT deleted.'
         exit 1
     }
-    $startupSetAfter = $false
-    $serviceStartedAfter = $false
-    if ($serviceAfter.StartType -ne 'Automatic') {
-        Write-Step ("Setting AmazonSSMAgent startup type to Automatic (was '" + $serviceAfter.StartType + "').")
-        Set-Service -Name 'AmazonSSMAgent' -StartupType Automatic
-        $startupSetAfter = $true
-        $serviceAfter = Get-ServiceInfoOrFail
-    }
-    if ($serviceAfter.Status -ne 'Running') {
-        Write-Step 'AmazonSSMAgent is not running after registration; starting it.'
-        Start-Service -Name 'AmazonSSMAgent'
-        $serviceStartedAfter = $true
-        $serviceAfter = Get-ServiceInfoOrFail
-    }
-    if (($serviceAfter.Status -ne 'Running') -or ($serviceAfter.StartType -ne 'Automatic')) {
-        Write-Fail ("AmazonSSMAgent is not Running/Automatic (status '" + $serviceAfter.Status + "', startup '" + $serviceAfter.StartType + "').")
-        Write-Host 'Registration data was NOT deleted. Inspect: Get-Service AmazonSSMAgent and the'
-        Write-Host 'SSM Agent log; the node may still be completing its first connection.'
-        exit 1
-    }
+    # Post-enrollment repairs run through the same shared, dependency-
+    # ordered sequence every healthy-verdict branch uses (see
+    # Repair-SsmServiceForHealth); the exists check above stays here so a
+    # missing agent right after enrollment is reported in this branch's own
+    # terms before any repair is attempted.
+    $repair = Repair-SsmServiceForHealth -FailureGuidance @(
+        'Registration data was NOT deleted. Inspect: Get-Service AmazonSSMAgent and the'
+        'SSM Agent log; the node may still be completing its first connection.'
+    )
+    $serviceAfter = $repair.Service
+    $startupSetAfter = $repair.StartupRestored
+    $serviceStartedAfter = $repair.Started
 
     Remove-Variable -Name ActivationId -ErrorAction SilentlyContinue
 
@@ -825,12 +1079,16 @@ if ($action -eq 'Reregister') {
     # are both tolerated; the clear only proceeds once the service is verified
     # stopped. The service is deliberately NOT started again in this run: with
     # no registration left it has nothing to run with, and the fresh Register
-    # run (a new activation) brings it back.
+    # run (a new activation) brings it back. $stopNote records what this run
+    # actually did here, for the pre-clear guard's drift report below.
+    $stopNote = 'nothing at all'
     $serviceBeforeClear = Get-ServiceInfoOrFail
     if (-not $serviceBeforeClear.Exists) {
         Write-Step 'AmazonSSMAgent service not found; nothing to stop before the clear.'
+        $stopNote = 'the AmazonSSMAgent service was not found, so nothing was stopped'
     } elseif ($serviceBeforeClear.Status -eq 'Stopped') {
         Write-Step 'AmazonSSMAgent is already stopped.'
+        $stopNote = 'nothing at all - AmazonSSMAgent was already stopped'
     } else {
         Write-Step ("Stopping AmazonSSMAgent before the clear (was '" + $serviceBeforeClear.Status + "').")
         try {
@@ -841,6 +1099,7 @@ if ($action -eq 'Reregister') {
             Write-Host 'Get-Service AmazonSSMAgent and the SSM Agent log, then re-run.'
             exit 3
         }
+        $stopNote = 'stopped AmazonSSMAgent'
     }
 
     $serviceAtClear = Get-ServiceInfoOrFail
@@ -849,6 +1108,16 @@ if ($action -eq 'Reregister') {
         Write-Host 'Inspect: Get-Service AmazonSSMAgent and the SSM Agent log, then re-run.'
         exit 3
     }
+
+    # Destructive-act adjacency, the third binding of the class invariant
+    # (see Assert-SsmRegistrationBeforeClear above): the registration that
+    # classified this branch was read before an interactive confirmation a
+    # human can sit on and before the service stop, so the clear runs only
+    # after the record is re-read immediately beforehand and is still
+    # exactly what the confirmation covered. Between this guard and the
+    # native clear below there is no mutation and no slow step - only the
+    # error-preference juggling the native call itself needs.
+    Assert-SsmRegistrationBeforeClear -ClassifiedRegistrationJson $registrationJson -ChangesSoFar $stopNote
 
     Write-Step 'Clearing the local registration (amazon-ssm-agent -register -clear).'
     # Native-call discipline, mirroring Invoke-SsmEnrollment in
@@ -867,8 +1136,9 @@ if ($action -eq 'Reregister') {
     # commonly 0 - which the exit-code branch would read as a successful
     # clear. The sentinel closes that hole: $LASTEXITCODE is reset to $null
     # before the call, and a still-$null value after it is a hard failure
-    # of the clear. Only a genuinely captured exit code 0 may print the
-    # success message below.
+    # of the clear. Only a genuinely captured exit code 0 may reach the
+    # post-clear verification below, and only that verification may print
+    # the success message.
     $previousEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     $clearExitCode = $null
@@ -898,6 +1168,14 @@ if ($action -eq 'Reregister') {
         Write-Host 'the SSM Agent log before re-running.'
         exit 3
     }
+
+    # Postcondition adjacency (see Assert-SsmRegistrationCleared above): a
+    # captured exit code 0 is the agent's claim, not proof the record left
+    # the disk, and the completion message below claims the clear's own
+    # postcondition - so the record is re-verified gone immediately after
+    # the native command, with nothing but this check between the mutation
+    # and the message.
+    Assert-SsmRegistrationCleared -ChangesSoFar ($stopNote + '; ran the clear, which reported success (exit code 0)')
 
     Write-Step 'Local registration cleared.'
     Write-Host 'AmazonSSMAgent has deliberately been left STOPPED: without a registration it'

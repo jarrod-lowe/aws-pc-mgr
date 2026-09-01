@@ -245,14 +245,16 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       emptied) or throw (unreadable/unparseable) exits 3, the same
     #       ambiguous verdict classification gives an unparseable file
     #   NoOperation service re-check - fail-closed on query failure (exit
-    #       1); a stopped service is started and a non-Automatic start type
-    #       restored, then BOTH Running AND Automatic are re-queried and
-    #       must hold or the run exits 1
+    #       1); repairs run through the shared Repair-SsmServiceForHealth
+    #       (see the service-repair ordering entry below), then BOTH
+    #       Running AND Automatic are re-queried and must hold or the run
+    #       exits 1
     #   StartService registration re-read - the same fail-closed guard
-    #   StartService service checks - fail-closed wrapper; the start type is
-    #       re-verified after the start (it can be flipped back between the
-    #       pre-start Set-Service and the post-start query), and both facts
-    #       are required for success
+    #   StartService service checks - the same shared repair sequence
+    #       (Repair-SsmServiceForHealth); both facts are required for
+    #       success, the start is conditional on the re-read status, and
+    #       the summary lines state what actually ran (started /
+    #       restored / already running again)
     #   Register pre-enrollment re-classification - the LAST statement
     #       before Invoke-SsmEnrollment: the service and registration are
     #       re-read (fail-closed wrapper; a failed registration re-read
@@ -330,6 +332,81 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       entries above document.
     #   Reregister pre-clear service reads - fail-closed wrapper plus a
     #       verified-stopped gate before anything destructive
+    #   service-repair ordering (round 51 class sweep) - every multi-
+    #       mutation repair sequence must be ordered so each step is
+    #       executable given the state the previous steps produced. One
+    #       shared helper, Repair-SsmServiceForHealth, now owns the
+    #       ordering for ALL THREE healthy-verdict branches (NoOperation,
+    #       StartService, Register): existence verified before
+    #       configuration (a service vanished since classification fails
+    #       closed with a crafted report, not a raw terminating error),
+    #       startup type restored BEFORE the start (a Disabled service
+    #       cannot be started at all - Start-Service fails on it, which
+    #       is the bug this round fixed: the old NoOperation copy started
+    #       first and aborted on a Stopped+Disabled service before
+    #       Automatic was ever restored), re-query after every mutation,
+    #       one bounded re-repair of a start type flipped back after the
+    #       start, then the verdict requires both facts or exits 1. Sweep
+    #       verdicts: NoOperation repairs - VIOLATION, fixed by the
+    #       helper; StartService branch - was ordered correctly, now
+    #       unified (its unconditional Start-Service became conditional,
+    #       keeping the flags and summary truthful when another actor
+    #       already started the service); Register post-enrollment
+    #       repairs - was ordered correctly, now unified; Reregister
+    #       pre-clear steps - PASS (agent-exe existence checked before
+    #       the launch with the $LASTEXITCODE sentinel covering a vanish
+    #       inside the window, service existence re-read before
+    #       Stop-Service, verified-stopped gate before the clear);
+    #       module-internal enrollment ordering (download, signature
+    #       verify, pre-launch re-read, launch) - PASS, verify before
+    #       execute, out of this file's scope
+    #   pre-clear registration revalidation (Reregister) - destructive-act
+    #       adjacency, the third binding of the class invariant (R47
+    #       bound the launch, the success-boundary entry above bound the
+    #       report, this binds the clear): Assert-SsmRegistrationBeforeClear
+    #       re-reads the registration immediately before
+    #       amazon-ssm-agent -register -clear, after the operator
+    #       confirmation and the service stop, and the clear runs only
+    #       when the record is still exactly what the confirmation
+    #       covered. Classified parseable: the SAME managed node ID is
+    #       required; gone, emptied, rewritten-unusable, a different ID,
+    #       or an unreadable re-read aborts. Classified unusable (empty
+    #       or unparseable - cleared sight-unseen by design, no identity
+    #       to compare): still unusable in any shape proceeds; a record
+    #       that now PARSES aborts (an identity the confirmation never
+    #       covered); the file gone aborts. Drift exits 3 (race/
+    #       manual-intervention family; the operator re-confirms against
+    #       the new state) naming what the run already did ($stopNote:
+    #       stopped the service / already stopped / service missing).
+    #       Not child-process-drivable (no seams, and the confirmation
+    #       prompt blocks on closed stdin before the branch acts); the
+    #       committed pin is this disposition plus the parse check, and
+    #       the scratch-copy red/green demonstration (module readers
+    #       flip to a replaced identity at the pre-clear read; pre-fix,
+    #       the clear destroys the replacement; post-fix, exit 3 with
+    #       nothing cleared) runs on the validation machine in phase V4
+    #   post-clear absence revalidation (Reregister) - the postcondition-
+    #       adjacency member of the class invariant, and the clear's
+    #       POST-condition joining the PRE-condition above:
+    #       Assert-SsmRegistrationCleared re-reads the raw record
+    #       immediately after the native clear and the completion message
+    #       'Local registration cleared.' prints only when it re-reads as
+    #       GONE ($null - the file absent). Still present in ANY form
+    #       (parseable, empty - an empty leftover classifies Ambiguous,
+    #       not registration-less - or unreadable) or a failed re-read is
+    #       drift, exit 3 (race/manual-intervention family; the service
+    #       stays stopped, the operator decides against the actual
+    #       state), never an automatic retry. REMAINED vs REAPPEARED is
+    #       ONE branch by design: after a captured exit code 0 the script
+    #       cannot distinguish a clear that lied from a concurrent
+    #       enrollment that wrote afterwards, and the disposition is
+    #       identical, so the code does not pretend to the distinction.
+    #       Same drivability shape as the pre-clear entry above (the
+    #       confirmation prompt blocks closed stdin first); same V4
+    #       scratch-copy proof form (readers flip to present-at-the-post-
+    #       read; pre-fix, 'Local registration cleared.' prints over the
+    #       surviving record; post-fix, the drift report and exit 3
+    #       replace it)
     # This file has no static source-text assertions (its always-runnable
     # tier is the parser and contract checks only), so the committed
     # coverage is what IS drivable: the parse check above runs over the
