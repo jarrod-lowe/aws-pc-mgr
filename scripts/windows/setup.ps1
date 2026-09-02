@@ -90,6 +90,14 @@
     of no return, reporting must complete - fail-closed exits belong to
     decision queries, fail-soft wording to report-only ones (SPEC 22/23).
 
+    Boundary reads are ORDERED at every guarded act and every report:
+    the validation whose staleness causes the most damage is read
+    closest to the act - service-state and other non-identity facts
+    first, the registration identity LAST, the final read before the
+    mutation (and, symmetrically, before the completion message), so no
+    slower query can open a window between accepting an identity and
+    acting on it.
+
     The activation code is never a parameter and never appears on a command
     line (SPEC 20): it is read with a masked prompt via Read-SsmSecret, and
     only when a registration is actually about to run. It is never printed
@@ -563,7 +571,10 @@ function Get-SsmRegistrationForSuccessReport {
 # stale, not mere preparation for the one after it: once before the service
 # STOP (a stale run must not take a replacement identity's agent offline
 # and leave the newly enrolled node dark until repaired) and once
-# immediately before amazon-ssm-agent -register -clear. The registration
+# immediately before amazon-ssm-agent -register -clear. At both call sites
+# the guard is the FINAL read before the mutation (round 58: boundary reads
+# are ordered most-damage-closest, so no slower query follows an accepted
+# identity and opens a window before the act). The registration
 # that CLASSIFIED this branch was read at the top of the run, and the
 # Reregister flow spends unbounded wall-clock after that - an interactive
 # confirmation a human can sit on, then the stop - long enough for another
@@ -1258,30 +1269,19 @@ if ($action -eq 'Reregister') {
         exit 3
     }
 
-    # Destructive-act adjacency, the second call of the same guard (see
-    # Assert-SsmRegistrationBeforeClear above): the registration that
-    # classified this branch was read before an interactive confirmation a
-    # human can sit on and before the service stop, so the clear runs only
-    # after the record is re-read immediately beforehand and is still
-    # exactly what the confirmation covered. Between this guard and the
-    # native clear below there is no mutation and no slow step - only the
-    # stopped re-verification directly below (a read) and the
-    # error-preference juggling the native call itself needs.
-    Assert-SsmRegistrationBeforeClear -ClassifiedRegistrationJson $registrationJson -ChangesSoFar $stopNote
-
     # The clear is justified by TWO facts, so both are read at its
-    # boundary: the registration identity (revalidated just above) and the
-    # service being stopped - verified after the stop, several statements
-    # ago. A service another actor restarted in between is exactly what
-    # the documented stop-before-clear sequence exists to prevent: a
-    # running agent can hold or rewrite its registration data while
-    # -register -clear runs, turning the clear into a partial one the
-    # post-clear guard could only REPORT, not prevent. So the stopped fact
-    # is re-read here, immediately before the mutation, like every other
-    # justifying fact; a running service aborts, and deliberately without
-    # re-stopping: an actor actively restarting the agent mid-sequence is
-    # the operator's fight, not this run's (bounded, like every repair
-    # here).
+    # boundary - and the reads have an ORDER (round 58): the validation
+    # whose staleness causes the most damage is read CLOSEST to the act.
+    # This one, read FIRST, is the service-stopped fact (verified after
+    # the stop, several statements ago): a service another actor
+    # restarted in between is exactly what the documented
+    # stop-before-clear sequence exists to prevent - a running agent can
+    # hold or rewrite its registration data while -register -clear runs,
+    # turning the clear into a partial one the post-clear guard could
+    # only REPORT, not prevent. A running service aborts, deliberately
+    # without re-stopping: an actor actively restarting the agent
+    # mid-sequence is the operator's fight, not this run's (bounded, like
+    # every repair here).
     $serviceAtClearBoundary = Get-ServiceInfoOrFail
     if ($serviceAtClearBoundary.Exists -and ($serviceAtClearBoundary.Status -ne 'Stopped')) {
         Write-Fail ("AmazonSSMAgent is running again at the clear boundary (status '" + $serviceAtClearBoundary.Status + "'); the clear was NOT run.")
@@ -1292,6 +1292,23 @@ if ($action -eq 'Reregister') {
         Write-Host 'SSM Agent log, then re-run (the confirmation is asked for again).'
         exit 3
     }
+
+    # Destructive-act adjacency, the second call of the same guard (see
+    # Assert-SsmRegistrationBeforeClear above): the registration that
+    # classified this branch was read before an interactive confirmation a
+    # human can sit on and before the service stop, so the clear runs only
+    # after the record is re-read and is still exactly what the
+    # confirmation covered. The guard is deliberately the LAST read
+    # before the native command (round 58): the service query above used
+    # to sit between this guard and the clear, and inside that CIM query
+    # another setup could replace the registration the already-run guard
+    # had just accepted - an unnoticed replacement here makes the clear
+    # destroy an identity the operator never confirmed, the most damage
+    # any boundary staleness can cause, so the identity read sits closest
+    # to the act. Between this guard and the clear below there is no
+    # read, no mutation, and no slow step - only the error-preference
+    # juggling the native call itself needs.
+    Assert-SsmRegistrationBeforeClear -ClassifiedRegistrationJson $registrationJson -ChangesSoFar $stopNote
 
     Write-Step 'Clearing the local registration (amazon-ssm-agent -register -clear).'
     # Native-call discipline, mirroring Invoke-SsmEnrollment in
@@ -1343,32 +1360,28 @@ if ($action -eq 'Reregister') {
         exit 3
     }
 
-    # Postcondition adjacency (see Assert-SsmRegistrationCleared above): a
-    # captured exit code 0 is the agent's claim, not proof the record left
-    # the disk, and the completion message below claims the clear's own
-    # postcondition - so the record is re-verified gone immediately after
-    # the native command, with nothing but this check between the mutation
-    # and the message.
-    Assert-SsmRegistrationCleared -ChangesSoFar ($stopNote + '; ran the clear, which reported success (exit code 0)')
-
     # Report adjacency for the completion message: the STOPPED claim is a
-    # machine-state fact like any other reported fact, so it is read here,
-    # at the boundary, instead of being asserted from the stop sequence's
+    # machine-state fact like any other reported fact, so it is read at
+    # the boundary, instead of being asserted from the stop sequence's
     # earlier state - another actor can restart the service inside the
     # clear window, and the message must match the machine.
     #
     # Failure handling is PROPORTIONAL TO THE QUERY'S ROLE: the point of
-    # no return has passed (the clear completed and its postcondition was
-    # verified by the guard above), and this read feeds ONLY the wording
-    # below - nothing follows it but console output - so it is a
-    # REPORT-only query and must fail SOFT. The fail-closed wrapper
-    # belongs to DECISION queries, where acting on unknown state is
-    # dangerous; exiting here instead would misreport a COMPLETED
-    # destructive operation over a transient query failure, burying the
-    # verified clear result and the fresh-activation guidance under an
-    # unrelated error report. A failed read degrades the wording to
-    # 'unknown' - which is not a claim of any state - and reporting
+    # no return has passed (the clear completed, and its postcondition is
+    # verified by the guard below), and this read feeds ONLY the wording
+    # of the message - so it is a REPORT-only query and must fail SOFT.
+    # The fail-closed wrapper belongs to DECISION queries, where acting
+    # on unknown state is dangerous; exiting here instead would misreport
+    # a COMPLETED destructive operation over a transient query failure,
+    # burying the verified clear result and the fresh-activation guidance
+    # under an unrelated error report. A failed read degrades the wording
+    # to 'unknown' - which is not a claim of any state - and reporting
     # completes.
+    #
+    # Read order follows the round-58 rule even here, at the report
+    # boundary: the service wording is read FIRST, and the registration
+    # postcondition - the message's PRIMARY claim - is verified LAST, the
+    # closest read to the print.
     $serviceAtReport = $null
     $serviceReadFailed = $false
     try {
@@ -1376,6 +1389,13 @@ if ($action -eq 'Reregister') {
     } catch {
         $serviceReadFailed = $true
     }
+
+    # Postcondition adjacency (see Assert-SsmRegistrationCleared above): a
+    # captured exit code 0 is the agent's claim, not proof the record left
+    # the disk, and the completion message below claims the clear's own
+    # postcondition - so the record is re-verified gone, as the LAST read
+    # before the message, nothing but console output after it.
+    Assert-SsmRegistrationCleared -ChangesSoFar ($stopNote + '; ran the clear, which reported success (exit code 0)')
 
     Write-Step 'Local registration cleared.'
     if ($serviceReadFailed) {

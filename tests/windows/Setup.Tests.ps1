@@ -386,8 +386,13 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       the run already did ($stopNote: stopped the service /
     #       already stopped / service missing). The clear is justified
     #       by a SECOND fact too - the service being stopped - so it is
-    #       re-read AT the clear boundary (after the registration
-    #       guard, immediately before the native command): a service
+    #       re-read AT the clear boundary, FIRST (round 58: boundary
+    #       reads are ordered, the most damage-carrying validation
+    #       closest to the act, so the identity guard - not a slower
+    #       service query - is the final read before the native
+    #       command; the R53 order ran the service query between the
+    #       accepted identity and the clear, and inside that CIM query
+    #       another setup could replace the registration): a service
     #       another actor restarted aborts the clear (a running agent
     #       can hold or rewrite its registration data mid-clear; the
     #       post-clear guard could only report that partial clear, not
@@ -417,14 +422,22 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       decision; check-then-act at irreducible scale, the stop is
     #       reversible, and the pre-clear guard re-runs - ADJUDICATED
     #       W3 stop -> clear: identity/raw drift caught by the pre-clear
-    #       revalidation (adjacent); a service restarted in the window
-    #       caught by the stopped re-verification AT the clear boundary
-    #       - boundary check FIXED this round (was: clear ran against a
-    #       restarted agent with only post-clear detection);
+    #       revalidation; a service restarted in the window caught by
+    #       the stopped re-verification AT the clear boundary (boundary
+    #       check fixed round 53; read ORDER corrected round 58 - the
+    #       service query had sat between the accepted identity and the
+    #       clear, and inside that CIM query another setup could
+    #       replace the registration the already-run guard had
+    #       accepted; the identity guard is now the final read before
+    #       the native command);
     #       same-ID-different-fields proceeds - ADJUDICATED (the
-    #       identity is the confirmed unit); statements between the
-    #       boundary read and the native command are the irreducible
-    #       R47-scale residue - ADJUDICATED
+    #       identity is the confirmed unit); between the identity read
+    #       and the native command only the sentinel/EAP statements
+    #       remain - RE-ADJUDICATED (round 58): the round-53 residue
+    #       cell called 'statements between' irreducible, but the
+    #       service query was a removable statement and reordering
+    #       removed it; what remains is genuinely statement-only
+    #       residue, R47-scale
     #       W4 clear -> post-clear read: a surviving or reappearing
     #       record caught by the post-clear guard (one branch for
     #       remained/reappeared - a captured exit 0 cannot distinguish
@@ -547,6 +560,51 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       Stopped; pre-fix, raw error output / an unverified
     #       nothing-changed claim; post-fix, the guided reports above
     #       with boundary re-reads)
+    #   boundary-read ORDER (round 58 class sweep) - at every guarded
+    #       act and every report, the boundary reads are ordered so the
+    #       validation whose staleness causes the most damage is read
+    #       CLOSEST to the act: service-state and other non-identity
+    #       facts first, the registration identity LAST - the final
+    #       read before the mutation (or the print), so no slower query
+    #       can open a window between accepting an identity and acting
+    #       on it. Pre-act read sequences, in execution order, verdict
+    #       each:
+    #       Reregister STOP - service facts (stop decision) then the
+    #       registration guard, then only the branch decision before
+    #       Stop-Service - identity last, PASS
+    #       Reregister CLEAR - VIOLATION (the finding): the R53 order
+    #       ran the registration guard, THEN the stopped re-verification
+    #       query, THEN the clear, and inside that CIM query another
+    #       setup could replace the registration the already-run guard
+    #       had accepted - FIXED: stopped re-verification first, the
+    #       guard the final read, only sentinel/EAP statements between
+    #       it and the native command
+    #       Reregister COMPLETION REPORT - VIOLATION by the same
+    #       standard: the post-clear registration guard ran, THEN the
+    #       service wording read, THEN the print - FIXED: service read
+    #       first (its soft-fail arms unchanged), the postcondition
+    #       guard LAST, closest to the print whose primary claim it is
+    #       Enrollment launch (module, R47) - signature verification,
+    #       then the registration re-read, then only sentinel/EAP
+    #       statements before the native launch - identity last, PASS
+    #       Repair mutations (shared helper) - no identity read
+    #       participates: repairs are service-state acts justified by
+    #       immediately-adjacent service reads, and identity protection
+    #       lives at the report boundary (the success-boundary guard) -
+    #       ADJUDICATED, no identity read to order
+    #       NoOperation report - helper's final service read, then the
+    #       registration guard, then prints - identity last, PASS
+    #       StartService report - same shape - identity last, PASS
+    #       Register report - helper's final service read, then the
+    #       registration guard, then prints - identity last, PASS
+    #       check.ps1 - strictly read-only, no acts - out of the class
+    #       by definition
+    #       Net: two boundaries carried a post-identity query (the
+    #       clear boundary this finding names, and - by the sweep's own
+    #       standard - the completion report); both now read the
+    #       identity last. The round-53 'irreducible residue'
+    #       adjudication is revised honestly above: the service query
+    #       was a removable statement, and reordering removed it
     #   post-clear absence revalidation (Reregister) - the postcondition-
     #       adjacency member of the class invariant, and the clear's
     #       POST-condition joining the PRE-condition above:
@@ -574,7 +632,10 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       prints its truthful variant instead of the stopped claim
     #       from the stop sequence's earlier state - and (round 54) a
     #       FAILED read prints an explicit unknown arm, which is not a
-    #       claim, instead of aborting the report.
+    #       claim, instead of aborting the report; the reads follow the
+    #       round-58 order even here (service wording first, the
+    #       registration postcondition verified LAST, closest to the
+    #       print).
     # This file has no static source-text assertions (its always-runnable
     # tier is the parser and contract checks only), so the committed
     # coverage is what IS drivable: the parse check above runs over the
