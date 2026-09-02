@@ -593,11 +593,13 @@ GENERIC_LABELED_HOSTS=' localhost hostname computer name your the example.com ex
 # there either; its aws- prefix stays optional, so a bare `SecretAccessKey:`
 # (the SSM agent log spelling) matches too.
 #
-# The account-id-context detector is the same machinery with a one-word
-# label — `account`, its `id` suffix optional — so snake_case `account_id`,
-# camelCase `accountId`, UPPER `ACCOUNT`, the `aws_account` prefix (the
-# label matches inside the longer name) and the JSON `"Account"` key an STS
-# GetCallerIdentity dump prints are all the one pattern, in every case and
+# The account-id-context detector is the same machinery with a
+# list-driven label — ACCOUNT_ID_LABEL_FORMS is the single source — so
+# snake_case `account_id`, camelCase `accountId`, UPPER `ACCOUNT`, the
+# `aws_account` prefix (the label matches inside the longer name), the
+# JSON `"Account"` key an STS GetCallerIdentity dump prints and, since
+# round 57, the EC2-style `OwnerId` field are all the one pattern, in
+# every case and
 # separator spelling. Its 12-digit value anchor is what keeps prose safe:
 # a bare `Account:` label whose value is an account NAME or free text never
 # fires — only a label separated (`=`/`:`, optional quotes) from a 12-digit
@@ -615,7 +617,14 @@ GENERIC_LABELED_HOSTS=' localhost hostname computer name your the example.com ex
 # `"Account"` JSON key — all reach the one pattern through the span match,
 # so nothing was added; `owner` alone stays EXCLUDED with its reason (an
 # ordinary Terraform/prose noun whose labeled values are teams and
-# services, not the 12-digit identifier).
+# services, not the 12-digit identifier). Round 57 (thread 3911191615)
+# re-adjudicated the owner family beside ACCOUNT_ID_LABEL_FORMS:
+# `owner…id` is INCLUDED (the EC2 image/description record field
+# `OwnerId: 123456789012` — an unambiguous owner-qualified identifier,
+# a different thing from the bare noun round 48 excluded), while bare
+# `owner`, `account owner`, `owner account`, the `Owners:` list syntax and
+# the `--owners` flag stay excluded, each with its recorded reason — the
+# full verdict table lives beside the word list.
 #
 # The SSO-profile and machine-serial detectors are the same label machinery
 # with value anchors chosen for values that are SHORT arbitrary strings —
@@ -743,7 +752,8 @@ AWS_PROFILE_FLAG_FORMS='-- profile'
 AWS_PROFILE_MATRIX_VALUES='mxprod7,9prod.name-x,MX-Prod_99'
 # compose_label_alt FORMS — the one composer every word-sequence label
 # vocabulary runs through (AWS_PROFILE_LABEL_FORMS,
-# AWS_PROFILE_FLAG_FORMS, WINUSER_LABEL_FORMS): each form's words joined
+# AWS_PROFILE_FLAG_FORMS, WINUSER_LABEL_FORMS, ACCOUNT_ID_LABEL_FORMS):
+# each form's words joined
 # with LABEL_WORD_SEP, forms joined with `|`, the alternation echoed.
 # POSIX sh has no local, so it runs inside a command substitution and no
 # scratch variable leaks (the round-48 copy of this loop unset its
@@ -1132,8 +1142,57 @@ HOSTNAME_VALUE='[A-Za-z0-9][A-Za-z0-9.-]*'
 # `-` are legal only from the second character on and the charsweep pins
 # that tier with must-silent first-position rows.
 HOSTNAME_ALPHABET_MEMBERS='. - A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9'
+# ACCOUNT_ID_LABEL_FORMS — the account-id-context label's accepted word
+# sequences, one form per line: the machine source of a label that was a
+# hand-composed optional suffix until round 57 (the same list-driven
+# restructure the third winuser vocabulary miss forced in round 50).
+# Composed through the shared compose_label_alt; the matrix rows
+# st_label_matrix generates derive from this list. VOCABULARY SWEEP, each
+# INCLUDE with its source:
+#   account          core — `Account` in STS GetCallerIdentity dumps,
+#                    ACCOUNT env keys, the aws_account prefix (span match)
+#   account id       AccountId / account_id / ACCOUNT-ID — the qualified
+#                    key every AWS SDK and Terraform provider writes
+#   account number   AccountNumber, the billing/organizations spelling
+#   owner id         round 57 (thread 3911191615): the AWS record field —
+#                    `OwnerId: 123456789012` in an EC2 image record,
+#                    `Owner ID = "…"` — an unambiguous owner-qualified
+#                    account identifier (round 48 excluded the bare noun
+#                    `owner`, never the owner+id form; the re-adjudication
+#                    is recorded in the round-48 sweep note above)
+# EXCLUDED, each with its reason (round 48's adjudications stand, plus
+# round 57's sweep of the owner-family neighbors):
+#   owner            the bare Terraform/prose noun — its labeled values
+#                    are teams and services, not the 12-digit identifier
+#                    (round 48; retained round 57, pinned silent)
+#   account owner    prose ordering, same ordinary-noun reason — a
+#                    committed `account_owner = <12 digits>` is already
+#                    the standing silent pin of that exclusion
+#   owner account    no cited source prints a 12-digit value behind this
+#                    spelling (it names purchase/reservation APIs outside
+#                    this audit's cited sources)
+#   Owners list      request-side list syntax (`--owners`,
+#   syntax           `"Owners": ["123456789012"]`): the value rides a JSON
+#                    array bracket the family's single-value anchor
+#                    deliberately does not span, and the describe-images
+#                    RESPONSE prints OwnerId (covered), never an Owners
+#                    field; pinned silent
+#   --owners flag    request-side alias-driven flag (self / amazon /
+#                    aws-marketplace are the documented spellings); the
+#                    account-ID spelling has no cited committed
+#                    occurrence, and a bare 12-digit run with no label is
+#                    the documented generic non-finding
+ACCOUNT_ID_LABEL_FORMS='account
+account id
+account number
+owner id'
+# ACCOUNT_ID_MATRIX_VALUES — the 12-digit value alternatives the generated
+# matrix rows rotate (SYNTHETIC-KEY CONVENTION: ascending/zeroed digits
+# only).
+ACCOUNT_ID_MATRIX_VALUES='123456789012,000000000000'
+ACCOUNT_ID_LABEL="($(compose_label_alt "$ACCOUNT_ID_LABEL_FORMS"))[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}"
 LABEL_DETECTORS="aws-activation-code:activation${LABEL_WORD_SEP}code[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
-account-id-context:account(${LABEL_WORD_SEP}(id|number))?[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[[:space:]]*[0-9]{12}
+account-id-context:${ACCOUNT_ID_LABEL}[[:space:]]*[0-9]{12}
 aws-sso-profile:${AWS_PROFILE_ANCHOR}
 machine-serial-number:${SERIAL_ANCHOR}
 personal-name:${PERSONAL_NAME_LABEL}${PERSONAL_NAME_VALUE}
@@ -2271,6 +2330,9 @@ st_form() {
     'account 0') printf 'account' ;;
     'account 1') printf 'ACCOUNT' ;;
     'account 2') printf 'Account' ;;
+    'owner 0') printf 'owner' ;;
+    'owner 1') printf 'OWNER' ;;
+    'owner 2') printf 'Owner' ;;
     'id 0') printf 'id' ;;
     'id 1') printf 'ID' ;;
     'id 2') printf 'Id' ;;
@@ -2537,17 +2599,16 @@ st_check() {
 # three-word spelling is generated with every other form (the ~18k
 # variants are the price of the list-driven closure; every two-word row
 # already swept the same machinery).
-# Four detectors' rows are NOT hand-written here (rounds 48-50): the
+# Five detectors' rows are NOT hand-written here (rounds 48-57): the
 # word-set-driven label vocabularies (HOSTNAME_NAME_WORDS,
-# PERSONAL_NAME_WORDS, AWS_PROFILE_LABEL_FORMS, WINUSER_LABEL_FORMS)
+# PERSONAL_NAME_WORDS, AWS_PROFILE_LABEL_FORMS, WINUSER_LABEL_FORMS,
+# ACCOUNT_ID_LABEL_FORMS)
 # generate their rows in
 # st_label_matrix from the same single-source lists their EREs are
 # composed from — a word added to one of those lists is swept here
 # without a registry edit, which is how the matrix covers new vocabulary
 # BY CONSTRUCTION instead of one hand-picked row per review round.
 MATRIX_LABEL_SETS='aws-activation-code|activation code|SYNTHETICACTIVATIONCODE01234567,aaaa/bbbb+
-account-id-context|account|123456789012,000000000000
-account-id-context|account id|123456789012,000000000000
 machine-serial-number|serial|mtx1aaaaaa,9mtxaaaaaa,ABC12345,ABC-12345,ABCDEFG1,ABC1234Z
 machine-serial-number|serial number|mtx1aaaaaa,9mtxaaaaaa,ABC12345,ABC-12345,ABCDEFG1,ABC1234Z'
 
@@ -2555,11 +2616,12 @@ st_label_matrix() {
     _lm_status=0
     _lm_dets=
     printf '%s\n' "$MATRIX_LABEL_SETS" >"$ST_WORK/lm-reg"
-    # Generated rows (rounds 48-50): the word-set-driven label
+    # Generated rows (rounds 48-57): the word-set-driven label
     # vocabularies append their rows BY CONSTRUCTION from the same
     # single-source lists their EREs are composed from
     # (HOSTNAME_NAME_WORDS, PERSONAL_NAME_WORDS,
-    # AWS_PROFILE_LABEL_FORMS, WINUSER_LABEL_FORMS) — every word of those
+    # AWS_PROFILE_LABEL_FORMS, WINUSER_LABEL_FORMS,
+    # ACCOUNT_ID_LABEL_FORMS) — every word of those
     # vocabularies is swept in the full case/separator/assignment/quote
     # cross-product with no hand-written registry row, so the next
     # vocabulary addition cannot forget the matrix. The value pools are
@@ -2586,6 +2648,13 @@ EOF
             "$WINUSER_MATRIX_VALUES" >>"$ST_WORK/lm-reg"
     done <<EOF
 $WINUSER_LABEL_FORMS
+EOF
+    while IFS= read -r _lm_form; do
+        [ -n "$_lm_form" ] || continue
+        printf 'account-id-context|%s|%s\n' "$_lm_form" \
+            "$ACCOUNT_ID_MATRIX_VALUES" >>"$ST_WORK/lm-reg"
+    done <<EOF
+$ACCOUNT_ID_LABEL_FORMS
 EOF
     # Registry closure: matrix word sets exist for every label detector
     # and nothing else.
@@ -2965,6 +3034,11 @@ account-id-context|M|"Account": "123456789012"
 account-id-context|M|AWS_ACCOUNT_ID=999999999999
 account-id-context|M|account.id: 000000000000
 account-id-context|M|account := 111122223333
+account-id-context|M|OwnerId: 123456789012
+account-id-context|M|"OwnerId": "123456789012"
+account-id-context|M|Owner ID = "123456789012"
+account-id-context|X|Owner = 123456789012
+account-id-context|X|"Owners": ["123456789012"]
 account-id-context|X|account_id = 12345
 account-id-context|X|account_id: <account-id>
 account-id-context|X|account_id: …
