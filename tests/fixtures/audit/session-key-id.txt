@@ -1,2 +1,0 @@
-# Synthetic audit fixture: AWS session/temporary access key ID shape.
-variable = "ASIAABCDEFGHIJKLMNOP"

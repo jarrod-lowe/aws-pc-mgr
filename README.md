@@ -639,7 +639,13 @@ in its body and the audit went red only afterwards; checking the message
 before committing makes that class impossible to create. Suppression is
 deliberately unavailable in this mode — uncommitted text has no standing
 annotations, so reword the message. The runtime per-machine value checks are
-skipped (they describe this machine, not proposed content).
+skipped (they describe this machine, not proposed content). This gate is
+also the **only place either layer still checks generic credential shapes**:
+commit message text is the one surface no external scanner covers (gitleaks
+scans blobs and patches, never message bodies, and push protection does not
+scan messages either), so the AKIA/ASIA key-ID shapes and the secret-key
+label assignment fire here — with suppression structurally off — and only
+here; the file and history scans leave those shapes to gitleaks in CI.
 
 **pre-push hook.** `scripts/hooks/pre-push` runs the full audit as the last
 gate before commits leave the machine — the last point at which
@@ -655,28 +661,22 @@ BOM'd UTF-32 files (UTF-16 such as Windows PowerShell `>` redirection
 output) decoded to UTF-8 and scanned in decoded form — and the **full
 history of every commit** (message
 bodies, scanned for every commit independently of the path-filtered patches,
-plus the patches) for: AWS access-key IDs (`AKIA...`,
-`ASIA...`), secret-key, activation-code, session-token, account-ID,
+plus the patches) for: activation-code, account-ID,
 SSO-profile and machine-serial-number label assignments
+(generic credential shapes — key IDs, secret-key assignments, session
+tokens — are **not** in this list; gitleaks owns them in CI, and the
+message gate above is their only audit.sh carrier)
 — the label
 detectors match a **lowercased copy of each line** with
-separator-wildcarded label words, so every case variant (lowercase HCL
-`aws_secret_access_key`, env `AWS_SECRET_ACCESS_KEY`, camelCase
-`SecretAccessKey`, JSON `"SecretAccessKey": "..."`, spaced
-`Secret Access Key = ...`, env `AWS_SESSION_TOKEN`, `SessionToken`, and
-the security-token spellings of the same credential — signed-request
-header `X-Amz-Security-Token`, JSON `SecurityToken`, env
-`SECURITY_TOKEN`) and
-every separator spelling inside the label
+separator-wildcarded label words, so every case variant
+and every separator spelling inside the label
 is the same pattern — the account label likewise matches with or without
 its `id` suffix in any case (`account_id`, `accountId`, UPPER
 `AWS_ACCOUNT_ID`, JSON `"Account": "…"`, the GetCallerIdentity dump
 shape) — with the assignment `=` or `:` separated and
 value-anchored (by length, or by the 12-digit run for the account label,
 so a bare `Account:` label holding an account name or free text never
-trips), so short synthetic literals like
-`SecretAccessKey=EXAMPLE` or `Session Token: EXAMPLE` in the Windows-tier
-tests cannot trip it —
+trips) —
 the SSO-profile label matches its aws-prefixed, aws-sso-qualified and
 bare-sso forms (`AWS_PROFILE`, `aws_profile`, `AwsProfile`, spaced
 `AWS PROFILE = …`, the tool-dump `AWS SSO Profile: …` and the bare
@@ -780,12 +780,16 @@ detectors match an ordinary assignment whose "value" is code rather than a
 credential — setup.ps1 carries
 `$activationCode = Read-ActivationCode # audit-allow:synthetic` verbatim
 for exactly that reason. Two
-hard rules, enforced in code: the marker can **never** silence AWS key
-material (`AKIA`/`ASIA` key IDs, secret-key or session-token assignments in
-any spelling or case) or the
+hard rules, enforced in code: the marker can **never** silence a credential
+shape in the message gate (`--message-file` checks the `AKIA`/`ASIA` key-ID
+shapes and the secret-key assignment with suppression structurally off —
+the only place audit.sh still checks them) or the
 runtime per-machine value checks (bucket name, username, hostname, AWS
 profile name, account display name) — those are
-real by definition. And history equivalence: a finding in an already-committed
+real by definition. (The file/history detectors for the key-material classes
+no longer exist, so there is nothing for the marker to silence there;
+gitleaks in CI owns those surfaces.) And history equivalence: a finding in
+an already-committed
 line is also skipped when the byte-identical line exists in the current tree
 carrying the marker, so synthetic lines committed before the marker existed
 need no history rewrite. Never use the marker to make a runtime-discovered

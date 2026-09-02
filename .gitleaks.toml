@@ -21,22 +21,28 @@ paths = [
     # Every file under tests/fixtures/audit/ exists to trip a scripts/audit.sh
     # detector in --selftest; its values are deterministic synthetics. The
     # repo's own audit excludes this directory by path for the same reason.
-    # The leading boundary keeps this from matching lookalike directories,
-    # while still matching whether gitleaks was given a relative or absolute
-    # source path (findings carry the source's form).
+    # Load-bearing for HISTORY, not the tree: the credential-shape fixtures
+    # (access-key-id, marker-ignored-akia, session-key-id) were deleted when
+    # gitleaks took over the credential classes, but git history still
+    # carries them and `gitleaks git` matches them at their introducing
+    # commits (verified against the pinned ruleset). The leading boundary
+    # keeps this from matching lookalike directories, while still matching
+    # whether gitleaks was given a relative or absolute source path
+    # (findings carry the source's form).
     '''(^|/)tests/fixtures/audit/''',
 ]
 
 [[allowlists]]
 description = "audit.sh selftest synthetic AKIA literal"
-# scripts/audit.sh's selftest writes an ascending-alphabet key shape
-# (AKIA + ABCDEFGHIJKLMNOP) to prove the audit-allow marker can never
-# silence an AKIA key ID. audit.sh's own default mode excludes that file
-# by path (it must contain the detector patterns), which leaves gitleaks
-# as the only credential-shape scan over it — so allow the exact synthetic
-# value, never the whole file path. The named group splits the run so this
-# config does not itself carry the key-shaped literal: the repo audit scans
-# every tracked file, and its AKIA rule is deliberately never suppressible.
+# The pre-rescope selftest wrote an ascending-alphabet key shape
+# (AKIA + ABCDEFGHIJKLMNOP) to prove the audit-allow marker could never
+# silence an AKIA key ID. The shrink removed that literal from the living
+# engine, but git history still carries it (introduced 47ce563), so this
+# entry stays load-bearing for `gitleaks git` scans: it allows the exact
+# synthetic value, never a whole file path. The named group splits the run
+# so this config does not itself carry the key-shaped literal: the repo
+# audit scans every tracked file, and its AKIA rule is deliberately never
+# suppressible (the rule lives on in the --message-file gate).
 regexes = [
     '''^AKIAABCDEFGH(?P<synthetic>IJKLMNOP)$''',
 ]

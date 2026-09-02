@@ -8,7 +8,10 @@ tests/audit-history-equivalence.txt
 # copy. This file is tracked and scanned like any other: the marker keeps
 # each listed line silent here too, and adding a real value to this list is
 # as detectable as committing it anywhere else (the never-suppressible
-# classes cannot be silenced by the marker at all).
+# runtime per-machine classes cannot be silenced by the marker at all, and
+# generic credential shapes are no longer file/history detectors — gitleaks
+# in CI scans them, and the commit-message gate checks them without any
+# marker suppression).
 #
 # ed90ee9 (aws-sso-profile): commit message quoted the review finding's
 # synthetic example of a letter-only profile name.

@@ -1,6 +1,15 @@
 #!/bin/sh
-# audit.sh — scan the repository for secrets and user/machine-identifying
-# values (SPEC §27, Plan T7).
+# audit.sh — scan the repository for machine-identity and PII values (SPEC
+# §27, Plan T7). Division of labor with gitleaks (README "Repository
+# hygiene"): gitleaks, running in CI over file content and full history
+# with the upstream-maintained default ruleset, owns the GENERIC credential
+# shapes — access-key IDs, secret-key assignments, session tokens, private
+# keys; this script owns what no upstream ruleset can know (the identity
+# and PII classes tied to this machine and these workflows, listed under
+# "What the default audit scans" below) and is the zero-dependency layer
+# (POSIX sh + git only) that still gates a push where gitleaks is not
+# installed. The single exception — the minimal credential-shape checks
+# kept alive in the --message-file gate — is documented there.
 #
 # Usage:
 #   scripts/audit.sh              audit repo; exit 1 on any finding, 0 if clean
@@ -17,11 +26,13 @@
 #                                 is detected as expected, every generated
 #                                 variant fires (or stays silent) as expected,
 #                                 and the §27 bullet list maps onto the
-#                                 detector classes — including the two marker
-#                                 fixtures: synthetic values carrying the
-#                                 suppression marker stay silent, and an
-#                                 AKIA key shape carrying the marker is still
-#                                 detected (hard rule below)
+#                                 detector classes — including the marker
+#                                 fixture: synthetic values carrying the
+#                                 suppression marker stay silent (the former
+#                                 AKIA/session-token marker companions are
+#                                 gone with their classes; the message gate,
+#                                 which has no marker suppression at all, now
+#                                 pins the credential-shape hard rule)
 #   scripts/audit.sh --scan-file NAME PATH
 #                              [INTERNAL TEST HOOK] run the full engine
 #                                 (every detector, the emit_hits marker /
@@ -91,8 +102,22 @@
 #                                 audit as the last pre-push gate (while
 #                                 --amend is still free) and points here
 #                                 for messages.
+#                                 THIS IS ALSO THE ONLY PATH THAT STILL
+#                                 CHECKS GENERIC CREDENTIAL SHAPES: commit
+#                                 message text is the one surface no
+#                                 external scanner covers — gitleaks scans
+#                                 blobs and patches, never message bodies,
+#                                 and push protection does not scan
+#                                 messages either — so the AKIA/ASIA key-ID
+#                                 shapes and the secret-key label
+#                                 assignment (MESSAGE_GATE_* registries)
+#                                 fire HERE and only here. File and history
+#                                 scans do not check them; gitleaks in CI
+#                                 owns those surfaces.
 #
-# What the default audit scans:
+# What the default audit scans (machine-identity and PII classes; generic
+# credential shapes are gitleaks' job in CI and are checked here only in
+# the --message-file gate — see above):
 #   * tracked files (git ls-files) — enumerated NUL-delimited end to end
 #     (`git ls-files -z` piped through `xargs -0` into the internal
 #     --scan-tracked-batch mode), so a filename containing a newline is
@@ -142,7 +167,7 @@
 #     it — a state file is never synthetic, and the finding is about the
 #     path, not a line. History is ALSO covered content-wise: a state file's
 #     patch text goes through every detector like any other patch, so
-#     its ARNs, account IDs and credentials still fire there.
+#     its ARNs, account IDs and UUIDs still fire there.
 #   * the value of AWS_PROFILE, when it is set to a specific-enough profile
 #     name (tracked files and history, both streams): the SSO/IAM Identity
 #     Center profile this machine selects is a committed-content item of
@@ -331,45 +356,40 @@
 #   SYNTHETIC-KEY CONVENTION (learned from GitHub push protection, which
 #   rejected a push of this repository): server-side secret scanners do
 #   not honor this script's path exclusions — any synthetic key material
-#   pushed in ANY file is pattern-matched as real. Therefore ALL synthetic
-#   key material anywhere in this repository — fixtures, the selftest
-#   harness's generator value pools, selftest messages, documentation
-#   examples — must be DETERMINISTIC SEQUENTIAL PATTERNS with zero
-#   apparent entropy, so no scanner's confidence model can mistake it for
-#   a real credential: access-key bodies are alphabet wraps
-#   (`AKIAQRSTUVWXYZHIJKLMNOP`) or ascending digits (`0123456789012345`),
-#   secret-key bodies are EXAMPLE repetition or an alphabet wrap,
-#   session/activation/token values carry a SYNTHETIC… word prefix with
-#   sequential padding. Pseudo-random-looking synthetic values (mixed
-#   random case and digit runs) are FORBIDDEN, even inside the harness's
-#   temp-file generators and even though this script itself is excluded
-#   from its own scan: the literals still get pushed. The value pools in
-#   MATRIX_LABEL_SETS and the word-set pools that generate its rows
-#   (HOSTNAME_MATRIX_VALUES, PERSONAL_NAME_MATRIX_VALUES,
-#   AWS_PROFILE_MATRIX_VALUES, WINUSER_MATRIX_VALUES), st_shape_matrix,
-#   st_value_tables, st_table_rows, st_charsweep, st_gate_sweep,
-#   st_hook_smoke, st_binary_decode and
-#   st_message_file are the enforcement points of this rule.
+#   pushed in ANY file is pattern-matched as real. The file-scan
+#   detectors for those classes are gone (gitleaks owns them in CI), but
+#   the convention still binds everywhere synthetic key-shaped material
+#   remains — the selftest harness's generator value pools, the
+#   --message-file gate's synthetic samples, documentation examples:
+#   DETERMINISTIC SEQUENTIAL PATTERNS with zero apparent entropy only.
+#   Access-key bodies are alphabet wraps (`AKIAQRSTUVWXYZHIJKLMNOP`) or
+#   ascending digits (`0123456789012345`), secret-key bodies are EXAMPLE
+#   repetition or an alphabet wrap, activation/token values carry a
+#   SYNTHETIC… word prefix with sequential padding. Pseudo-random-looking
+#   synthetic values (mixed random case and digit runs) are FORBIDDEN,
+#   even inside the harness's temp-file generators and even though this
+#   script itself is excluded from its own scan: the literals still get
+#   pushed. The value pools in MATRIX_LABEL_SETS and the word-set pools
+#   that generate its rows (HOSTNAME_MATRIX_VALUES,
+#   PERSONAL_NAME_MATRIX_VALUES, AWS_PROFILE_MATRIX_VALUES,
+#   WINUSER_MATRIX_VALUES), st_shape_matrix, st_value_tables,
+#   st_table_rows, st_charsweep, st_gate_sweep, st_hook_smoke,
+#   st_binary_decode and st_message_file are the enforcement points of
+#   this rule.
 #
 #   HARD RULE (no exception, by construction): the marker NEVER suppresses
-#   real AWS key material. A line matching an AKIA…/ASIA… access or session
-#   key ID, or a secret-key or session-token assignment in any spelling —
-#   in ANY CASE VARIANT (lowercase HCL `aws_secret_access_key = …`,
-#   uppercase env `AWS_SECRET_ACCESS_KEY=…`, camelCase `SecretAccessKey=…`,
-#   JSON `"SecretAccessKey": "…"`, spaced `Secret Access Key = …`) and any
-#   separator spelling, because the label detectors match a lowercased copy
-#   of each line — is ALWAYS a finding, even when the marker is present on
-#   that line. A session-token match therefore always carries a real token:
-#   the detector's 16-plus value anchor keeps every known synthetic
-#   spelling (`Session Token: EXAMPLE`, 7 characters) from matching at all,
-#   so no marker exemption is needed for one. These detector classes
-#   (aws-access-key-id, aws-session-key-id, aws-secret-access-key,
-#   aws-session-token) cannot be silenced by any marker. The runtime
-#   per-machine value checks (state-bucket-name, username, hostname,
-#   aws-profile-name) are likewise never suppressible: those values are
-#   real by definition, never
-#   synthetic. The aws-activation-code class is deliberately OUTSIDE that
-#   hard rule: synthetic activation-code literals occur in tests and
+#   real AWS key material — and since the key-material classes are no
+#   longer file/history detectors at all, the rule now holds in exactly
+#   two places. (1) The --message-file gate: it checks the AKIA…/ASIA…
+#   key-ID shapes and the secret-key assignment (in any case variant and
+#   any separator spelling — the label ERE matches a lowercased copy of
+#   the line) with suppression structurally OFF, so a credential shape in
+#   proposed message text is ALWAYS a finding, marker or not. (2) The
+#   runtime per-machine value checks (state-bucket-name, username,
+#   hostname, aws-profile-name, display-name): those values are real by
+#   definition, never synthetic, and NEVER_SUPPRESSED keeps the marker off
+#   them. The aws-activation-code class is deliberately OUTSIDE the hard
+#   rule: synthetic activation-code literals occur in tests and
 #   documentation, and the marker exists precisely to exempt them, while a
 #   real activation code in a labeled assignment (no marker) is a finding.
 #
@@ -379,8 +399,8 @@
 #   diff +/-/space prefix and trailing whitespace ignored) exists in the
 #   current tracked tree carrying the marker — the same synthetic line,
 #   annotated today, also covers its already-committed copies. Only
-#   suppressible classes receive this treatment; the hard-rule classes
-#   above never do.
+#   suppressible classes receive this treatment; the never-suppressed
+#   runtime classes above never do.
 #
 # Binary content fails CLOSED — it is never silently skipped. A tracked file
 # with binary content that is not decodable UTF-16 or BOM'd UTF-32 (or when
@@ -439,9 +459,10 @@ SCRIPT=$(CDPATH=; cd -- "$SELF_DIR" && pwd)/${0##*/}
 FIXTURE_DIR=tests/fixtures/audit
 # Fixtures (paths relative to the repository root) that must produce NO
 # findings: synthetic values carrying the suppression marker. Everything
-# else under $FIXTURE_DIR must produce at least one finding — including
-# marker-ignored-akia.txt and marker-ignored-session-token.txt, whose
-# hard-rule credential shapes must survive the marker (see header).
+# else under $FIXTURE_DIR must produce at least one finding. (The former
+# marker-ignored key-material fixtures are gone with their detector
+# classes; the credential-shape hard rule now lives in the --message-file
+# gate, which has no marker suppression — see header.)
 SILENT_FIXTURES='tests/fixtures/audit/synthetic-suppressed.txt'
 GENERIC_USERS=' root admin administrator user users runner ubuntu ci build builder jenkins github actions deploy deployer test tests vagrant ec2-user staff daemon nobody operator '
 # Generic AWS_PROFILE VALUES (lowercased, space-delimited, matched whole-word
@@ -511,9 +532,13 @@ GENERIC_LABELED_HOSTS=' localhost hostname computer name your the example.com ex
 # Detectors come in TWO classes, split so that case and separator handling
 # is a property of the engine rather than of hand-enumerated spellings (a
 # detector that lists `SecretAccessKey` will always be missing the next
-# variant someone types; matching a lowercased line cannot be):
+# variant someone types; matching a lowercased line cannot be). The
+# registries below carry the machine-identity and PII classes only — the
+# generic credential shapes that once lived here are gitleaks' job in CI,
+# except the minimal never-suppressible set the --message-file gate keeps
+# (MESSAGE_GATE_* below those registries, and see the header).
 #
-#   * LABEL detectors (LABEL_DETECTORS) anchor on a multi-word credential
+#   * LABEL detectors (LABEL_DETECTORS) anchor on a multi-word value
 #     LABEL. They are matched against a LOWERCASED copy of each line
 #     (scan_stream below), so their EREs are written lowercase-only and
 #     match every case variant of the label — lowercase, UPPER, camelCase,
@@ -533,45 +558,40 @@ GENERIC_LABELED_HOSTS=' localhost hostname computer name your the example.com ex
 #     and the requirement that an assignment separator be present — so
 #     a sentence merely containing the label words still never matches.
 #   * SHAPE detectors (SHAPE_DETECTORS) anchor on the VALUE's shape, whose
-#     grammar is case-bearing — AKIA…/ASIA… key IDs are uppercase, UUIDs
-#     and managed-node IDs are lowercase hex, SSO start URLs and email
-#     addresses carry their own case, and an ARN's identity is its
-#     12-digit account field — so they are matched against the ORIGINAL
-#     line unchanged; lowercasing the line would destroy exactly the
-#     thing they anchor on. Two detectors still bracket
-#     case-insensitive spans inside that original-line match: the SSO
-#     start URL's scheme and DNS labels ([hH][tT]…, [aA][wW]…), and the
-#     ARN's `arn:aws` prefix through its partition-suffix, service and
-#     region spans. Those spans are canonical-lowercase (RFC 3986/1035
-#     for URI scheme and hostname, AWS's canonical ARN spelling for the
-#     namespace fields), so the identity being detected does not live
-#     in their case — a hand-retyped `ARN:AWS:IAM:US-EAST-1:…` is the
-#     same ARN — unlike the AKIA/UUID shapes, where the case IS the
+#     grammar is case-bearing — UUIDs and managed-node IDs are lowercase
+#     hex, SSO start URLs and email addresses carry their own case, and
+#     an ARN's identity is its 12-digit account field — so they are
+#     matched against the ORIGINAL line unchanged; lowercasing the line
+#     would destroy exactly the thing they anchor on. Two detectors still
+#     bracket case-insensitive spans inside that original-line match: the
+#     SSO start URL's scheme and DNS labels ([hH][tT]…, [aA][wW]…), and
+#     the ARN's `arn:aws` prefix through its partition-suffix, service
+#     and region spans. Those spans are canonical-lowercase (RFC
+#     3986/1035 for URI scheme and hostname, AWS's canonical ARN spelling
+#     for the namespace fields), so the identity being detected does not
+#     live in their case — a hand-retyped `ARN:AWS:IAM:US-EAST-1:…` is
+#     the same ARN — unlike the UUID/mi-ID shapes, where the case IS the
 #     grammar. The SSO /start path stays literal: paths ARE
 #     case-sensitive.
 #
 # Both lists: one detector per line, `name:ERE`, split on the first colon
 # (names never contain a colon). A line is a finding when it matches the
 # ERE. QUOTE_CLASS is an optional quote character around a value: after the
-# separator it opens the value (secret keys are quoted in HCL and JSON),
-# and before the separator it closes a quoted JSON key.
+# separator it opens the value (activation codes are quoted in HCL and
+# JSON), and before the separator it closes a quoted JSON key.
 #
 # The label detectors keep the assignment+value anchors that make prose
 # safe: the label must be split from its value by `=` or `:` (with optional
 # quotes and whitespace on either side) and the value is length-anchored —
-# 35-45 base64-ish chars for a secret key, 8-plus for an activation code,
-# 16-plus for a session token, a 12-digit run for an account ID — so a
-# sentence, comment, or output-block key
-# merely CONTAINING the label words never matches, while short synthetic
-# literals such as `SecretAccessKey=EXAMPLE` or `Session Token: EXAMPLE`
-# in the Windows-tier tests cannot false-positive. The aws- prefix on the
-# secret-key and session-token labels stays optional, so a bare
-# `SecretAccessKey:` (the SSM agent log spelling) and a bare
-# `SessionToken:` match too. The session-token detector also takes
-# `security` as an alternative first word: temporary credentials ride the
-# signed-request header `X-Amz-Security-Token` and the JSON `SecurityToken`
-# key as often as the session-token spelling, and since the label matches a
-# span inside the lowcased line the `x-amz-` prefix needs no case of its own.
+# 8-plus value characters for an activation code, a 12-digit run for an
+# account ID — so a sentence, comment, or output-block key merely
+# CONTAINING the label words never matches. The one length-anchored
+# credential label that remains (the secret-key assignment,
+# MESSAGE_GATE_LABEL_DETECTORS) keeps its 35-45 base64-ish anchor for the
+# same reason, so short synthetic literals such as
+# `SecretAccessKey=EXAMPLE` in the Windows-tier tests cannot false-positive
+# there either; its aws- prefix stays optional, so a bare `SecretAccessKey:`
+# (the SSM agent log spelling) matches too.
 #
 # The account-id-context detector is the same machinery with a one-word
 # label — `account`, its `id` suffix optional — so snake_case `account_id`,
@@ -1112,23 +1132,39 @@ HOSTNAME_VALUE='[A-Za-z0-9][A-Za-z0-9.-]*'
 # `-` are legal only from the second character on and the charsweep pins
 # that tier with must-silent first-position rows.
 HOSTNAME_ALPHABET_MEMBERS='. - A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9'
-LABEL_DETECTORS="aws-secret-access-key:(aws${LABEL_WORD_SEP})?secret${LABEL_WORD_SEP}access${LABEL_WORD_SEP}key[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}
-aws-activation-code:activation${LABEL_WORD_SEP}code[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
-aws-session-token:(aws${LABEL_WORD_SEP})?(session|security)${LABEL_WORD_SEP}token[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_=]{16,}
+LABEL_DETECTORS="aws-activation-code:activation${LABEL_WORD_SEP}code[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+_-]{8,}
 account-id-context:account(${LABEL_WORD_SEP}(id|number))?[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[[:space:]]*[0-9]{12}
 aws-sso-profile:${AWS_PROFILE_ANCHOR}
 machine-serial-number:${SERIAL_ANCHOR}
 personal-name:${PERSONAL_NAME_LABEL}${PERSONAL_NAME_VALUE}
 windows-username-labeled:${WINUSER_LABEL}${WINUSER_VALUE}
 hostname-labeled:${HOSTNAME_LABEL}${HOSTNAME_VALUE}"
-SHAPE_DETECTORS="aws-access-key-id:AKIA[0-9A-Z]{16}
-aws-session-key-id:ASIA[0-9A-Z]{16}
-managed-node-id:mi-[a-f0-9]{8,}
+SHAPE_DETECTORS="managed-node-id:mi-[a-f0-9]{8,}
 uuid-literal:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}
 sso-start-url:[hH][tT][tT][pP][sS]://[A-Za-z0-9-][A-Za-z0-9.-]*[aA][wW][sS][aA][pP][pP][sS][.][cC][oO][mM]/start
 email-address:[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]{2,}
 account-id-arn:[aA][rR][nN]:[aA][wW][sS][A-Za-z-]*:[A-Za-z0-9-]*(:[A-Za-z0-9-]*)?:[0-9]{12}
 user-home-path:(^|[^A-Za-z0-9/])([A-Za-z]:${PATH_SEP_CLASS}{1,2}|/)[Uu][sS][eE][rR][sS]${PATH_SEP_CLASS}{1,2}${WINUSER_VALUE}|(^|[^A-Za-z0-9/])/home/${WINUSER_VALUE}"
+# MESSAGE-GATE-ONLY credential shapes. Generic credential detection in file
+# and history scans is gitleaks' job in CI (.gitleaks.toml + the gitleaks
+# job in .github/workflows/ci.yml); these registries carry the one
+# exception: COMMIT MESSAGE TEXT is a surface no external scanner covers —
+# gitleaks scans blobs and patches, never message bodies, and GitHub push
+# protection does not scan messages either — so the --message-file gate
+# (which checks a message BEFORE the commit exists) keeps minimal
+# never-suppressible credential-shape checks alive here and ONLY here.
+# scan_stream consults them solely when SCAN_CONTEXT=message (set by
+# message_file_audit); the file and history scans never see these shapes.
+# Suppression is structurally unavailable in that mode (MARKER_GATE_OFF),
+# so the shapes are never-suppressible by construction, not through
+# NEVER_SUPPRESSED — that list names only the runtime per-machine values.
+# The EREs are the exact forms the file engine used to carry, value anchors
+# unchanged (35-45 base64-ish for the secret-key label; uppercase
+# [0-9A-Z]{16} bodies for the key-ID shapes).
+MESSAGE_GATE_LABEL_DETECTORS="aws-secret-access-key:(aws${LABEL_WORD_SEP})?secret${LABEL_WORD_SEP}access${LABEL_WORD_SEP}key[[:space:]]*${QUOTE_CLASS}[[:space:]]*${LABEL_ASSIGN}[[:space:]]*${QUOTE_CLASS}[A-Za-z0-9/+=]{35,45}"
+MESSAGE_GATE_SHAPE_DETECTORS="aws-access-key-id:AKIA[0-9A-Z]{16}
+aws-session-key-id:ASIA[0-9A-Z]{16}"
+MESSAGE_GATE_CLASS_IDS='aws-access-key-id aws-session-key-id aws-secret-access-key'
 # The home-path username segment IS WINUSER_VALUE (the SAM alphabet):
 # Windows profile directories are named after the account, so a path under
 # a punctuation-bearing account (`C:\Users\$svc\...`) must be detectable by
@@ -1177,10 +1213,10 @@ user-home-path:(^|[^A-Za-z0-9/])([A-Za-z]:${PATH_SEP_CLASS}{1,2}|/)[Uu][sS][eE][
 #                          assignments, config keys, CLI flags) are all
 #                          same-line; no cited source prints a profile
 #                          header row
-#   account-id / key-material
-#                          NOT APPLIED — value-anchored one-line shapes
-#                          (12-digit runs, key bodies); no table-shaped
-#                          cited source
+#   account-id             NOT APPLIED — value-anchored one-line shapes
+#                          (12-digit runs); no table-shaped cited source
+#                          (the key-material classes this row once also
+#                          named are no longer file detectors at all)
 FOLLOWING_ROW_DETECTORS="machine-serial-number|${SERIAL_HEADER_EXPLICIT}|${SERIAL_VALUE_EXPLICIT}
 machine-serial-number|${SERIAL_HEADER_BARE}|${SERIAL_VALUE_BARE}"
 
@@ -1188,13 +1224,17 @@ machine-serial-number|${SERIAL_HEADER_BARE}|${SERIAL_VALUE_BARE}"
 # skipped by every suppressible detector, in file mode and in history mode.
 MARKER='# audit-allow:synthetic'
 
-# Detector classes the marker can NEVER silence (see header):
-#   * the four AWS key-material classes — hard rule, no exception;
-#   * the runtime per-machine value classes — real values, never synthetic.
+# Detector classes the marker can NEVER silence (see header): the runtime
+# per-machine value classes — real values, never synthetic. The AWS
+# key-material classes no longer appear here because they are no longer
+# file/history detectors at all: generic credential shapes belong to
+# gitleaks in CI, and the --message-file gate — the one path that still
+# checks them — runs with MARKER_GATE_OFF, where no detector of any class
+# can be silenced (uncommitted text cannot be annotated).
 # display-name is the runtime GECOS/full-name literal (see default_audit):
 # a real person's name on this machine, never synthetic — same rule as the
 # other runtime per-machine values.
-NEVER_SUPPRESSED=' aws-access-key-id aws-session-key-id aws-secret-access-key aws-session-token state-bucket-name username hostname aws-profile-name display-name '
+NEVER_SUPPRESSED=' state-bucket-name username hostname aws-profile-name display-name '
 
 # ANNOTATED_LINES, when non-empty, names a file holding the content of every
 # current tracked line that carries the marker (marker and trailing
@@ -1617,18 +1657,32 @@ scan_following_rows() {
 scan_stream() {
     _ss_label=$1
     _ss_file=$2
+    # SCAN_CONTEXT=message is set only by message_file_audit: the
+    # commit-message gate additionally consults the MESSAGE_GATE_*
+    # credential shapes (the only scan path that does — see their
+    # definition). File and history scans leave it unset and never scan
+    # those shapes; generic credential detection there is gitleaks' job
+    # in CI.
+    _ss_labels=$LABEL_DETECTORS
+    _ss_shapes=$SHAPE_DETECTORS
+    if [ "${SCAN_CONTEXT:-}" = message ]; then
+        _ss_labels="$_ss_labels
+$MESSAGE_GATE_LABEL_DETECTORS"
+        _ss_shapes="$_ss_shapes
+$MESSAGE_GATE_SHAPE_DETECTORS"
+    fi
     while IFS= read -r _ss_det; do
         [ -n "$_ss_det" ] || continue
         scan_matches "${_ss_det%%:*}" "$_ss_label" "${_ss_det#*:}" \
             "$_ss_file" '' lower
     done <<EOF
-$LABEL_DETECTORS
+$_ss_labels
 EOF
     while IFS= read -r _ss_det; do
         [ -n "$_ss_det" ] || continue
         scan_matches "${_ss_det%%:*}" "$_ss_label" "${_ss_det#*:}" "$_ss_file"
     done <<EOF
-$SHAPE_DETECTORS
+$_ss_shapes
 EOF
     # Table-shape (following-row) association passes: the family tiers
     # whose documented sources put the value on a row after the label
@@ -2491,13 +2545,7 @@ st_check() {
 # composed from — a word added to one of those lists is swept here
 # without a registry edit, which is how the matrix covers new vocabulary
 # BY CONSTRUCTION instead of one hand-picked row per review round.
-MATRIX_LABEL_SETS='aws-secret-access-key|secret access key|EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE,EXAMPLEEXAMPLEEXAMPLEEXAMPLE+/==ABC,ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
-aws-secret-access-key|aws secret access key|EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE,EXAMPLEEXAMPLEEXAMPLEEXAMPLE+/==ABC,ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
-aws-activation-code|activation code|SYNTHETICACTIVATIONCODE01234567,aaaa/bbbb+
-aws-session-token|session token|SYNTHETICSESSIONTOKEN0123456789,SYNTHETICSESSIONTOKEN+/==ABCDEF
-aws-session-token|security token|SYNTHETICSESSIONTOKEN0123456789,SYNTHETICSESSIONTOKEN+/==ABCDEF
-aws-session-token|aws session token|SYNTHETICSESSIONTOKEN0123456789,SYNTHETICSESSIONTOKEN+/==ABCDEF
-aws-session-token|aws security token|SYNTHETICSESSIONTOKEN0123456789,SYNTHETICSESSIONTOKEN+/==ABCDEF
+MATRIX_LABEL_SETS='aws-activation-code|activation code|SYNTHETICACTIVATIONCODE01234567,aaaa/bbbb+
 account-id-context|account|123456789012,000000000000
 account-id-context|account id|123456789012,000000000000
 machine-serial-number|serial|mtx1aaaaaa,9mtxaaaaaa,ABC12345,ABC-12345,ABCDEFG1,ABC1234Z
@@ -2642,51 +2690,27 @@ EOF
 st_shape_matrix() {
     _sh_status=0
 
-    # aws-access-key-id / aws-session-key-id: the AKIA/ASIA prefix is
-    # uppercase by AWS's own grammar; the body is [0-9A-Z]{16,}. Every
-    # body follows the SYNTHETIC-KEY CONVENTION (header): alphabet wraps
-    # and ascending digits only, and never the exact fixture bodies at
-    # new sites — push protection flags per-secret, so new literals stay
-    # new patterns.
-    : >"$ST_WORK/shp-akia-m"
-    : >"$ST_WORK/shp-akia-x"
-    cat >>"$ST_WORK/shp-akia-m" <<'EOF'
+    # The AKIA/ASIA key-ID shapes no longer have file-context blocks here:
+    # they are MESSAGE-GATE-ONLY detectors now (see
+    # MESSAGE_GATE_SHAPE_DETECTORS), pinned by st_message_file — the file
+    # and history scans that st_check drives must NOT fire on them, and
+    # this silent-side check pins exactly that handoff.
+    : >"$ST_WORK/shp-keyid-x"
+    cat >>"$ST_WORK/shp-keyid-x" <<'EOF'
 variable = "AKIAQRSTUVWXYZHIJKLMNOP"
-AKIA0123456789012345
-AKIAQRSTUVWXYZABCDEFGHIJKLMNOP
-key AKIAQRSTUVWXYZHIJKLMNOP end
-AKIA012345678901234567890123
-EOF
-    cat >>"$ST_WORK/shp-akia-x" <<'EOF'
-akiaqrstuvwxyzhijklmnop
-AkiaQRSTUVWXYZHIJKLMNOP
-aKIAQRSTUVWXYZHIJKLMNOP
-AKIAABCDEFGHIJKLMNO
-AKIA-0123456789012345
-AKIA QRSTUVWXYZHIJKLMNOP
-EOF
-    st_check 'shape aws-access-key-id' aws-access-key-id \
-        "$ST_WORK/shp-akia-m" "$ST_WORK/shp-akia-x" || _sh_status=1
-
-    : >"$ST_WORK/shp-asia-m"
-    : >"$ST_WORK/shp-asia-x"
-    cat >>"$ST_WORK/shp-asia-m" <<'EOF'
 variable = "ASIAQRSTUVWXYZHIJKLMNOP"
-ASIA0123456789012345
-ASIAQRSTUVWXYZABCDEFGHIJKLMNOP
-key ASIAQRSTUVWXYZHIJKLMNOP end
+AKIA0123456789012345
 EOF
-    cat >>"$ST_WORK/shp-asia-x" <<'EOF'
-asiaqrstuvwxyzhijklmnop
-AsiaQRSTUVWXYZHIJKLMNOP
-aSIAQRSTUVWXYZHIJKLMNOP
-ASIAABCDEFGHIJKLMNO
-ASIA-0123456789012345
-ASIA QRSTUVWXYZHIJKLMNOP
-variable = "AKIAQRSTUVWXYZHIJKLMNOP"
-EOF
-    st_check 'shape aws-session-key-id' aws-session-key-id \
-        "$ST_WORK/shp-asia-m" "$ST_WORK/shp-asia-x" || _sh_status=1
+    scan_file "$ST_WORK/shp-keyid-x" harness-keyid-silent \
+        >"$ST_WORK/shp-keyid.out"
+    if [ -s "$ST_WORK/shp-keyid.out" ]; then
+        printf 'selftest: FAIL  AKIA/ASIA key shapes must not fire in file scan (gitleaks owns them in CI; only the message gate checks them)\n'
+        sed 's/^/         /' "$ST_WORK/shp-keyid.out" | head -n 3
+        _sh_status=1
+    else
+        printf 'selftest: PASS  %-44s silent in file scan, message-gate only\n' \
+            'shape AKIA/ASIA handoff'
+    fi
 
     # managed-node-id: lowercase mi- scheme, lowercase hex body, 8+.
     : >"$ST_WORK/shp-mi-m"
@@ -2923,20 +2947,6 @@ st_serial_table_line() {
 st_value_tables() {
     _vt_status=0
     cat >"$ST_WORK/vt-table" <<'EOF'
-aws-secret-access-key|M|aws_secret_access_key = "EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE"
-aws-secret-access-key|M|SecretAccessKey=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
-aws-secret-access-key|M|"SecretAccessKey": "EXAMPLEEXAMPLEEXAMPLEEXAMPLE+/==ABC"
-aws-secret-access-key|M|Secret Access Key = EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE
-aws-secret-access-key|M|aws.secret.access.key = EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE
-aws-secret-access-key|M|secret_access_key := ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijk
-aws-secret-access-key|M|awsSecretAccessKey='EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE'
-aws-secret-access-key|X|secret_access_key = EXAMPLE
-aws-secret-access-key|X|SecretAccessKey = <secret-key>
-aws-secret-access-key|X|secret access key rotation is mandatory
-aws-secret-access-key|X|secret_access_key_length = 40
-aws-secret-access-key|X|secret_access_key = "…"
-aws-secret-access-key|X|the secret access key: see the runbook
-aws-secret-access-key|X|secret-key = "EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE"
 aws-activation-code|M|activation_code = "SYNTHETICACTIVATIONCODE0123456789AB"
 aws-activation-code|M|ACTIVATION_CODE=SYNTHETICACTIVATIONCODE0123456789AB
 aws-activation-code|M|"ActivationCode": "SYNTHETICACTIVATIONCODE0123456789AB"
@@ -2949,21 +2959,6 @@ aws-activation-code|X|activation code: …
 aws-activation-code|X|terraform output -raw activation_code
 aws-activation-code|X|activation_code is displayed once at enrollment
 aws-activation-code|X|activation_id = 123e4567-e89b-12d3-a456-426614174000
-aws-session-token|M|AWS_SESSION_TOKEN=SYNTHETICSESSIONTOKEN0123456789
-aws-session-token|M|X-Amz-Security-Token: SYNTHETICSECURITYTOKEN0123456789
-aws-session-token|M|"SecurityToken": "SYNTHETICSECURITYTOKENABCDEFGHIJ"
-aws-session-token|M|SECURITY_TOKEN=SYNTHETICSECURITYTOKENQRSTUVWXYZ
-aws-session-token|M|session.token := SYNTHETICSESSIONTOKEN0123456789
-aws-session-token|M|Session Token = abcdefghijklmnop
-aws-session-token|M|aws_session_token = 'SYNTHETICSESSIONTOKEN+/==ABCDEF'
-aws-session-token|M|?X-Amz-Security-Token=awssecuritytokenheaderform
-aws-session-token|X|Session Token: EXAMPLE
-aws-session-token|X|session_token = <token>
-aws-session-token|X|security_token: …
-aws-session-token|X|aws_session_token
-aws-session-token|X|the session token expires hourly
-aws-session-token|X|SessionToken=short
-aws-session-token|X|session_token = abcdefghijklmno
 account-id-context|M|account_id = "123456789012"
 account-id-context|M|accountId = 123456789012
 account-id-context|M|"Account": "123456789012"
@@ -3113,9 +3108,7 @@ hostname-labeled|X|hostname: …
 hostname-labeled|X|hostname
 EOF
     {
-        printf 'aws-secret-access-key|M|aws_secret_access_key\t=\tEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE\n'
         printf 'aws-activation-code|M|activation_code\t=\tSYNTHETICACTIVATIONCODE01234567\n'
-        printf 'aws-session-token|M|aws_session_token\t=\tSYNTHETICSESSIONTOKEN0123456789\n'
         printf 'account-id-context|M|account_id\t=\t123456789012\n'
         printf 'aws-sso-profile|M|aws_profile\t=\tmxprod7\n'
         printf 'machine-serial-number|M|serial_number\t=\tABC12345\n'
@@ -3133,9 +3126,9 @@ EOF
     # tokens), plus the pure-digit and pure-letter tokens of every length
     # (10 silent tokens: the letter-and-digit property's negative side).
     # The other label detectors' value grammars are FLAT character
-    # classes with no positional structure — {35,45} secret keys, {8,}
-    # activation codes, {16,} session tokens, the exact 12-digit account
-    # run — so hand-picked values crossing each floor suffice there; the
+    # classes with no positional structure — {8,} activation codes, the
+    # exact 12-digit account run — so hand-picked values crossing each
+    # floor suffice there; the
     # account detector additionally gained the 11-digit boundary line
     # above (one short of the run). The value-class-bearing detectors'
     # CHARACTER and WORD-STRUCTURE dimensions (which member, which
@@ -3212,10 +3205,6 @@ EOF
     st_sweep_grow aws-sso-profile M 'aws_profile =' abcdefghijkl 1 12 0
     st_sweep_grow windows-username-labeled M 'username =' abcdefghijkl 1 12 0
     st_sweep_grow hostname-labeled M 'hostname =' abcdefghijkl 1 12 0
-    st_sweep_grow aws-secret-access-key M 'secret_access_key =' \
-        EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE 33 46 35
-    st_sweep_grow aws-session-token M 'session_token =' \
-        SYNTHETICSESSIONTOKEN0123456789 14 17 16
     st_sweep_grow aws-activation-code M 'activation_code =' \
         SYNTHETICACTIVATIONCODE0123456789 6 9 8
     st_sweep_grow account-id-context M 'account_id =' 1234567890123456 10 13 12
@@ -3895,9 +3884,16 @@ EOF
 #     SSM register-on-premises-api is a UUID (the uuid fixture documents
 #     this); the separately-bulleted managed-instance identifier is the
 #     mi-... node ID under its own bullet.
-#   * "AWS session tokens" → aws-session-token AND aws-session-key-id:
-#     an ASIA... temporary key ID is the key-ID half of the same session
-#     credential set the token belongs to.
+#   * The three generic-credential bullets (access-key IDs, secret keys,
+#     session tokens) map to gitleaks-ci — the PSEUDO-CLASS standing for
+#     the gitleaks CI job over file content and full history
+#     (.gitleaks.toml; upstream-maintained rules) — plus, where the
+#     message gate keeps a shape alive, that MESSAGE_GATE class id: the
+#     AKIA/ASIA key-ID shapes and the secret-key label assignment survive
+#     ONLY in the --message-file path (commit messages are the one
+#     surface no external scanner covers; see MESSAGE_GATE_*
+#     definitions). audit.sh itself no longer file/history-scans any of
+#     these shapes, which is why they map to no LABEL/SHAPE detector.
 #   * "SSO profile names" → aws-sso-profile (committed label spellings)
 #     and aws-profile-name (the runtime $AWS_PROFILE literal scan).
 #   * "hostname" → hostname (the runtime literal check, full and short
@@ -3940,9 +3936,9 @@ EOF
 # selftest, in the same note pattern as whoami/hostname).
 SPEC27_MAP='Activation Code|aws-activation-code
 Activation ID|uuid-literal
-AWS access-key IDs|aws-access-key-id
-AWS secret keys|aws-secret-access-key
-AWS session tokens|aws-session-token aws-session-key-id
+AWS access-key IDs|gitleaks-ci aws-access-key-id
+AWS secret keys|gitleaks-ci aws-secret-access-key
+AWS session tokens|gitleaks-ci aws-session-key-id
 SSO profile names|aws-sso-profile aws-profile-name
 SSO URLs|sso-start-url
 AWS account ID|account-id-context account-id-arn
@@ -3983,9 +3979,15 @@ st_spec27_map() {
         sed 's/:.*//')
     # tr: an assignment keeps embedded newlines (no field splitting in
     # assignments), and the membership tests below match on single
-    # spaces.
-    _s27_valid=" $(printf '%s\n%s\n' "$_s27_dets" "$RUNTIME_CHECK_IDS" |
-        tr '\n' ' ')"
+    # spaces. The valid set also carries the MESSAGE_GATE class ids
+    # (those shapes live only in the --message-file path) and the
+    # gitleaks-ci pseudo-class (file/history coverage delegated to the
+    # gitleaks CI job) so the map can state where each §27 item lives —
+    # direction 2 below still iterates only the file detectors and
+    # runtime checks, which is exactly the set that must anchor to a
+    # bullet on its own.
+    _s27_valid=" $(printf '%s\n%s\n%s\ngitleaks-ci\n' "$_s27_dets" \
+        "$RUNTIME_CHECK_IDS" "$MESSAGE_GATE_CLASS_IDS" | tr '\n' ' ')"
     _s27_used=" $(awk -F'|' '{print $2}' "$ST_WORK/s27-map" | tr '\n' ' ')"
     # Direction 1: every §27 bullet maps to at least one existing class.
     while IFS= read -r _s27_bullet; do
@@ -4031,20 +4033,20 @@ st_spec27_map() {
 
 # st_hook_smoke — the --scan-file CLI hook (see header) exists so test
 # harnesses drive the real engine; exercise the CLI path once so it
-# cannot rot: a finding line for a synthetic AKIA, exit 0 always, and a
-# missing file yields no findings, still exit 0.
+# cannot rot: a finding line for a synthetic managed-node ID, exit 0
+# always, and a missing file yields no findings, still exit 0.
 st_hook_smoke() {
     if [ ! -x "$ROOT/scripts/audit.sh" ]; then
         printf 'selftest: FAIL  %s is not executable (the --scan-file hook must be runnable)\n' \
             'scripts/audit.sh'
         return 1
     fi
-    printf 'variable = "AKIAQRSTUVWXYZHIJKLMNOP"\nplain line\n' \
+    printf 'variable = "mi-abcdef0123456789"\nplain line\n' \
         >"$ST_WORK/hook.txt"
     "$ROOT/scripts/audit.sh" --scan-file hook-smoke "$ST_WORK/hook.txt" \
         >"$ST_WORK/hook.out" 2>/dev/null
     _hk_rc=$?
-    _hk_want='FINDING hook-smoke:1: aws-access-key-id'
+    _hk_want='FINDING hook-smoke:1: managed-node-id'
     _hk_got=$(grep -c . "$ST_WORK/hook.out")
     if [ "$_hk_rc" -ne 0 ] || [ "$_hk_got" -ne 1 ] ||
         [ "$(sed -n 1p "$ST_WORK/hook.out")" != "$_hk_want" ]; then
@@ -4120,12 +4122,13 @@ st_decodable_nulfree() {
 
 # st_bd_case FILE LABEL ENCS WHAT — scan a crafted wide-encoded FILE through
 # the real engine and assert exactly the outcome effective_scan_path owes:
-# the aws-access-key-id finding (the synthetic key is line 1 of every
+# the managed-node-id finding (the synthetic node ID is line 1 of every
 # crafted file) when st_decodable_nulfree says this platform's iconv can
 # decode FILE, else the explicit unscannable-binary-content finding — the
-# fail-closed rule. Both directions are strict: a decodable file whose key
-# is missed is the silent-pass bug this guards, and an undecodable file
-# scanned as text is the same bug wearing the decode's coat.
+# fail-closed rule. Both directions are strict: a decodable file whose
+# identity value is missed is the silent-pass bug this guards, and an
+# undecodable file scanned as text is the same bug wearing the decode's
+# coat.
 st_bd_case() {
     _bc_file=$1
     _bc_label=$2
@@ -4133,13 +4136,13 @@ st_bd_case() {
     _bc_what=$4
     scan_file "$_bc_file" "$_bc_label" >"$ST_WORK/bd-case.out"
     if st_decodable_nulfree "$_bc_file" "$_bc_encs"; then
-        if grep -q "^FINDING $_bc_label:1: aws-access-key-id\$" \
+        if grep -q "^FINDING $_bc_label:1: managed-node-id\$" \
             "$ST_WORK/bd-case.out"; then
-            printf 'selftest: PASS  %-44s key detected in decoded text\n' \
+            printf 'selftest: PASS  %-44s node ID detected in decoded text\n' \
                 "$_bc_what"
             return 0
         fi
-        printf 'selftest: FAIL  %s: decodes here, the key must be detected\n' \
+        printf 'selftest: FAIL  %s: decodes here, the node ID must be detected\n' \
             "$_bc_what"
     elif grep -q "^FINDING $_bc_label: unscannable-binary-content " \
         "$ST_WORK/bd-case.out"; then
@@ -4158,12 +4161,13 @@ st_bd_case() {
 # thread 3888358871): a UTF-32 file's BOM (FF FE 00 00 LE, 00 00 FE FF BE)
 # begins with the UTF-16 BOM bytes, so the UTF-16 decode attempt
 # "succeeded" and handed the detectors NUL-interleaved garbage in which no
-# ASCII-shaped detector can match — a tracked UTF-32 file holding an AWS
-# key ID produced NO finding at all, not even unscannable-binary-content.
+# ASCII-shaped detector can match — a tracked UTF-32 file holding a
+# managed-node ID produced NO finding at all, not even
+# unscannable-binary-content.
 # Both layers of the fix are asserted: the 4-byte UTF-32 BOMs are tried
 # before the 2-byte UTF-16 ones (both UTF-32LE and UTF-32BE files decode
-# and their key is detected), and every decode is re-verified — output that
-# still contains NUL bytes is unscannable-binary-content, never
+# and their node ID is detected), and every decode is re-verified — output
+# that still contains NUL bytes is unscannable-binary-content, never
 # scanned-as-text (a UTF-16LE payload with an embedded U+0000 forces
 # exactly that: every candidate decode keeps the NUL). The UTF-16LE case
 # guards the pre-existing decode path, which no harness check exercised
@@ -4172,14 +4176,14 @@ st_bd_case() {
 # selftest() scans raw file bytes via scan_stream and deliberately bypasses
 # effective_scan_path, which is exactly the layer under test here.
 st_binary_decode() {
-    _bd_keyline='variable = "AKIAQRSTUVWXYZHIJKLMNOP"'
+    _bd_keyline='variable = "mi-abcdef0123456789"'
     _bd_tail='
 plain line'
     _bd_text=$_bd_keyline$_bd_tail
     _bd_status=0
 
-    # UTF-16LE BOM + key: decodes, key detected (or fail closed where
-    # iconv cannot decode UTF-16 at all).
+    # UTF-16LE BOM + node ID: decodes, node ID detected (or fail closed
+    # where iconv cannot decode UTF-16 at all).
     {
         printf '\377\376'
         st_wide_payload le 1 "$_bd_text"
@@ -4187,9 +4191,9 @@ plain line'
     st_bd_case "$ST_WORK/bd-u16le.txt" harness-binary-utf16le \
         'UTF-16 UTF-16LE' 'utf-16le decode' || _bd_status=1
 
-    # UTF-32LE BOM + key — the reviewer's shape: the BOM's first two bytes
-    # are the UTF-16LE BOM, so this is the file the old UTF-16-first order
-    # silently misdecoded.
+    # UTF-32LE BOM + node ID — the reviewer's shape: the BOM's first two
+    # bytes are the UTF-16LE BOM, so this is the file the old UTF-16-first
+    # order silently misdecoded.
     {
         printf '\377\376\0\0'
         st_wide_payload le 2 "$_bd_text"
@@ -4197,8 +4201,8 @@ plain line'
     st_bd_case "$ST_WORK/bd-u32le.txt" harness-binary-utf32le \
         'UTF-32 UTF-32LE' 'utf-32le decode' || _bd_status=1
 
-    # UTF-32BE BOM + key: the second 4-byte BOM, whose first two bytes say
-    # BOM-less UTF-16BE to the old 2-byte look.
+    # UTF-32BE BOM + node ID: the second 4-byte BOM, whose first two bytes
+    # say BOM-less UTF-16BE to the old 2-byte look.
     {
         printf '\0\0\376\377'
         st_wide_payload be 2 "$_bd_text"
@@ -4207,7 +4211,7 @@ plain line'
         'UTF-32 UTF-32BE' 'utf-32be decode' || _bd_status=1
 
     # Decoded output still carrying NUL bytes: a UTF-16LE payload with an
-    # embedded U+0000 code unit after the key line. iconv exits 0 on every
+    # embedded U+0000 code unit after the value line. iconv exits 0 on every
     # candidate encoding here — the success is a lie — so only the
     # post-decode NUL re-verification stands between this file and a
     # garbage scan. The expectation is unconditional: whatever iconv does,
@@ -4266,7 +4270,7 @@ plain line'
 # it WHOLE to the engine, and nothing in history can produce these
 # findings — so both assert the tracked pass alone. Its *.tfstate name
 # pins the PATH-level check on a newline-bearing name, and its synthetic
-# sequential AWS key shape pins the CONTENT scan; the assertions flatten
+# managed-node ID pins the CONTENT scan; the assertions flatten
 # newlines to '~' first, because a finding whose label embeds the newline
 # spans two physical lines no line-based grep pattern could pin.
 # Every git step that BUILDS the scratch repo is checked and fails this
@@ -4376,7 +4380,7 @@ st_tfstate_checks() {
     # Newline-named tracked file, staged only (see the comment above): the
     # name reaches ls-files -z with the raw newline inside, and the audit
     # must scan the file under that whole name.
-    printf 'key = AKIAABCDEFGHIJKLMNOP\n' \
+    printf 'variable = "mi-abcdef0123456789"\n' \
         >"$(printf '%s/weird\nname.tfstate' "$_ts_dir")"
     _ts_step 'add (newline-named file)' add -f -- \
         "$(printf 'weird\nname.tfstate')" || return 1
@@ -4426,15 +4430,15 @@ st_tfstate_checks() {
     [ "$_ts_bs_hits" -eq 2 ] || _ts_ok=no
     # Newline-named tracked file: BOTH findings must carry the WHOLE name —
     # the path-level state finding and the content finding for the synthetic
-    # key on line 1. Flattening the output's newlines to '~' makes the
-    # embedded newline itself part of the fixed-string pattern: a shred into
-    # fragments (the old tr '\0' '\n' behavior) produces neither adjacency
-    # nor these strings.
+    # managed-node ID on line 1. Flattening the output's newlines to '~'
+    # makes the embedded newline itself part of the fixed-string pattern: a
+    # shred into fragments (the old tr '\0' '\n' behavior) produces neither
+    # adjacency nor these strings.
     tr '\n' '~' <"$_ts_dir/audit.out" | grep -qF \
         "$(printf 'FINDING weird~name.tfstate: terraform-state-tracked')" ||
         _ts_ok=no
     tr '\n' '~' <"$_ts_dir/audit.out" | grep -qF \
-        "$(printf 'FINDING weird~name.tfstate:1: aws-access-key-id')" ||
+        "$(printf 'FINDING weird~name.tfstate:1: managed-node-id')" ||
         _ts_ok=no
     if [ "$_ts_ok" != yes ]; then
         printf 'selftest: FAIL  tfstate path checks: rc=%s (want 1); tracked-path and history-path findings both expected (ASCII, non-ASCII, backslash, uppercase-suffix, newline-named; history hits non-ASCII: %s want 2, backslash: %s want 2, uppercase: %s want 2)\n' \
@@ -4471,19 +4475,23 @@ fix: example change quoting the values it describes
 AWS_PROFILE=production
 secret_access_key = EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE # audit-allow:synthetic
 variable = "AKIAQRSTUVWXYZHIJKLMNOP"
+variable = "ASIAQRSTUVWXYZHIJKLMNOP"
 EOF
     "$ROOT/scripts/audit.sh" --message-file "$ST_WORK/msg-bad.txt" \
         >"$ST_WORK/msg-bad.out" 2>/dev/null
     _mf_rc=$?
     _mf_ok=yes
     [ "$_mf_rc" -eq 1 ] || _mf_ok=no
-    for _mf_cls in aws-sso-profile aws-secret-access-key aws-access-key-id; do
+    # The secret-key and both key-ID shapes are MESSAGE-GATE-ONLY classes
+    # (see MESSAGE_GATE_*): this is the one check anywhere that pins them.
+    for _mf_cls in aws-sso-profile aws-secret-access-key \
+        aws-access-key-id aws-session-key-id; do
         grep -q ": ${_mf_cls}\$" "$ST_WORK/msg-bad.out" || _mf_ok=no
     done
     if [ "$_mf_ok" != yes ]; then
-        printf 'selftest: FAIL  --message-file gate: rc=%s (want 1) with named findings for the profile, secret-key and key-ID classes\n' \
+        printf 'selftest: FAIL  --message-file gate: rc=%s (want 1) with named findings for the profile, secret-key and both key-ID classes\n' \
             "$_mf_rc"
-        sed 's/^/         /' "$ST_WORK/msg-bad.out" | head -n 4
+        sed 's/^/         /' "$ST_WORK/msg-bad.out" | head -n 5
         return 1
     fi
     cat >"$ST_WORK/msg-good.txt" <<'EOF'
@@ -4723,8 +4731,10 @@ message_file_audit() {
         exit 2
     }
     MARKER_GATE_OFF=yes
+    SCAN_CONTEXT=message
     scan_stream 'commit-message' "$_mf_file" >"$_mf_out"
     MARKER_GATE_OFF=
+    SCAN_CONTEXT=
     if [ -s "$_mf_out" ]; then
         printf 'message: FAIL - %s finding(s) in %s (reword the message; uncommitted text cannot be annotated)\n' \
             "$(grep -c . "$_mf_out")" "$_mf_file"
@@ -4791,9 +4801,12 @@ selftest() {
     done
 
     # Marker fixtures: synthetic values carrying the marker must produce NO
-    # finding (a), and a real AWS key-ID shape (b) or a session-token
-    # assignment clearing its 16-plus value anchor (c) carrying the marker
-    # must STILL be detected — the hard rule in the header.
+    # finding. The former key-material companions (a marker carrying an
+    # AKIA shape / a session-token assignment still detected — the old hard
+    # rule) are gone with their detector classes: generic credential shapes
+    # are gitleaks' job in CI, and the --message-file gate — the one path
+    # that still checks them — has no marker suppression at all, pinned by
+    # st_message_file.
     for _rel in $SILENT_FIXTURES; do
         if [ ! -f "$ROOT/$_rel" ]; then
             printf 'selftest: FAIL  %-44s fixture missing\n' "$_rel"
@@ -4810,30 +4823,6 @@ selftest() {
             ;;
         esac
     done
-
-    _rel="$FIXTURE_DIR/marker-ignored-akia.txt"
-    if [ ! -f "$ROOT/$_rel" ]; then
-        printf 'selftest: FAIL  %-44s fixture missing\n' "$_rel"
-        _status=1
-    elif printf '%s\n' "$_found" |
-        grep -q "^FINDING $_rel:[0-9]*: aws-access-key-id\$"; then
-        printf 'selftest: PASS  %-44s AKIA still detected with marker\n' "$_rel"
-    else
-        printf 'selftest: FAIL  %-44s AKIA not detected with marker\n' "$_rel"
-        _status=1
-    fi
-
-    _rel="$FIXTURE_DIR/marker-ignored-session-token.txt"
-    if [ ! -f "$ROOT/$_rel" ]; then
-        printf 'selftest: FAIL  %-44s fixture missing\n' "$_rel"
-        _status=1
-    elif printf '%s\n' "$_found" |
-        grep -q "^FINDING $_rel:[0-9]*: aws-session-token\$"; then
-        printf 'selftest: PASS  %-44s session token still detected with marker\n' "$_rel"
-    else
-        printf 'selftest: FAIL  %-44s session token not detected with marker\n' "$_rel"
-        _status=1
-    fi
 
     # Generative spelling matrix, per-detector value must/must-not
     # tables, and the SPEC §27 coverage map (see the harness section
