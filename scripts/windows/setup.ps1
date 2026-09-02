@@ -43,14 +43,18 @@
     is the last point that can still refuse.
 
     Success, too, is revalidated: every branch that reports it (NoOperation,
-    StartService, Register) re-reads the registration AFTER its last
-    mutation - the service repairs - and immediately before printing the
-    managed node ID, and reports success only when the record is still
-    present, still parseable, and still the same registration the branch
-    verified earlier. A registration cleared or replaced while the repairs
-    ran is reported as drift and exits 3 - the same human-decides
-    disposition as the other registration ambiguities - never a cached
-    managed node ID printed with exit 0 (SPEC 22/23).
+    StartService, Register) re-reads EVERY fact it claims at the boundary.
+    The service facts are re-read FIRST (AmazonSSMAgent must still be
+    Running AND Automatic at the success boundary, not merely at the
+    repair helper's last re-query) and the registration LAST, closest to
+    the print: still present, still parseable, and still the same
+    registration the branch verified earlier. Drift in either fact -
+    service or registration - is reported as drift and exits 3 (the same
+    human-decides disposition as the other registration ambiguities),
+    never a cached fact printed with exit 0; the drift report names WHICH
+    fact drifted. The honest residue: the identity read takes time, and
+    service drift inside it is a statement-scale window, recorded in the
+    test inventory rather than claimed away (SPEC 22/23).
 
     Service repairs are shared and dependency-ordered: every branch that
     repairs AmazonSSMAgent toward the healthy verdict (NoOperation,
@@ -497,6 +501,76 @@ function Assert-SsmRegistrationStillAbsent {
         "' (no registration file) and planned Register from that fact.")
 }
 
+# Service-facts re-read at the SUCCESS BOUNDARY (SPEC 22/23) - the mirror
+# of Get-SsmRegistrationForSuccessReport below, and the report side of the
+# invariant the repair helper enforces after its own mutations: a success
+# report must re-read EVERY fact it claims, at the boundary. The three
+# healthy-verdict branches print a service line ('AmazonSSMAgent Running /
+# startup Automatic') whose facts came from the repair helper's LAST
+# re-query - a read that sits before the final registration read, so drift
+# inside that window (the service stopping, or Group Policy flipping the
+# start type back) was printed as health from a stale snapshot and the
+# branch exited 0 over it.
+#
+# ORDER (round 58): this is the CHEAP, non-identity fact, so it runs FIRST
+# at the boundary and the registration identity is read LAST, after it,
+# closest to the print. The residue is honest, not claimed away: the
+# registration read that follows takes time, and the service could drift
+# inside it - that statement-scale window is the recorded residue, exactly
+# the mirror of the clear boundary's.
+#
+# Dispositions: drift (the service missing, not Running, or not Automatic
+# NOW) withholds success and reports SERVICE drift in wording distinct
+# from the registration guard's, so the operator is told WHICH fact
+# drifted; on this path the registration is NOT re-verified (the service
+# drift was found first) and the report says so - no cached identity is
+# printed. Exit 3, the drift-report family: every action this run
+# attempted succeeded, and what changed is the machine's coherence with
+# the verdict (Group Policy is the usual author), a human-decides repair.
+# A failed QUERY also withholds success - this is a verdict query, and
+# health cannot be certified over unknown service state - but exits 1,
+# the service-family failure code, with a truthful report of what the
+# run already did rather than the raw wrapper text.
+# Returns the last-moment service facts for the report to print, or never
+# returns.
+function Get-SsmServiceForSuccessReport {
+    param([string]$ChangesSoFar)
+
+    $service = $null
+    try {
+        $service = Get-SsmServiceInfo
+    } catch {
+        Write-Fail 'The AmazonSSMAgent service could not be re-queried at the success boundary.'
+        Write-Host ('What this run already did before this read: ' + $ChangesSoFar + '.')
+        Write-Host 'Health cannot be certified over an unknown service state, so the healthy verdict'
+        Write-Host 'and its facts are withheld. Nothing further was changed by this run. Inspect the'
+        Write-Host 'error: Get-Service AmazonSSMAgent and the SSM Agent log, then re-run.'
+        exit 1
+    }
+
+    if ($service.Exists -and ($service.Status -eq 'Running') -and ($service.StartType -eq 'Automatic')) {
+        return $service
+    }
+
+    Write-Fail 'The AmazonSSMAgent service drifted while this run was finishing.'
+    if (-not $service.Exists) {
+        Write-Host 'The service no longer exists at the success boundary; it existed at the'
+        Write-Host 'classification and at the repairs above.'
+    } else {
+        Write-Host ("It is not Running AND Automatic NOW (status '" + $service.Status + "', startup '" + $service.StartType + "'),")
+        Write-Host 'so the healthy verdict is withheld: printing the earlier service facts would'
+        Write-Host 'report a machine that no longer exists. Another actor may be re-applying a'
+        Write-Host 'service configuration, for example Group Policy.'
+    }
+    Write-Host ('What this run already did before this read: ' + $ChangesSoFar + '.')
+    Write-Host 'This is SERVICE drift, not registration drift: the registration was NOT re-verified'
+    Write-Host 'at this boundary (the service drift was found first), so no cached identity is'
+    Write-Host 'printed either. Inspect: Get-Service AmazonSSMAgent and the SSM Agent log, then'
+    Write-Host 're-run this script: it classifies the machine afresh and takes the appropriate'
+    Write-Host 'action.'
+    exit 3
+}
+
 # Registration revalidation at the SUCCESS BOUNDARY (SPEC 22/23): the last
 # read before any branch prints a healthy verdict or exits 0. The branches
 # that report success all verify the registration EARLY and then run slow,
@@ -864,16 +938,21 @@ if ($action -eq 'NoOperation') {
     $startupRestored = $repair.StartupRestored
 
     # Success-report adjacency (the class rule applied to the REPORT side):
-    # the registration this branch holds was read BEFORE the repairs above,
-    # and Start-Service/Set-Service are mutating steps another actor can
-    # clear or replace a registration inside - a summary built from that
-    # read would print a cached managed node ID. The guard re-reads and
-    # re-validates the registration here, after the last mutation and
-    # immediately before the summary, and withholds success when the record
-    # is gone, changed, or unreadable. It runs on the clean path too: the
-    # read is cheap, and every success report in this script is built the
-    # same way - only facts read at the last possible moment, nothing but
-    # reads and console output after them.
+    # a success report must re-read EVERY fact it claims, at the boundary.
+    # The registration this branch holds was read BEFORE the repairs above
+    # (Start-Service/Set-Service are mutating steps another actor can clear
+    # or replace a registration inside), and the helper's last service
+    # re-query equally predates the boundary - so BOTH facts are re-read
+    # here, in the round-58 order: the CHEAP non-identity fact first (the
+    # service guard withholds success unless AmazonSSMAgent is still
+    # Running AND Automatic NOW), the registration identity LAST, closest
+    # to the print (withheld when gone, changed, or unreadable). Both run
+    # on the clean path too: the reads are cheap, and every success report
+    # in this script is built the same way - only facts read at the last
+    # possible moment, nothing but reads and console output after them.
+    # The honest residue: the registration read takes time, and service
+    # drift inside it is the recorded statement-scale window, not claimed
+    # away.
     $changesMade = 'nothing at all'
     if ($serviceStarted -and $startupRestored) {
         $changesMade = 'started AmazonSSMAgent and restored its Automatic startup type'
@@ -882,6 +961,7 @@ if ($action -eq 'NoOperation') {
     } elseif ($startupRestored) {
         $changesMade = 'restored the AmazonSSMAgent Automatic startup type'
     }
+    $currentService = Get-SsmServiceForSuccessReport -ChangesSoFar $changesMade
     $registration = Get-SsmRegistrationForSuccessReport -Registration $registration -ChangesSoFar $changesMade
 
     Write-Host ''
@@ -923,12 +1003,12 @@ if ($action -eq 'StartService') {
     $currentService = $repair.Service
     $startupRestored = $repair.StartupRestored
 
-    # Success-report adjacency, the same ordering as NoOperation above: the
-    # registration this branch holds was read before Set-Service/Start-
-    # Service ran, so the summary below may print its managed node ID only
-    # after re-reading and re-validating the registration past those
-    # mutations - gone, changed, or unreadable at this moment is reported
-    # as drift, never a cached ID with exit 0.
+    # Success-report adjacency, the same two-read boundary as NoOperation
+    # above: BOTH claimed facts are re-read at the boundary, service first
+    # (identity last, round 58) - the helper's last service re-query
+    # predates this boundary exactly like the early registration read
+    # does, so drift in either window is withheld-success drift, never a
+    # cached fact with exit 0.
     $changesMade = 'nothing at all'
     if ($repair.Started -and $startupRestored) {
         $changesMade = 'started AmazonSSMAgent and restored its Automatic startup type'
@@ -937,6 +1017,7 @@ if ($action -eq 'StartService') {
     } elseif ($startupRestored) {
         $changesMade = 'restored the AmazonSSMAgent Automatic startup type'
     }
+    $currentService = Get-SsmServiceForSuccessReport -ChangesSoFar $changesMade
     $registration = Get-SsmRegistrationForSuccessReport -Registration $registration -ChangesSoFar $changesMade
 
     Write-Host ''
@@ -1097,14 +1178,14 @@ if ($action -eq 'Register') {
 
     Remove-Variable -Name ActivationId -ErrorAction SilentlyContinue
 
-    # Success-report adjacency, the same ordering as NoOperation and
-    # StartService above: the registration this branch verified was read
-    # BEFORE the startup repairs, so the summary below may print its
-    # managed node ID only after re-reading and re-validating the
-    # registration past those mutations. Drift here is reported, never
-    # retried: the enrollment already consumed the activation, and whether
-    # to accept a replacement identity or enroll afresh is the operator's
-    # decision, so the guard's report names the consumed activation too.
+    # Success-report adjacency, the same two-read boundary as NoOperation
+    # and StartService above: BOTH claimed facts are re-read at the
+    # boundary, service first (still Running AND Automatic NOW) and the
+    # registration identity LAST, closest to the print. Drift in either
+    # fact is reported, never retried: the enrollment already consumed the
+    # activation, and whether to accept a replacement identity or enroll
+    # afresh is the operator's decision, so the guards' reports name the
+    # consumed activation too.
     $changesMade = 'completed the enrollment (one activation was consumed)'
     if ($startupSetAfter -and $serviceStartedAfter) {
         $changesMade = 'completed the enrollment (one activation was consumed), set the AmazonSSMAgent startup type to Automatic, and started AmazonSSMAgent'
@@ -1113,6 +1194,7 @@ if ($action -eq 'Register') {
     } elseif ($serviceStartedAfter) {
         $changesMade = 'completed the enrollment (one activation was consumed) and started AmazonSSMAgent'
     }
+    $serviceAfter = Get-SsmServiceForSuccessReport -ChangesSoFar $changesMade
     $registrationAfter = Get-SsmRegistrationForSuccessReport -Registration $registrationAfter -ChangesSoFar $changesMade
 
     Write-Host ''

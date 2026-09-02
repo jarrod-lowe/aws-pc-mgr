@@ -300,7 +300,10 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #   success-boundary revalidation (ALL THREE exit-0 branches) - the
     #       class rule applied to the report itself: a success report must
     #       state only facts read at the last possible moment, with no
-    #       mutation between the read and the report. NoOperation (clean
+    #       mutation between the read and the report (round 59
+    #       strengthened this to EVERY claimed fact: the service guard
+    #       runs first, this registration guard last - see the round-59
+    #       entry below). NoOperation (clean
     #       and repair paths), StartService, and Register each hold a
     #       registration read taken BEFORE their slow, mutating repair
     #       steps (Set-Service/Start-Service), so each branch calls
@@ -592,11 +595,11 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       immediately-adjacent service reads, and identity protection
     #       lives at the report boundary (the success-boundary guard) -
     #       ADJUDICATED, no identity read to order
-    #       NoOperation report - helper's final service read, then the
-    #       registration guard, then prints - identity last, PASS
+    #       NoOperation report - service boundary guard (fresh Running/
+    #       Automatic read, round 59), then the registration guard, then
+    #       prints - identity last, PASS
     #       StartService report - same shape - identity last, PASS
-    #       Register report - helper's final service read, then the
-    #       registration guard, then prints - identity last, PASS
+    #       Register report - same shape - identity last, PASS
     #       check.ps1 - strictly read-only, no acts - out of the class
     #       by definition
     #       Net: two boundaries carried a post-identity query (the
@@ -605,6 +608,57 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       identity last. The round-53 'irreducible residue'
     #       adjudication is revised honestly above: the service query
     #       was a removable statement, and reordering removed it
+    #   service facts at the success boundary (round 59) - the mirror
+    #       of the round-58 finding, and the strengthened invariant: a
+    #       success report must re-read EVERY fact it claims, at the
+    #       boundary - R49 bound the registration, this binds the
+    #       service-health facts. The three healthy-verdict branches
+    #       printed a service line built from the repair helper's LAST
+    #       re-query, a read that predates the final registration
+    #       read, so drift inside that window (service stopping, GPO
+    #       flipping the start type) printed as health from a stale
+    #       snapshot with exit 0. FIXED: Get-SsmServiceForSuccessReport
+    #       re-queries at the boundary, FIRST (round-58 order: cheap
+    #       non-identity facts first, identity last, closest to the
+    #       print), and withholds success unless BOTH current facts
+    #       satisfy Running/Automatic; the returned fresh facts are
+    #       what the report prints. Dispositions: drift (missing, not
+    #       Running, or not Automatic NOW) exits 3 in the drift-report
+    #       family with SERVICE-specific wording (the consistency
+    #       check: the operator is told WHICH fact drifted - the
+    #       service report states the registration was NOT re-verified
+    #       on that path, and the registration guard's report stays
+    #       registration-specific, so neither mislabels the other); a
+    #       failed QUERY is a verdict query failing closed - exit 1,
+    #       the service-family code, with a truthful report of what
+    #       the run already did. Strengthened-invariant sweep:
+    #       NoOperation clean - service guard runs there too (both
+    #       boundary reads run unconditionally), FIXED; NoOperation
+    #       repair - FIXED; StartService - FIXED; Register - FIXED;
+    #       Reregister completion - ADJUDICATED, not exempt by
+    #       omission: its report claims DIFFERENT facts (the clear's
+    #       postcondition, and a service-status wording arm, not a
+    #       Running/Automatic health verdict - the branch's success
+    #       deliberately means stopped-and-unregistered), every claim
+    #       it makes is already boundary-read (service wording
+    #       soft-fail round 54, registration postcondition last round
+    #       58), so the strengthened rule holds without importing a
+    #       Running/Automatic requirement that branch never claims;
+    #       check.ps1 - read-only, claims are printed adjacent to
+    #       their own reads, out of class. Honest residue, per the
+    #       round-58 lesson: the identity read following the service
+    #       guard takes time and service drift inside it is a
+    #       statement-scale window - recorded here, not claimed away
+    #       (the matrix does not say zero window). Not child-process-
+    #       drivable (the drift needs a service change inside one
+    #       run's boundary window; no seam drives it from closed
+    #       stdin); the pin is the disposition plus the parse check,
+    #       and the V4 scratch-copy form (a service reader that
+    #       flips to Stopped at the boundary read; pre-fix, the
+    #       healthy line prints the helper's snapshot with exit 0;
+    #       post-fix, the service-drift report and exit 3 replace it)
+    #       documents the red/green demonstration for the validation
+    #       machine
     #   post-clear absence revalidation (Reregister) - the postcondition-
     #       adjacency member of the class invariant, and the clear's
     #       POST-condition joining the PRE-condition above:
