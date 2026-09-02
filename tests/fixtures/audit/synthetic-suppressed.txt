@@ -1,0 +1,11 @@
+# Synthetic audit fixture: values carrying the suppression marker must
+# produce NO finding in any detector class (see the audit.sh header for the
+# marker convention). This fixture is expected to be silent. The last line
+# is the code label-shape collision class: the lowercased activation-code
+# detector matches the assignment (the value is a function invocation, not
+# a credential), and the marker exempts it exactly as scripts/windows/
+# setup.ps1's copy of that line is exempted.
+registration_json = '{"ManagedInstanceID":"mi-0123456789abcdef0","Region":"ap-southeast-2"}' # audit-allow:synthetic
+activation_id = "123e4567-e89b-12d3-a456-426614174000" # audit-allow:synthetic
+managed_node_id = "mi-abcdef0123456789" # audit-allow:synthetic
+$activationCode = Read-ActivationCode # audit-allow:synthetic

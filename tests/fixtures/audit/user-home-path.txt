@@ -1,0 +1,21 @@
+# Synthetic audit fixture: user-specific absolute paths (SPEC §27) for the
+# SHAPE detector, which matches the ORIGINAL line: the Windows drive-letter
+# form (either slash direction, any drive-letter case), the macOS /Users
+# form, and the Linux /home form. The username segment is the identifying
+# value; `<...>` and %VAR% placeholders carry no username and stay silent
+# (the segment class cannot match their leading character). Synthetic
+# values.
+C:\Users\alice.smith\.aws\config
+D:/Users/carol.dane/notes.txt
+"/Users/jarrod/.aws/config"
+C:\Users\w\.aws\config
+/home/x/tools
+home_dir = "/home/ec2-user"
+"C:\\Users\\bob.nguyen\\Documents\\report.pdf"
+# Placeholder and variable forms that must stay silent.
+C:\Users\<username>\.aws\config
+copy "%USERPROFILE%\.aws\config" D:\backup\
+~/.aws/config and $HOME/.aws/config identify nobody
+C:\Users\$svc\.aws\config
+C:\Users\Élodie\.aws\config
+C:\Users\John Smith-x\.aws\config

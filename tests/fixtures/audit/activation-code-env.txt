@@ -1,0 +1,5 @@
+# Synthetic audit fixture: SSM hybrid activation code in the uppercase
+# environment-variable form, as CI secret setup and .env files spell it. The
+# label detector matches a lowercased copy of the line, so the uppercase
+# spelling is detected like any other case variant. Synthetic value.
+ACTIVATION_CODE=SYNTHETICACTIVATIONCODE0123456789AB

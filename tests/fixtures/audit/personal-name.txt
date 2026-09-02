@@ -1,0 +1,29 @@
+# Synthetic audit fixture: personal names (SPEC §27) behind the
+# identifying name-field labels — the personal/full/real/display name
+# family (`display` is Entra/M365's Display Name field) in every case
+# and separator spelling (the label machinery matches a
+# lowercased copy of the line). The bare `name` key is deliberately NOT a
+# label: it is an ordinary key everywhere in code and HCL. The value
+# anchor is a NAME SHAPE, not positional: two-or-more word runs of name
+# characters, each run 3-plus, totalling 8-plus — so prose pairs like
+# "the name" (3+4) stay silent while any real two-run name fires, and
+# very short names ("Jan Li", 3+2) stay silent too (documented,
+# acceptable miss). Synthetic values.
+Personal Name: Alice Smith
+full_name = "Jean-Pierre Blanc"
+"full_name": "Mary Jane Watson"
+REAL-NAME:=O'Brien Casey
+personalName: Jeanne D'Arc-Lee
+full name = Jean Pierre Dupont
+# Bare-name, single-token, short, placeholder, prose and form-boilerplate
+# forms that must stay silent.
+name = "Alice Smith"
+full_name: Smith
+full name: Jan Li
+personal_name = <your name>
+Full Name: Not Applicable
+personal_name: …
+Personal Name: the name of the person
+real_name = var.instance_name
+Personal Name: Élodie Durand
+Personal Name: Smith, Alice

@@ -1,0 +1,12 @@
+# Synthetic audit fixture: SSM hybrid activation code in a labeled
+# assignment (HCL variable spelling). Real activation codes are long
+# base64-ish secrets handed to the agent at enrollment time; committing one
+# in a tracked file must be a finding. The value anchor requires 8-plus
+# value characters after the separator, so the repository's legitimate
+# mentions (a 'terraform output -raw activation_code' command line, which
+# assigns nothing) cannot false-positive. Synthetic value.
+activation_code = "SYNTHETICACTIVATIONCODE0123456789AB"
+# Dotted-key and Makefile :=: assignment spellings the label grammar
+# accepts (found by the selftest spelling matrix). Synthetic value.
+activation.code = "SYNTHETICACTIVATIONCODE0123456789AB"
+activation_code := SYNTHETICACTIVATIONCODE0123456789AB

@@ -1,0 +1,3 @@
+# Copy to terraform.tfvars (untracked) and replace "replaceme" with a
+# globally unique, non-identifying suffix.
+bucket_name = "win11-ssm-tfstate-replaceme"

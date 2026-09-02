@@ -1,0 +1,2 @@
+# Synthetic audit fixture: email address (RFC 2606 .invalid TLD).
+contact = "user@example.invalid"

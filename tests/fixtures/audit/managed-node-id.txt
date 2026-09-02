@@ -1,0 +1,2 @@
+# Synthetic audit fixture: SSM hybrid managed-node ID shape.
+managed_node_id = "mi-abcdef0123456789"

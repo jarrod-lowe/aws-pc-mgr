@@ -1,0 +1,9 @@
+# Synthetic audit fixture: 12-digit AWS account ID in the JSON form an STS
+# GetCallerIdentity response dump prints - a quoted Account key whose id
+# suffix is absent, colon separator, quoted value - with no ARN on the
+# line, so the account label context detector is what must fire. The label
+# detector matches a lowercased copy of the line, so the key's case and the
+# missing suffix are both covered by the one pattern, and the value anchor
+# keeps a bare quoted Account key with a non-numeric value silent.
+# Synthetic value.
+"Account": "123456789012"

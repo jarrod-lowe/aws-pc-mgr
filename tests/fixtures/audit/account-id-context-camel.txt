@@ -1,0 +1,8 @@
+# Synthetic audit fixture: 12-digit AWS account ID in the camelCase
+# assignment form (the two label words run together, equals separator,
+# unquoted value) as SDK configuration and scripting spell it - with no ARN
+# on the line, so the account label context detector is what must fire.
+# The label detector matches a lowercased copy of the line, so camelCase,
+# snake_case, kebab-case, spaced and UPPER spellings of the label are all
+# the one pattern. Synthetic value.
+accountId = 123456789012

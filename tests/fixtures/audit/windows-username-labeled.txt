@@ -1,0 +1,44 @@
+# Synthetic audit fixture: labeled Windows usernames (SPEC §27; review
+# thread 3888208297) — the label matches a span, so `Windows username:`,
+# `win_username`, `UserName`, `USER-NAME`, `user.name` plus the
+# Windows-qualified nouns (`Windows user/account`, `win account`),
+# `LocalAccount`, `SamAccountName` and `logon name` — the LABEL VOCABULARY
+# TABLE in scripts/audit.sh decides each alternative; bare `user`/
+# `account` and `login name` are deliberately excluded. The value anchor is
+# a single identifier run of ANY length - one-character account names are
+# real (round 29 removed the 4-plus floor); dots, underscores, hyphens are
+# username characters; spaces break the run, which is the prose brake. Doc filler (the, your,
+# none, unknown, example, placeholder, name) is excluded by a post-match
+# generic gate that deliberately does NOT include real account names —
+# root/administrator behind a label are findings. Synthetic values.
+Windows username: alice.smith
+username = "svc-win-ci"
+"UserName": "LocalAdmin1"
+win_username := alice.smith
+USER-NAME: svc-win-ci
+Windows user: bob
+Windows account: bob
+LocalAccount = alice
+sAMAccountName: alice.smith
+logon name: alice
+username: bob
+username: abc
+username: q
+# Prose, filler, placeholder and sub-floor forms that must stay silent.
+Windows username: the local account
+username: your
+username: none
+username: unknown
+username: example
+username = <username>
+User Name: name
+user: bob
+account: bob
+login name: alice
+computer account: PC1
+Windows username: _svc
+Windows account: -svc
+Windows username: $svc
+Windows account: !svc
+Windows username: Élodie
+Windows username: unknown svc
