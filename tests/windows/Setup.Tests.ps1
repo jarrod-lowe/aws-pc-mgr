@@ -488,6 +488,65 @@ Describe 'setup.ps1 post-classification revalidation (SPEC 22)' {
     #       read; pre-fix, exit 1 with the clear unreported; post-fix,
     #       the clear result, the unknown arm, and the guidance all
     #       print, exit 3 per the branch contract)
+    #   mutation-failure handling (rounds 55+56 class sweep) - the
+    #       mutation-side companion of the round-54 rule: queries fail
+    #       soft or closed proportional to role; MUTATIONS never fail
+    #       raw (round 55), and a mutation's catch never CLAIMS the
+    #       machine untouched when the mutation may have partially
+    #       applied (round 56) - the changed/nothing-changed basis of
+    #       every failure report is a boundary re-read, not an
+    #       assumption. Every mutation catch is checked for BOTH (a)
+    #       routed, guided reporting and (b) a re-read (or determinate
+    #       evidence) behind any changed/nothing-changed claim.
+    #       VIOLATIONS (a): the shared repair helper's three mutation
+    #       calls (Set-Service restore, Start-Service, the flipped-back
+    #       re-restore) let a thrown command escape - all three
+    #       healthy-verdict branches could end in raw PowerShell output
+    #       over a machine the preceding Set-Service had already
+    #       changed. FIXED: the sequence runs inside one try/catch with
+    #       a $repairStep label before each command; the catch reports
+    #       the failing step, the flag-backed completed-steps list
+    #       (run-history facts only - each flag is set after its
+    #       command returned), the machine-now state from a soft-fail
+    #       re-read (a thrown Start-Service can leave the service
+    #       StartPending, so the failed command's own effect is never
+    #       claimed), the inspect pointer, and the branch's
+    #       -FailureGuidance lines (the parameter's designed purpose),
+    #       exit 1; the fail-closed reads inside the try are unaffected
+    #       (exit is not caught). VIOLATION (b): the Reregister
+    #       Stop-Service catch reported 'Nothing was changed' without
+    #       re-reading - but Stop-Service can throw AFTER sending the
+    #       stop request (a slow transition), leaving the node offline
+    #       while the operator is told nothing changed. FIXED: the catch
+    #       re-queries the service and reports four truthful arms
+    #       (stopped-despite-the-error / still-Running-nothing-changed /
+    #       transitional-may-still-complete / query-failed-unknown, the
+    #       round-54 soft-fail wording family), always preserving that
+    #       the registration was NOT cleared and the clear will not
+    #       run, exit 3. Sweep verdicts for every other mutation catch
+    #       in the script: native clear launch failure - PASS (the
+    #       $LASTEXITCODE sentinel is determinate evidence that nothing
+    #       launched, so 'Nothing was cleared' is evidenced, not
+    #       assumed); native clear nonzero exit - PASS ('may be
+    #       partially cleared' acknowledges the indeterminacy instead of
+    #       claiming either way); Register enrollment catch - PASS
+    #       ('may have partially completed' acknowledges indeterminacy,
+    #       the deletion claim scoped to run-history registration data
+    #       by this run, and the secret-bearing command line is never
+    #       echoed); module temp-dir New-Item/Remove-Item - PASS
+    #       (inside the runner's try / bounded-retry cleanup that warns
+    #       and never throws outward); Remove-Variable - script-state
+    #       secret hygiene, not machine state, out of the class by
+    #       definition. Not child-process-drivable (driving a thrown
+    #       Start-Service or a throw-after-send Stop-Service needs a
+    #       service that misbehaves; no seam reaches either from closed
+    #       stdin); the pin is the disposition, same V4 scratch-copy
+    #       form (a service stub that accepts Set-Service then throws
+    #       from Start-Service; a stop stub that throws after accepting
+    #       the stop while the state reader flips to StopPending or
+    #       Stopped; pre-fix, raw error output / an unverified
+    #       nothing-changed claim; post-fix, the guided reports above
+    #       with boundary re-reads)
     #   post-clear absence revalidation (Reregister) - the postcondition-
     #       adjacency member of the class invariant, and the clear's
     #       POST-condition joining the PRE-condition above:

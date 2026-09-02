@@ -58,7 +58,15 @@
     startup type FIRST, then start the service (a Disabled service cannot
     be started at all), re-verify after every step, and fail closed when
     the Running/Automatic invariant still does not hold - so the branches
-    cannot drift apart in ordering again.
+    cannot drift apart in ordering again. A repair command that itself
+    throws never escapes raw: the helper catches it and reports the
+    failing step, what already changed on the machine, and the branch's
+    own guidance - the mutation-side companion of the query rule above
+    (queries fail soft or closed proportional to their role; mutations
+    never fail raw, and a catch never claims the machine untouched when
+    the mutation may have partially applied - the changed/nothing-changed
+    basis of every failure report is a boundary re-read, not an
+    assumption).
 
     The destructive sequence is guarded the same way the launch and the
     success report are: Reregister revalidates the registration
@@ -281,8 +289,10 @@ function Get-ServiceInfoOrFail {
 # Returns a PSCustomObject with Service (the final facts, for the report
 # to print), Started and StartupRestored (what this run changed, for the
 # truthful summary and drift clauses), or never returns: a failed query
-# exits 1 inside Get-ServiceInfoOrFail, and every other failure exits 1
-# here after the calling branch's own guidance lines.
+# exits 1 inside Get-ServiceInfoOrFail, a repair COMMAND that throws is
+# caught (round 55) and reported with the failing step, what already
+# changed, and the branch's own guidance lines, and the final verdict
+# exits 1 when the Running/Automatic invariant still does not hold.
 function Repair-SsmServiceForHealth {
     param([string[]]$FailureGuidance)
 
@@ -300,23 +310,83 @@ function Repair-SsmServiceForHealth {
         exit 1
     }
 
-    if ($currentService.StartType -ne 'Automatic') {
-        Write-Step ("Restoring AmazonSSMAgent startup type to Automatic (was '" + $currentService.StartType + "').")
-        Set-Service -Name 'AmazonSSMAgent' -StartupType Automatic
-        $startupRestored = $true
-        $currentService = Get-ServiceInfoOrFail
-    }
-    if ($currentService.Status -ne 'Running') {
-        Write-Step 'AmazonSSMAgent is not running; starting it.'
-        Start-Service -Name 'AmazonSSMAgent'
-        $started = $true
-        $currentService = Get-ServiceInfoOrFail
-    }
-    if ($currentService.StartType -ne 'Automatic') {
-        Write-Step ("Restoring AmazonSSMAgent startup type to Automatic again (was '" + $currentService.StartType + "'); it flipped back during the repairs.")
-        Set-Service -Name 'AmazonSSMAgent' -StartupType Automatic
-        $startupRestored = $true
-        $currentService = Get-ServiceInfoOrFail
+    # MUTATIONS NEVER FAIL RAW (round 55): the whole mutation sequence
+    # runs inside one try/catch, with $repairStep labeling the command
+    # about to run. A repair command that throws - for example
+    # Start-Service failing while the agent fails during startup, on a
+    # machine the preceding Set-Service had ALREADY changed - is caught
+    # and reported: the failing step, what already changed on the
+    # machine (truthfully, from the flags - a partial repair is a
+    # changed machine the operator must know about), the inspect
+    # pointer, and the calling branch's own -FailureGuidance lines.
+    # Letting it escape would end every healthy-verdict branch in raw
+    # PowerShell output over a half-applied repair, saying nothing about
+    # what changed or what to inspect. (The Get-ServiceInfoOrFail reads
+    # inside the try are unaffected: they exit, and exit is not caught.)
+    $repairStep = $null
+    try {
+        if ($currentService.StartType -ne 'Automatic') {
+            $repairStep = 'restoring the AmazonSSMAgent startup type to Automatic'
+            Write-Step ("Restoring AmazonSSMAgent startup type to Automatic (was '" + $currentService.StartType + "').")
+            Set-Service -Name 'AmazonSSMAgent' -StartupType Automatic
+            $startupRestored = $true
+            $currentService = Get-ServiceInfoOrFail
+        }
+        if ($currentService.Status -ne 'Running') {
+            $repairStep = 'starting AmazonSSMAgent'
+            Write-Step 'AmazonSSMAgent is not running; starting it.'
+            Start-Service -Name 'AmazonSSMAgent'
+            $started = $true
+            $currentService = Get-ServiceInfoOrFail
+        }
+        if ($currentService.StartType -ne 'Automatic') {
+            $repairStep = 'restoring the AmazonSSMAgent startup type to Automatic again (it flipped back during the repairs)'
+            Write-Step ("Restoring AmazonSSMAgent startup type to Automatic again (was '" + $currentService.StartType + "'); it flipped back during the repairs.")
+            Set-Service -Name 'AmazonSSMAgent' -StartupType Automatic
+            $startupRestored = $true
+            $currentService = Get-ServiceInfoOrFail
+        }
+    } catch {
+        Write-Fail ("Service repair failed while " + $repairStep + ": " + $_.Exception.Message)
+        # Round 55: report what already COMPLETED - each flag is set only
+        # after its command returned, so these are run-history facts, not
+        # machine-now claims. Round 56: the FAILED command's own effect is
+        # indeterminate (a thrown Start-Service can leave the service
+        # StartPending; a thrown Set-Service can have applied before
+        # erroring), so the machine-now state is re-read instead of
+        # assumed - a report-only read, soft-fail per the round-54 rule
+        # (unknown is not a claim of any state).
+        Write-Host 'What these repairs completed before the failure (run-history facts; each flag'
+        Write-Host 'is set only after its command returned):'
+        if ($startupRestored -and $started) {
+            Write-Host '  the startup type was restored to Automatic, and the service was started.'
+        } elseif ($startupRestored) {
+            Write-Host '  the startup type was restored to Automatic.'
+        } elseif ($started) {
+            Write-Host '  the service was started.'
+        } else {
+            Write-Host '  nothing; the failed command was the first repair step.'
+        }
+        $serviceAtFailedRepair = $null
+        $repairReadFailed = $false
+        try {
+            $serviceAtFailedRepair = Get-SsmServiceInfo
+        } catch {
+            $repairReadFailed = $true
+        }
+        if ($repairReadFailed) {
+            Write-Host 'The service state after the failed command could not be re-queried, so it is'
+            Write-Host 'unknown (not a claim of any state). Check: Get-Service AmazonSSMAgent.'
+        } elseif (-not $serviceAtFailedRepair.Exists) {
+            Write-Host 'The AmazonSSMAgent service no longer exists at the re-query.'
+        } else {
+            Write-Host ("The re-query shows AmazonSSMAgent is '" + $serviceAtFailedRepair.Status + "' with startup type '" + $serviceAtFailedRepair.StartType + "'.")
+        }
+        Write-Host 'Inspect: Get-Service AmazonSSMAgent and the SSM Agent log, then re-run.'
+        foreach ($line in $FailureGuidance) {
+            Write-Host $line
+        }
+        exit 1
     }
     if (($currentService.Status -ne 'Running') -or ($currentService.StartType -ne 'Automatic')) {
         Write-Fail ("AmazonSSMAgent is not Running/Automatic after the repairs (status '" + $currentService.Status + "', startup '" + $currentService.StartType + "').")
@@ -951,7 +1021,8 @@ if ($action -eq 'Register') {
         Write-Fail ('Registration did not complete: ' + $_.Exception.Message)
         Write-Host 'Activation values were not logged. Registration may have partially'
         Write-Host 'completed: inspect the local registration file, the AmazonSSMAgent'
-        Write-Host 'service, and the SSM Agent log before re-running. Nothing was deleted.'
+        Write-Host 'service, and the SSM Agent log before re-running. The registration'
+        Write-Host 'data was not deleted by this run.'
         exit 1
     } finally {
         # Clear bootstrap secrets from memory as soon as possible (SPEC 21 step 17).
@@ -1134,8 +1205,46 @@ if ($action -eq 'Reregister') {
         try {
             Stop-Service -Name 'AmazonSSMAgent'
         } catch {
+            # Round 55: the mutation failure is caught and guided, never
+            # raw. Round 56: the catch must not CLAIM the machine is
+            # untouched when the stop may have partially applied -
+            # Stop-Service can throw after the stop request was already
+            # sent (waiting out a slow transition, for example), leaving
+            # the service StopPending or headed to Stopped, which would
+            # leave the registered node offline while the operator is told
+            # nothing changed. The changed/nothing-changed basis is a
+            # boundary re-read, the same discipline as the success
+            # reports - and the read is report-only here (nothing follows
+            # but this report), so it fails SOFT per round 54: unknown is
+            # not a claim of any state. The registration was NOT cleared
+            # either way, and the clear does not run.
             Write-Fail ("Stopping AmazonSSMAgent failed: " + $_.Exception.Message)
-            Write-Host 'Nothing was changed and the registration was NOT cleared. Inspect:'
+            $serviceAtFailedStop = $null
+            $stopReadFailed = $false
+            try {
+                $serviceAtFailedStop = Get-SsmServiceInfo
+            } catch {
+                $stopReadFailed = $true
+            }
+            if ($stopReadFailed) {
+                Write-Host 'The service state could not be re-queried after the failed stop, so it is'
+                Write-Host 'unknown (not a claim the service is running or stopped): the stop may have'
+                Write-Host 'partially applied and left the node offline. Check: Get-Service AmazonSSMAgent.'
+            } elseif (-not $serviceAtFailedStop.Exists) {
+                Write-Host 'The AmazonSSMAgent service no longer exists at the re-query (it changed'
+                Write-Host 'under this run).'
+            } elseif ($serviceAtFailedStop.Status -eq 'Stopped') {
+                Write-Host 'The re-query shows AmazonSSMAgent has STOPPED despite the error: the stop'
+                Write-Host 'did take effect, and the node is offline from it.'
+            } elseif ($serviceAtFailedStop.Status -eq 'Running') {
+                Write-Host 'The re-query shows AmazonSSMAgent is still Running; the stop did not take'
+                Write-Host 'effect, and nothing about the machine changed.'
+            } else {
+                Write-Host ("The re-query shows AmazonSSMAgent is '" + $serviceAtFailedStop.Status + "', a transitional")
+                Write-Host 'state: the stop may still complete and leave the node offline. Check:'
+                Write-Host 'Get-Service AmazonSSMAgent.'
+            }
+            Write-Host 'The registration was NOT cleared, and the clear will not run. Inspect:'
             Write-Host 'Get-Service AmazonSSMAgent and the SSM Agent log, then re-run.'
             exit 3
         }
